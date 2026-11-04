@@ -38,7 +38,8 @@ TOOL_PROTOCOL = """\
 You have these tools:
 {tool_menu}
 
-STRICT protocol — reply with EXACTLY ONE JSON object and nothing else:
+STRICT protocol — reply with EXACTLY ONE JSON object and nothing else (no prose
+before or after it; put any commentary INSIDE the JSON):
   To use a tool:   {{"action": "tool", "tool": "<name>", "args": {{...}}}}
   To finish:       {{"action": "final", "answer": "<your full answer, markdown ok>"}}
 You have at most {max_steps} tool calls. Spend them wisely; then give the final answer.
@@ -96,7 +97,17 @@ class Agent:
             tokens += self.client.last_usage.get("total_tokens", 0)
             obj = extract_json(raw)
             if obj is None or "action" not in obj:
-                # Model answered in prose — accept it as final.
+                # Looks like it meant to follow the protocol but flubbed it — nudge.
+                if ('"action"' in raw or raw.lstrip().startswith("{")) and not force_final:
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({
+                        "role": "user",
+                        "content": "Protocol violation: reply with exactly ONE valid JSON "
+                                   'object ({"action":"tool",...} or {"action":"final",...}) '
+                                   "and no other text.",
+                    })
+                    continue
+                # Plain prose answer — accept as final.
                 return {"answer": raw, "steps": steps, "tokens": tokens}
             if obj["action"] == "final":
                 return {"answer": str(obj.get("answer", "")).strip(), "steps": steps,
