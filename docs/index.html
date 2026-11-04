@@ -297,11 +297,14 @@ irm https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.
 wrench init ; wrench doctor ; wrench patrol
 wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 min</span></pre>
     </div>
+    <p class="tabnote"><code>wrench init</code> opens a provider menu — Meta muse models by default
+      (press enter), or a <strong>guided fully-local setup via <a href="https://ollama.com">Ollama</a></strong>:
+      wrench detects your RAM / GPU, recommends a tool-calling model that fits, installs and pulls
+      with your consent, then proves it with a live tool-calling smoke test. Private + free.</p>
     <p class="tabnote">Linux is tested end-to-end on real hardware; macOS/Windows branches are
       implemented + unit-tested, pending native smoke tests —
       <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">full support matrix</a>.
-      No API key? Sensors, drift, and the dashboard still work; add
-      <a href="https://ollama.com">Ollama</a> for a fully local brain.</p>
+      No API key? Sensors, drift, and the dashboard still work — or go all-local with Ollama.</p>
   </div>
 </div></section>
 

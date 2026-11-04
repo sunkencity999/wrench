@@ -12,6 +12,13 @@
       label: "1 · wrench init",
       cmd: "wrench init",
       out: [
+        { t: "🔧 choose your model provider", cls: "c-acc" },
+        { t: "  1  meta (default)   Meta muse models — hosted", cls: "" },
+        { t: "  2  openai           OpenAI", cls: "c-dim" },
+        { t: "  3  anthropic        Anthropic Claude", cls: "c-dim" },
+        { t: "  4  ollama           local — private + free, guided setup", cls: "" },
+        { t: "  5  lmstudio         LM Studio · 6  litellm  LiteLLM proxy", cls: "c-dim" },
+        { t: "provider [1-6 or name]: ⏎   → meta", cls: "c-cyan" },
         { t: "wrote ~/.config/wrench/config.toml", cls: "c-ok" },
         { t: "recording first sensor sample + drift baseline...", cls: "c-dim" },
         { t: "╭──────────────────── 🔧 wrench initialized ────────────────────╮", cls: "c-ok" },
@@ -19,7 +26,7 @@
         { t: "│ data: ~/.local/share/wrench/wrench.db                         │", cls: "c-ok" },
         { t: "│ next: wrench doctor · wrench patrol · wrench web              │", cls: "c-ok" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
-        { t: "wrench now knows what \"normal\" looks like. It only gets smarter from here.", cls: "c-dim", note: true }
+        { t: "wrench now knows what \"normal\" looks like. (Option 4 runs a guided local setup: it detects your RAM/GPU, recommends a tool-calling model, pulls it with consent, and smoke-tests the loop.)", cls: "c-dim", note: true }
       ]
     },
     {

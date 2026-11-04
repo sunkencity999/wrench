@@ -2,7 +2,7 @@
 
 > **An AI sysadmin that lives on your machine: it continuously senses, remembers the history, explains problems in plain English — and asks before touching anything.**
 >
-> ⚡ **Powered by Meta muse models** — `muse-spark-1.3` drives patrols and investigations, `muse-wonder-1.0` handles deep diagnosis — with OpenAI, Anthropic, Ollama, LM Studio, and LiteLLM available as alternatives.
+> ⚡ **Powered by Meta muse models** — `muse-spark-1.3` drives patrols and investigations, `muse-wonder-1.0` handles deep diagnosis — with a **first-class local mode via Ollama** (private + zero cost when your hardware allows), plus OpenAI, Anthropic, LM Studio, and LiteLLM.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-58a6ff?style=flat-square)](pyproject.toml)
@@ -308,10 +308,18 @@ to do about it.*
 
 ## The brain is swappable
 
+`wrench init` opens a provider menu — press enter for Meta's hosted muse
+models, or pick **Ollama** for a first-class private local mode: wrench
+detects your RAM / NVIDIA VRAM / Apple Silicon unified memory, recommends a
+tool-calling-capable model that fits, offers to install Ollama and pull the
+model (always with consent, never silently), and then proves the loop with a
+real tool-calling smoke test before declaring victory. Scripting?
+`wrench init -p <provider> -m <model> --yes`.
+
 ```bash
 wrench patrol                          # Meta Muse (default): muse-spark-1.3
 wrench patrol --deep                   # muse-wonder-1.0 for the hard cases
-wrench ask -p ollama -m llama3.1 "…"   # fully local, nothing leaves the box
+wrench ask -p ollama -m qwen2.5:7b "…"  # fully local, nothing leaves the box
 wrench ask -p openai "…"               # or OpenAI
 wrench ask -p anthropic "…"            # or Anthropic (native adapter)
 wrench ask -p lmstudio "…"             # or LM Studio
@@ -350,12 +358,38 @@ wrench init -p anthropic
 </details>
 
 <details>
-<summary>Ollama / LM Studio / LiteLLM (local & proxy)</summary>
+<summary>Ollama — local, private, free (guided setup)</summary>
 
 ```bash
-wrench init -p ollama          # http://127.0.0.1:11434/v1, no key needed
-wrench ask -p ollama -m llama3.1 "why is my disk filling up?"
+wrench init -p ollama          # guided: detect hardware → recommend model →
+                               # install ollama + pull (with consent) → smoke test
+wrench ask "why is my disk filling up?"   # nothing leaves the box, no key needed
+```
 
+The recommendation table (all tiers are tool-calling-capable — wrench's agent
+loop requires that):
+
+| your hardware | recommended | download |
+|---|---|---|
+| < 8 GB RAM | `qwen2.5:1.5b` | ~1.0 GB |
+| 8 GB RAM | `qwen2.5:3b` | ~1.9 GB |
+| 16 GB RAM | `qwen2.5:7b` | ~4.7 GB |
+| 32 GB RAM or 12 GB+ GPU | `qwen2.5:14b` | ~9.0 GB |
+| 24 GB+ GPU (or 64 GB Apple Silicon) | `qwen3:30b` (MoE) | ~19 GB |
+
+CPU tiers deliberately use non-thinking models: reasoning-family models
+(qwen3 hybrids, deepseek-r1) burn thousands of chain-of-thought tokens per
+reply — minutes per turn on a CPU-only box. If you point wrench at one
+anyway, it switches to Ollama's native API with `think: false` automatically.
+
+You can type any other tag at the prompt; wrench verifies the setup end-to-end
+with one real tool-calling round-trip and tells you plainly if it failed.
+</details>
+
+<details>
+<summary>LM Studio / LiteLLM (local & proxy)</summary>
+
+```bash
 wrench init -p lmstudio        # http://127.0.0.1:1234/v1
 wrench init -p litellm         # http://127.0.0.1:4000/v1 — any model behind the proxy
 ```
