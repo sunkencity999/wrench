@@ -250,7 +250,9 @@ def html_report(patrol: dict, host: str = "localhost", out_dir: Path | None = No
         context=html.escape(patrol.get("context", "")),
         answer=html.escape(patrol.get("answer", "")),
     )
-    out_dir = out_dir or (Path.home() / ".local/share/wrench/reports")
+    if out_dir is None:
+        from .config import DATA_DIR
+        out_dir = DATA_DIR / "reports"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"patrol-{datetime.now().strftime('%Y%m%d-%H%M%S')}.html"
     out.write_text(page)

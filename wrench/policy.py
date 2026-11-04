@@ -24,6 +24,11 @@ REPAIR_ALLOWLIST: list[tuple[str, str]] = [
     (r"^systemctl (--user )?reset-failed( [\w@.\-]+)?$", "clear failed state"),
     (r"^journalctl --vacuum-size=\d+[MG]$", "journal vacuum"),
     (r"^sync$", "fs sync"),
+    # macOS
+    (r"^launchctl (start|stop|kickstart -k) [\w./\-]+$", "service lifecycle (launchd)"),
+    # Windows
+    (r"^sc (start|stop) [\w.\-]+$", "service lifecycle (windows)"),
+    (r"^net (start|stop) [\w.\- ]+$", "service lifecycle (windows)"),
 ]
 
 # Commands the agent may run freely in ANY tier (read-only diagnostics).
@@ -56,6 +61,23 @@ DIAG_ALLOWLIST: list[tuple[str, str]] = [
     (r"^lsof -i( :\d+)?$", "open sockets"),
     (r"^smartctl -[aH] /dev/\w+$", "smart status"),
     (r"^sensors$", "temperatures"),
+    # macOS diagnostics
+    (r"^launchctl list( [\w./\-]+)?$", "launchd listing"),
+    (r"^launchctl print [\w./\-]+$", "launchd unit detail"),
+    (r"^log show --last \d+[smh]( --style \w+)?( --predicate .+)?$", "unified log read"),
+    (r"^vm_stat$", "memory stats (macos)"),
+    (r"^sysctl -n [\w.]+$", "kernel setting read"),
+    (r"^diskutil (list|info [\w/]+)$", "disk info (macos)"),
+    (r"^sw_vers$", "macos version"),
+    (r"^top -l 1.*$", "top snapshot (macos)"),
+    # Windows diagnostics
+    (r"^tasklist( /V)?$", "process list (windows)"),
+    (r"^sc query( [\w.\-]+)?$", "service query (windows)"),
+    (r"^schtasks /Query.*$", "scheduled tasks (windows)"),
+    (r"^netstat -ano$", "socket census (windows)"),
+    (r"^wevtutil qe \w+( /c:\d+)?( /rd:true)?( /f:text)?( /q:.+)?$", "event log read"),
+    (r"^systeminfo$", "system info (windows)"),
+    (r"^wmic (logicaldisk|cpu|os) get [\w,]+$", "wmi read"),
 ]
 
 # Things no tier may ever do (wrench is a sysadmin, not a loose cannon).
@@ -64,6 +86,11 @@ FORBIDDEN = [
     r"\bcurl\b.*\|\s*(ba)?sh", r"\bwget\b.*\|\s*(ba)?sh", r"\buserdel\b", r"\bpasswd\b",
     r"\biptables\b.*-F", r"\bshutdown\b", r"\breboot\b", r"\bhalt\b", r"\bkill\s+-9\s+1\b",
     r"\bchown\b.*-R\s*/\s*$", r"[;&|]{1,2}",  # no chaining — one command per action
+    # Windows / macOS dangerous surface
+    r"(?i)\bformat\s+[a-z]:", r"(?i)\bdel\b.*/[sq]", r"(?i)\brmdir\b.*/s", r"(?i)remove-item",
+    r"(?i)\bdiskpart\b", r"(?i)\breg\b\s+delete", r"(?i)\bbcdedit\b", r"(?i)\bcipher\b\s+/w",
+    r"(?i)set-executionpolicy", r"\bdiskutil\s+(erase|partition|reformat)",
+    r"\bnvram\b", r"\bcsrutil\b", r"\blaunchctl\s+(bootout|remove)\s+system",
 ]
 
 

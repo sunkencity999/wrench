@@ -16,9 +16,15 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-CONFIG_DIR = Path(os.environ.get("WRENCH_CONFIG_DIR", "~/.config/wrench")).expanduser()
+from . import platforms
+
+# Per-OS defaults (Linux: XDG dirs; macOS: ~/Library/Application Support;
+# Windows: %APPDATA% / %LOCALAPPDATA%), overridable via env.
+_cfg_env = os.environ.get("WRENCH_CONFIG_DIR")
+CONFIG_DIR = Path(_cfg_env).expanduser() if _cfg_env else platforms.default_config_dir()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
-DATA_DIR = Path(os.environ.get("WRENCH_DATA_DIR", "~/.local/share/wrench")).expanduser()
+_data_env = os.environ.get("WRENCH_DATA_DIR")
+DATA_DIR = Path(_data_env).expanduser() if _data_env else platforms.default_data_dir()
 
 PROVIDER_DEFAULTS = {
     "meta": {

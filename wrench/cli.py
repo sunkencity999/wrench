@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__, agent as agent_mod, driftscan, report, sensors
+from . import __version__, agent as agent_mod, driftscan, platforms, report, sensors
 from .config import CONFIG_PATH, load_config, write_default_config
 from .providers import LLMClient
 from .store import Store
@@ -229,7 +229,7 @@ def report_cmd(
             p["summary"], str(p["tokens"]),
         )
     console.print(t)
-    reports_dir = Path.home() / ".local/share/wrench/reports"
+    reports_dir = cfg.data_dir / "reports"
     if open_html and reports_dir.exists():
         files = sorted(reports_dir.glob("patrol-*.html"))
         if files:
@@ -275,8 +275,8 @@ def explain(
                 "whether it looks healthy, and whether it should be exposed.")
     elif target.isdigit():
         goal = (f"Explain PID {target} on this machine: what process is it, what's it doing, "
-                "resource usage, parent, should I worry? Use proc_top and run_diag "
-                f"(e.g. 'cat /proc/{target}/status', 'ps aux').")
+                "resource usage, parent, should I worry? Use proc_top and run_diag with "
+                "platform-appropriate read-only commands.")
     elif "/" in target:
         goal = (f"Explain the path {target}: what is it, how big, what writes to it? "
                 "Use run_diag (ls, stat, du) and disk_tree.")
@@ -326,44 +326,36 @@ def _key_env(provider: str) -> str:
 @app.command("install-service")
 def install_service(
     interval: int = typer.Option(15, "--interval", help="minutes between patrols"),
+    uninstall: bool = typer.Option(False, "--uninstall", help="remove the scheduled patrol"),
 ):
-    """Install a user systemd service+timer that patrols on a schedule."""
+    """Schedule patrols natively: systemd (Linux), launchd (macOS), or Task Scheduler (Windows)."""
     import shutil
-    import subprocess
 
-    wrench_bin = shutil.which("wrench")
-    if not wrench_bin:
-        console.print("[red]couldn't find the wrench binary on PATH[/red]")
-        raise typer.Exit(1)
-    unit_dir = Path.home() / ".config/systemd/user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    (unit_dir / "wrench-patrol.service").write_text(f"""[Unit]
-Description=wrench patrol — intentional sysadmin agent
-After=network-online.target
+    from . import scheduler
 
-[Service]
-Type=oneshot
-Nice=10
-ExecStart={wrench_bin} patrol --quiet --no-html
-""")
-    (unit_dir / "wrench-patrol.timer").write_text(f"""[Unit]
-Description=wrench patrol every {interval} minutes
-
-[Timer]
-OnBootSec=3min
-OnUnitActiveSec={interval}min
-RandomizedDelaySec=60
-
-[Install]
-WantedBy=timers.target
-""")
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
-    subprocess.run(["systemctl", "--user", "enable", "--now", "wrench-patrol.timer"], check=False)
+    try:
+        if uninstall:
+            plan = scheduler.plan_uninstall()
+            lines = scheduler.apply_plan(plan, uninstall=True)
+            console.print(Panel("\n".join(["[green]removed scheduled patrol[/green]", *lines]),
+                                border_style="green", title="🔧 wrench install-service"))
+            return
+        wrench_bin = shutil.which("wrench")
+        if not wrench_bin:
+            console.print("[red]couldn't find the wrench binary on PATH[/red]")
+            raise typer.Exit(1)
+        plan = scheduler.plan_install(wrench_bin, interval)
+        scheduler.apply_plan(plan)
+    except scheduler.SchedulerError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     console.print(Panel(
-        f"[green]installed + started[/green] wrench-patrol.timer (every {interval}min)\n"
-        "[dim]check: systemctl --user list-timers wrench-patrol.timer\n"
-        "note: the service needs your provider API key; for the meta provider add\n"
-        "  api_key_file = \"/path/to/keyfile\" under [meta] in ~/.config/wrench/config.toml[/dim]",
+        f"[green]installed + started[/green] scheduled patrol via [bold]{plan.kind}[/bold] "
+        f"(every {interval}min)\n"
+        f"[dim]check:     {plan.check_hint}\n"
+        f"uninstall: {plan.uninstall_hint}\n"
+        "note: the service needs your provider API key; set\n"
+        f"  api_key_file = \"/path/to/keyfile\" in {CONFIG_PATH}[/dim]",
         border_style="green", title="🔧 wrench install-service"))
 
 
@@ -377,7 +369,13 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT):
 
     ok = Text("✔ ok", style="green")
 
+    caps = platforms.capabilities()
     t.add_row("version", Text(__version__))
+    t.add_row("platform", Text(f"{caps['platform']} ({platform.system()} {platform.release()})"))
+    t.add_row("scheduler", Text(caps["service_manager"] or "— none (use `wrench watch`)",
+                                style="green" if caps["service_manager"] else "yellow"))
+    t.add_row("log reader", Text(caps["log_backend"] or "— none found",
+                                 style="green" if caps["log_backend"] else "yellow"))
     t.add_row("config", Text(str(CONFIG_PATH) if CONFIG_PATH.exists()
                              else "(defaults — run wrench init)", style="dim"))
     t.add_row("provider", Text(f"{cfg.provider} @ {cfg.base_url}"))

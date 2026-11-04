@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wrench-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "An intentional local sysadmin agent: watches, diagnoses, explains, and (with permission) fixes."
 readme = "README.md"
 license = { text = "MIT" }
@@ -19,6 +19,9 @@ dependencies = [
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/sunkencity999/wrench"

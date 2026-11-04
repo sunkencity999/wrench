@@ -13,6 +13,7 @@ import time
 
 import psutil
 
+from . import platforms
 from .store import Store
 
 ANOMALY_Z = 3.0
@@ -39,7 +40,10 @@ def sample_os(store: Store | None = None) -> dict:
     cpu = psutil.cpu_percent(interval=0.5)
     vm = psutil.virtual_memory()
     sw = psutil.swap_memory()
-    load = psutil.getloadavg()
+    try:
+        load = psutil.getloadavg()  # emulated on Windows (needs a warmup); may raise
+    except (OSError, AttributeError):
+        load = (0.0, 0.0, 0.0)
     disks = {}
     for part in psutil.disk_partitions(all=False):
         if part.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
@@ -62,7 +66,7 @@ def sample_os(store: Store | None = None) -> dict:
         "load_15m": load[2],
         "n_procs": len(psutil.pids()),
         "disk_pct": disks,
-        "disk_root_pct": disks.get("/", 0.0),
+        "disk_root_pct": disks.get(platforms.primary_mount(), 0.0),
         "net_bytes_recv": net.bytes_recv,
         "net_bytes_sent": net.bytes_sent,
         "uptime_s": int(time.time() - psutil.boot_time()),

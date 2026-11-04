@@ -1,8 +1,12 @@
 """Driftscan: snapshot what the box *is* and narrate what changed.
 
-Drift heritage: snapshots of listening ports, running services, installed
-packages, users, and cron. Diffs come out as plain-English one-liners;
-the agent can optionally ask the LLM to narrate significance.
+Snapshots of listening ports, running services, installed packages, users,
+and scheduled jobs. Diffs come out as plain-English one-liners; the agent can
+optionally ask the LLM to narrate significance.
+
+Cross-platform strategy: psutil for ports/services where possible; OS-native
+tools (systemctl, launchctl, dpkg, brew, schtasks, ...) as enrichers that
+degrade gracefully to an empty snapshot when absent.
 """
 
 from __future__ import annotations
@@ -11,6 +15,9 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+import psutil
+
+from . import platforms
 from .store import Store
 
 SNAPSHOT_KINDS = ("ports", "services", "packages", "users", "cron")
@@ -25,76 +32,174 @@ def _run(cmd: list[str], timeout: int = 20) -> str:
 
 # ---------------- collectors ----------------
 
-def collect_ports() -> dict:
-    """Listening TCP/UDP sockets -> {'tcp/8787': 'python3', ...}"""
-    out = _run(["ss", "-tulnpH"])
+def _ports_psutil() -> dict:
+    """Listening sockets via psutil (cross-platform; proc names when permitted)."""
     ports: dict[str, str] = {}
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 5:
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, OSError):
+        return ports
+    for c in conns:
+        is_listener = (str(c.status) == "LISTEN") or (c.type == 2 and not c.raddr)  # 2 = UDP
+        if not is_listener or not c.laddr:
             continue
-        proto = parts[0]
-        local = parts[4]
-        port = local.rsplit(":", 1)[-1]
+        proto = "tcp" if c.type == 1 else "udp"
+        key = f"{proto}/{c.laddr.port}"
         proc = ""
-        if 'users:(("' in line:
-            proc = line.split('users:(("', 1)[1].split('"', 1)[0]
-        key = f"{proto}/{port}"
+        if c.pid:
+            try:
+                proc = psutil.Process(c.pid).name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                proc = ""
         if key not in ports or (proc and not ports[key]):
             ports[key] = proc
     return ports
 
 
-def collect_services() -> dict:
-    """Running systemd services (system + user) -> {'name.service': 'running'}"""
-    services: dict[str, str] = {}
-    for scope in ([], ["--user"]):
-        out = _run(
-            ["systemctl", *scope, "list-units", "--type=service", "--state=running",
-             "--no-legend", "--plain", "--no-pager"]
-        )
-        prefix = "user:" if scope else ""
+def collect_ports() -> dict:
+    """Listening TCP/UDP sockets -> {'tcp/8787': 'python3', ...}"""
+    # Prefer ss on Linux (sees process names without root); psutil elsewhere.
+    if platforms.is_linux() and platforms.has("ss"):
+        out = _run(["ss", "-tulnpH"])
+        ports: dict[str, str] = {}
         for line in out.splitlines():
             parts = line.split()
-            if parts and parts[0].endswith(".service"):
-                services[prefix + parts[0]] = "running"
+            if len(parts) < 5:
+                continue
+            proto = parts[0]
+            local = parts[4]
+            port = local.rsplit(":", 1)[-1]
+            proc = ""
+            if 'users:(("' in line:
+                proc = line.split('users:(("', 1)[1].split('"', 1)[0]
+            key = f"{proto}/{port}"
+            if key not in ports or (proc and not ports[key]):
+                ports[key] = proc
+        if ports:
+            return ports
+    return _ports_psutil()
+
+
+def collect_services() -> dict:
+    """Running services -> {'name': 'running'} (systemd / launchd / Windows services)."""
+    services: dict[str, str] = {}
+    plat = platforms.current_platform()
+    if plat == "linux" and platforms.has("systemctl"):
+        for scope in ([], ["--user"]):
+            out = _run(
+                ["systemctl", *scope, "list-units", "--type=service", "--state=running",
+                 "--no-legend", "--plain", "--no-pager"]
+            )
+            prefix = "user:" if scope else ""
+            for line in out.splitlines():
+                parts = line.split()
+                if parts and parts[0].endswith(".service"):
+                    services[prefix + parts[0]] = "running"
+        return services
+    if plat == "macos" and platforms.has("launchctl"):
+        out = _run(["launchctl", "list"])
+        for line in out.splitlines()[1:]:
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                pid, _status, label = parts[0], parts[1], parts[2]
+                if pid.strip().isdigit():  # has a live process
+                    services[label.strip()] = "running"
+        return services
+    if plat == "windows" and hasattr(psutil, "win_service_iter"):
+        try:
+            for svc in psutil.win_service_iter():  # pragma: no cover (Windows only)
+                try:
+                    if svc.status() == "running":
+                        services[svc.name()] = "running"
+                except (psutil.Error, OSError):
+                    continue
+        except (psutil.Error, OSError):
+            pass
+        return services
     return services
 
 
-def collect_packages() -> dict:
-    """Installed package census. Full list is big; store count + digest + sample of names."""
-    out = _run(["dpkg-query", "-W", "-f=${Package} ${Version}\n"], timeout=30)
-    if not out:
-        out = _run(["rpm", "-qa"], timeout=30)
-    lines = sorted(out.splitlines())
+def _digest_entries(lines: list[str]) -> dict:
+    lines = sorted(lines)
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
-    return {"count": len(lines), "digest": digest, "entries": {ln.split(" ")[0]: ln for ln in lines}}
+    return {"count": len(lines), "digest": digest,
+            "entries": {ln.split(" ")[0]: ln for ln in lines}}
+
+
+def collect_packages() -> dict:
+    """Installed package census (count + digest + entries). Empty when no known manager."""
+    candidates: list[list[str]] = []
+    plat = platforms.current_platform()
+    if plat == "linux":
+        candidates = [
+            ["dpkg-query", "-W", "-f=${Package} ${Version}\n"],
+            ["rpm", "-qa"],
+            ["pacman", "-Q"],
+            ["apk", "list", "--installed"],
+        ]
+    elif plat == "macos":
+        candidates = [["brew", "list", "--versions"]]
+    elif plat == "windows":
+        candidates = []  # no fast, reliable package census; drift still covers services/ports/tasks
+    for cmd in candidates:
+        if not platforms.has(cmd[0]):
+            continue
+        out = _run(cmd, timeout=30)
+        if out:
+            return _digest_entries(out.splitlines())
+    return _digest_entries([])
 
 
 def collect_users() -> dict:
-    """Login-capable users from /etc/passwd."""
+    """Login-capable local user accounts."""
     users: dict[str, str] = {}
-    try:
-        for line in Path("/etc/passwd").read_text().splitlines():
-            parts = line.split(":")
-            if len(parts) >= 7:
-                name, _, uid, _, _, _, shell = parts[:7]
-                if shell not in ("/usr/sbin/nologin", "/bin/false", "/sbin/nologin"):
-                    users[name] = f"uid={uid} shell={shell}"
-    except OSError:
-        pass
+    plat = platforms.current_platform()
+    if plat in ("linux", "macos"):
+        try:
+            import pwd  # posix only
+
+            for u in pwd.getpwall():
+                if u.pw_shell in ("/usr/sbin/nologin", "/bin/false", "/sbin/nologin",
+                                  "/usr/bin/false"):
+                    continue
+                if plat == "macos" and u.pw_name.startswith("_"):
+                    continue  # macOS service accounts
+                users[u.pw_name] = f"uid={u.pw_uid} shell={u.pw_shell}"
+        except (ImportError, OSError):
+            pass
+        return users
+    if plat == "windows":
+        out = _run(["net", "user"])  # pragma: no cover (Windows only)
+        in_body = False
+        for line in out.splitlines():
+            if line.startswith("---"):
+                in_body = True
+                continue
+            if "command completed" in line.lower():
+                break
+            if in_body:
+                for name in line.split():
+                    users[name] = "local account"
     return users
 
 
 def collect_cron() -> dict:
-    """User crontab + system cron files (names + content digests)."""
+    """Scheduled jobs: crontab + cron dirs (Linux), launch agents (macOS), tasks (Windows)."""
     entries: dict[str, str] = {}
-    out = _run(["crontab", "-l"])
-    for i, line in enumerate(out.splitlines()):
-        line = line.strip()
-        if line and not line.startswith("#"):
-            entries[f"user:{i}"] = line
-    for d in ("/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly"):
+    plat = platforms.current_platform()
+    if plat in ("linux", "macos") and platforms.has("crontab"):
+        out = _run(["crontab", "-l"])
+        for i, line in enumerate(out.splitlines()):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                entries[f"user:{i}"] = line
+    if plat == "linux":
+        dirs = ("/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly")
+    elif plat == "macos":
+        dirs = (str(Path.home() / "Library" / "LaunchAgents"), "/Library/LaunchDaemons")
+    else:
+        dirs = ()
+    for d in dirs:
         p = Path(d)
         if p.is_dir():
             for f in sorted(p.iterdir()):
@@ -104,6 +209,13 @@ def collect_cron() -> dict:
                         entries[str(f)] = h
                     except OSError:
                         continue
+    if plat == "windows" and platforms.has("schtasks"):  # pragma: no cover (Windows only)
+        out = _run(["schtasks", "/Query", "/FO", "CSV", "/NH"], timeout=30)
+        for line in out.splitlines():
+            parts = line.split(",")
+            if parts and parts[0].strip('"'):
+                name = parts[0].strip('"')
+                entries[name] = hashlib.sha256(line.encode()).hexdigest()[:12]
     return entries
 
 
@@ -141,7 +253,7 @@ def _diff_dicts(kind: str, old: dict, new: dict) -> list[str]:
         "ports": ("port opened", "port closed"),
         "services": ("service started", "service stopped"),
         "users": ("user added", "user removed"),
-        "cron": ("cron entry added", "cron entry removed/changed"),
+        "cron": ("scheduled job added", "scheduled job removed/changed"),
     }
     add_label, rm_label = labels.get(kind, ("added", "removed"))
     for k in sorted(set(new) - set(old)):

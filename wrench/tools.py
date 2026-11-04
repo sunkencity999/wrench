@@ -7,10 +7,13 @@ through policy.check_repair and the actions log.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
-from . import policy
+import psutil
+
+from . import platforms, policy
 from .store import Store
 
 MAX_OUTPUT = 8000  # chars returned to the model per tool call
@@ -49,72 +52,188 @@ def run_diag(store: Store, command: str) -> str:
 
 
 def read_logs(store: Store, unit: str = "", lines: int = 50, priority: str = "") -> str:
-    """Read recent journal lines, optionally for one unit / min priority."""
+    """Read recent system logs (journald / macOS unified log / Windows event log)."""
     lines = max(1, min(int(lines), 500))
-    argv = ["journalctl", "--no-pager", "-n", str(lines)]
-    if unit:
-        # try system unit first, fall back to user units
-        probe = _exec(["journalctl", "--no-pager", "-n", str(lines), "-u", unit], timeout=20)
-        if "-- No entries --" in probe or not probe.strip():
-            probe = _exec(
-                ["journalctl", "--user", "--no-pager", "-n", str(lines), "-u", unit], timeout=20
-            )
-        store.add_action("any", "diag:journal", f"journalctl -u {unit} -n {lines}", True, "")
-        return probe
-    if priority:
-        argv += ["-p", priority]
-    out = _exec(argv, timeout=20)
-    store.add_action("any", "diag:journal", " ".join(argv), True, "")
-    return out
+    backend = platforms.log_backend()
+    if backend == "journald":
+        argv = ["journalctl", "--no-pager", "-n", str(lines)]
+        if unit:
+            # try system unit first, fall back to user units
+            probe = _exec(["journalctl", "--no-pager", "-n", str(lines), "-u", unit], timeout=20)
+            if "-- No entries --" in probe or not probe.strip():
+                probe = _exec(
+                    ["journalctl", "--user", "--no-pager", "-n", str(lines), "-u", unit],
+                    timeout=20,
+                )
+            store.add_action("any", "diag:journal", f"journalctl -u {unit} -n {lines}", True, "")
+            return probe
+        if priority:
+            argv += ["-p", priority]
+        out = _exec(argv, timeout=20)
+        store.add_action("any", "diag:journal", " ".join(argv), True, "")
+        return out
+    if backend == "unified_log":  # macOS
+        argv = ["log", "show", "--last", "15m", "--style", "compact"]
+        if unit:
+            argv += ["--predicate", f'process == "{unit}"']
+        elif priority in ("err", "error", "crit", "critical"):
+            argv += ["--predicate", 'messageType == "error" || messageType == "fault"']
+        out = _exec(argv, timeout=30)
+        out = "\n".join(out.splitlines()[-lines:])
+        store.add_action("any", "diag:journal", " ".join(argv), True, "")
+        return out
+    if backend == "windows_event_log":  # pragma: no cover (Windows only)
+        channel = "System"
+        argv = ["wevtutil", "qe", channel, f"/c:{lines}", "/rd:true", "/f:text"]
+        if priority in ("err", "error", "crit", "critical"):
+            argv.append("/q:*[System[(Level=1 or Level=2)]]")
+        out = _exec(argv, timeout=30)
+        store.add_action("any", "diag:journal", " ".join(argv), True, "")
+        return out
+    return ("(no system log reader available on this platform — looked for "
+            "journalctl, log, wevtutil)")
 
 
 def service_status(store: Store, unit: str) -> str:
-    """systemctl status for a unit (system scope, then user scope)."""
-    out = _exec(["systemctl", "status", unit, "--no-pager", "-n", "10"])
-    if "could not be found" in out or "Unit" in out and "not found" in out:
-        out_user = _exec(["systemctl", "--user", "status", unit, "--no-pager", "-n", "10"])
-        if "could not be found" not in out_user:
-            out = "[user scope]\n" + out_user
-    store.add_action("any", "diag:service", f"systemctl status {unit}", True, "")
-    return out
+    """Service status: systemctl / launchctl / sc query, per platform."""
+    plat = platforms.current_platform()
+    if plat == "linux" and platforms.has("systemctl"):
+        out = _exec(["systemctl", "status", unit, "--no-pager", "-n", "10"])
+        if "could not be found" in out or "Unit" in out and "not found" in out:
+            out_user = _exec(["systemctl", "--user", "status", unit, "--no-pager", "-n", "10"])
+            if "could not be found" not in out_user:
+                out = "[user scope]\n" + out_user
+        store.add_action("any", "diag:service", f"systemctl status {unit}", True, "")
+        return out
+    if plat == "macos" and platforms.has("launchctl"):
+        uid = os.getuid() if hasattr(os, "getuid") else 501
+        out = _exec(["launchctl", "print", f"gui/{uid}/{unit}"], timeout=15)
+        if "could not find" in out.lower() or "error" in out.lower()[:80]:
+            out = _exec(["launchctl", "print", f"system/{unit}"], timeout=15)
+        store.add_action("any", "diag:service", f"launchctl print .../{unit}", True, "")
+        return _clip(out, 4000)
+    if plat == "windows":  # pragma: no cover (Windows only)
+        out = _exec(["sc", "query", unit], timeout=15)
+        store.add_action("any", "diag:service", f"sc query {unit}", True, "")
+        return out
+    return "(no service manager available on this platform)"
+
+
+def _py_disk_tree(root: Path, depth: int) -> list[tuple[int, str]]:
+    """Pure-Python du fallback: [(bytes, path)] for dirs up to `depth` under root."""
+    sizes: dict[Path, int] = {}
+
+    def walk(d: Path, level: int) -> int:
+        total = 0
+        try:
+            with os.scandir(d) as it:
+                for entry in it:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                        elif entry.is_dir(follow_symlinks=False):
+                            total += walk(Path(entry.path), level + 1)
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        if level <= depth:
+            sizes[d] = total
+        return total
+
+    walk(root, 0)
+    return sorted(((s, str(p)) for p, s in sizes.items()), reverse=True)
+
+
+def _human(nbytes: int) -> str:
+    for unit in ("B", "K", "M", "G", "T"):
+        if nbytes < 1024 or unit == "T":
+            return f"{nbytes:.1f}{unit}" if unit != "B" else f"{nbytes}B"
+        nbytes /= 1024
+    return f"{nbytes:.1f}T"
 
 
 def disk_tree(store: Store, path: str = "/", depth: int = 1) -> str:
-    """Largest directories under a path (du, bounded)."""
+    """Largest directories under a path (du where available, Python walk elsewhere)."""
     p = str(Path(path).expanduser())
     depth = max(1, min(int(depth), 3))
-    out = _exec(["du", "-x", "-h", f"--max-depth={depth}", p], timeout=60)
-    lines = out.splitlines()
+    if platforms.has("du") and not platforms.is_windows():
+        out = _exec(["du", "-x", "-h", f"--max-depth={depth}", p], timeout=60)
+        lines = out.splitlines()
 
-    def size_key(ln: str) -> float:
-        tok = ln.split("\t")[0] if "\t" in ln else ln.split()[0] if ln.split() else "0"
-        mult = {"K": 1, "M": 1024, "G": 1024**2, "T": 1024**3}
-        try:
-            if tok[-1] in mult:
-                return float(tok[:-1]) * mult[tok[-1]]
-            return float(tok)
-        except (ValueError, IndexError):
-            return 0.0
+        def size_key(ln: str) -> float:
+            tok = ln.split("\t")[0] if "\t" in ln else ln.split()[0] if ln.split() else "0"
+            mult = {"K": 1, "M": 1024, "G": 1024**2, "T": 1024**3}
+            try:
+                if tok[-1] in mult:
+                    return float(tok[:-1]) * mult[tok[-1]]
+                return float(tok)
+            except (ValueError, IndexError):
+                return 0.0
 
-    top = sorted(lines, key=size_key, reverse=True)[:20]
-    store.add_action("any", "diag:disk", f"du --max-depth={depth} {p}", True, "")
-    return "\n".join(top)
+        top = sorted(lines, key=size_key, reverse=True)[:20]
+        store.add_action("any", "diag:disk", f"du --max-depth={depth} {p}", True, "")
+        return "\n".join(top)
+    # Windows / du-less fallback
+    rows = _py_disk_tree(Path(p), depth)[:20]
+    store.add_action("any", "diag:disk", f"pydu depth={depth} {p}", True, "")
+    return "\n".join(f"{_human(s)}\t{d}" for s, d in rows) or "(empty or unreadable)"
 
 
 def net_listeners(store: Store) -> str:
-    """Listening sockets with owning processes."""
-    out = _exec(["ss", "-tulnpH"])
-    store.add_action("any", "diag:net", "ss -tulnpH", True, "")
-    return out
+    """Listening sockets with owning processes (ss on Linux, psutil elsewhere)."""
+    if platforms.is_linux() and platforms.has("ss"):
+        out = _exec(["ss", "-tulnpH"])
+        store.add_action("any", "diag:net", "ss -tulnpH", True, "")
+        return out
+    rows = ["proto  local address          pid    process"]
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, OSError) as e:
+        return f"(cannot enumerate sockets: {e})"
+    seen = set()
+    for c in conns:
+        is_listener = (str(c.status) == "LISTEN") or (c.type == 2 and not c.raddr)
+        if not is_listener or not c.laddr:
+            continue
+        proto = "tcp" if c.type == 1 else "udp"
+        name = ""
+        if c.pid:
+            try:
+                name = psutil.Process(c.pid).name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                name = "?"
+        key = (proto, c.laddr.ip, c.laddr.port, c.pid)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(f"{proto:<6} {c.laddr.ip}:{c.laddr.port:<15} {c.pid or '-':<6} {name}")
+    store.add_action("any", "diag:net", "psutil.net_connections", True, "")
+    return "\n".join(rows)
 
 
 def proc_top(store: Store, sort: str = "cpu", n: int = 15) -> str:
-    """Top processes by cpu or mem."""
-    key = "-pcpu" if sort != "mem" else "-pmem"
-    out = _exec(["ps", "aux", f"--sort={key}"], timeout=15)
-    lines = out.splitlines()[: int(n) + 1]
-    store.add_action("any", "diag:proc", f"ps aux --sort={key}", True, "")
-    return "\n".join(lines)
+    """Top processes by cpu or mem (psutil — identical output on every OS)."""
+    n = max(1, min(int(n), 50))
+    procs = []
+    for p in psutil.process_iter(["pid", "name", "username", "cpu_percent",
+                                  "memory_percent", "cmdline"]):
+        try:
+            procs.append(p.info)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    key = "memory_percent" if sort == "mem" else "cpu_percent"
+    procs.sort(key=lambda x: x.get(key) or 0, reverse=True)
+    rows = [f"{'PID':>7} {'CPU%':>6} {'MEM%':>6} {'USER':<12} NAME"]
+    for p in procs[:n]:
+        cmd = " ".join(p.get("cmdline") or [])[:60] or (p.get("name") or "?")
+        rows.append(f"{p['pid']:>7} {p.get('cpu_percent') or 0:>6.1f} "
+                    f"{p.get('memory_percent') or 0:>6.1f} "
+                    f"{(p.get('username') or '?')[:12]:<12} {cmd}")
+    store.add_action("any", "diag:proc", f"proc_top sort={sort}", True, "")
+    return "\n".join(rows)
 
 
 def fix_action(store: Store, command: str, tier: str, confirm_fn=None) -> str:
@@ -144,18 +263,22 @@ TOOL_SPECS = [
     {
         "name": "run_diag",
         "args": {"command": "string — one read-only diagnostic command (no pipes/chaining)"},
-        "desc": "Run an allowlisted read-only shell diagnostic (systemctl status, journalctl, ss, df, du, ps, free, dmesg, docker ps, nvidia-smi, smartctl...).",
+        "desc": "Run an allowlisted read-only shell diagnostic (systemctl status, journalctl, "
+                "ss, df, du, ps, free, dmesg, docker ps, nvidia-smi, smartctl on Linux; "
+                "launchctl, log show, vm_stat on macOS; tasklist, sc query, schtasks, netstat "
+                "on Windows).",
     },
     {
         "name": "read_logs",
-        "args": {"unit": "string (optional) — systemd unit", "lines": "int (default 50)",
+        "args": {"unit": "string (optional) — service/process name", "lines": "int (default 50)",
                  "priority": "string (optional) — e.g. 'err' or 'warning'"},
-        "desc": "Read recent journald lines, optionally scoped to one unit or minimum priority.",
+        "desc": "Read recent system logs (journald / macOS unified log / Windows event log), "
+                "optionally scoped to one unit/process or minimum priority.",
     },
     {
         "name": "service_status",
-        "args": {"unit": "string — systemd unit name"},
-        "desc": "Get systemctl status for a unit (checks system then user scope).",
+        "args": {"unit": "string — service name"},
+        "desc": "Get service status (systemctl on Linux, launchctl on macOS, sc on Windows).",
     },
     {
         "name": "disk_tree",
