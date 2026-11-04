@@ -1,5 +1,44 @@
 # wrench — build progress
 
+## 2026-11-04 ~02:30 — PROVIDER MENU + OLLAMA GUIDED LOCAL SETUP (shipped)
+
+Christopher's explicit ask from the v0.2.0 pass, now done end-to-end:
+
+- **`wrench init` provider menu** (TTY): meta (enter = default) / openai /
+  anthropic / ollama (guided) / lmstudio / litellm. No TTY/CI → meta + note.
+  Scripting: `--provider/--model/--yes`. Install scripts offer `wrench init`
+  at the end when a real terminal exists (install.sh reads /dev/tty).
+- **Ollama guided setup**: detects RAM (psutil) + NVIDIA VRAM (nvidia-smi) +
+  Apple Silicon unified memory; recommends a tool-calling tier —
+  qwen2.5 1.5b/3b/7b/14b (non-thinking, CPU-sane) and qwen3:30b MoE for
+  24GB+ GPUs (tags + tools capability verified on ollama.com 2026-11-04);
+  consented install (official installer per OS) + `ollama pull`; finishes with
+  a REAL tool-calling smoke test through the agent loop (≥1 tool dispatch
+  required) and reports pass/fail honestly in the init panel.
+- **Hardening found by live CPU testing on this box** (qwen2.5-3b-cpu variant,
+  num_gpu 0 — GPU tenants untouched, verified via nvidia-smi before/after):
+  1. 180s HTTP timeout killed thinking models mid-reasoning → 600s for
+     ollama/lmstudio.
+  2. qwen3-family on CPU burns its whole 4k budget thinking (~7 min/turn,
+     measured 10 t/s) → thinking families route via ollama native /api/chat
+     with think:false; CPU tiers recommend non-thinking qwen2.5.
+  3. Smoke probe must be unanswerable from context (model cheated off the
+     system prompt's OS line) → probe = quote `date +%s` output.
+  4. qwen2.5:3b emits `{"action":"run_diag"}` (tool name in action field) →
+     agent normalizes the shape. **Final live smoke: PASS in 6.6s** (menu →
+     config → baseline → 1 real tool call → answer), 100% CPU, 0 GPU.
+- **Tests: 106 pass** (70 existing + 36 new: recommendation table with mocked
+  RAM/VRAM/Apple, detection failure paths, per-OS installer commands, smoke
+  gating, menu flow with mocked TTY, protocol normalization).
+- Docs: README menu walkthrough + hardware→model table + local-mode story;
+  site tabnote + tutorial init now plays the menu. Meta stays the default
+  everywhere (hackathon).
+- ⚠ Two sessions edited this repo concurrently tonight (this one + the
+  hackathon-compliance pass, 395060f). Reconciled: compliance commit kept,
+  its in-flight localsetup draft superseded by this implementation; its
+  tutorial.js menu frames + README blockquote folded into the docs commit.
+- No Meta tokens burned this pass (all live testing on local Ollama).
+
 ## 2026-11-04 ~02:00 — MAJOR UPGRADE PASS (v0.2.0)
 
 Three workstreams, all pushed to main and verified live:
@@ -45,7 +84,7 @@ Three workstreams, all pushed to main and verified live:
 ### Pending
 - [ ] Native macOS smoke test (install, doctor, status, drift, install-service)
 - [ ] Native Windows smoke test (same)
-- [ ] Ollama provider live test (GPUs still pinned)
+- [x] Ollama provider live test — DONE 2026-11-04 (guided setup + real tool-calling smoke, CPU-pinned model, GPUs untouched)
 
 
 Deadline: 2026-11-04 ~14:00 PST. Builder notes for the orchestrator.
