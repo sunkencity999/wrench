@@ -122,8 +122,8 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
   <h1>Nobody is watching your machine.<br>Now something is<span class="blink">▌</span></h1>
   <p class="sub">Disks fill silently. Services die at 3 a.m. Configs drift. When something finally
      breaks, you reconstruct history from scraps. <b>wrench</b> is an AI sysadmin that lives on the
-     box: it <b>senses</b> continuously, <b>remembers</b> every change, <b>explains</b> problems in
-     plain English — and asks before touching anything.</p>
+     box — in its own words: <i>"I read the logs so you don't have to. I remember what changed.
+     And with your permission, I fix problems before you ever see them."</i></p>
   <div class="ctas">
     <a class="btn primary" href="#tutorial">▶ Try the 60-second tour</a>
     <a class="btn" href="https://github.com/sunkencity999/wrench">View on GitHub</a>
@@ -169,6 +169,11 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       <p>On a schedule, wrench reviews sensors, anomalies, and drift; investigates; and files a
       report you'll actually read: <b>ok / attention / critical</b>, findings with evidence, exact
       fixes. Terminal, styled HTML, and dashboard — same facts everywhere.</p></div>
+    <div class="card"><span class="ico">🔧</span><h3>Fix</h3>
+      <p><code>wrench fixxer</code> finds what's correctable — pending updates, orphaned packages,
+      fat logs, bloated caches, failed services — and applies the fixes <b>you pick</b>, verifying
+      each one. Every command comes from a <b>hand-written catalog</b>; the model explains and
+      recommends, it never writes the shell. Consent-gated auto mode for self-healing boxes.</p></div>
   </div>
 </div></section>
 
@@ -255,7 +260,9 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
   <h2>The leash</h2>
   <p class="lead">An agent that can touch your system needs a leash you control. wrench's whole
     permission model is one line of config. Mutations are no-shell, allowlisted, and logged —
-    and a forbidden-pattern list blocks the scary stuff at <b>every</b> tier.</p>
+    and a forbidden-pattern list blocks the scary stuff at <b>every</b> tier. <code>fixxer</code>
+    auto mode adds its own locks: an explicit consent ceremony, safe-tier default scope, and a
+    per-action audit log with rollback hints.</p>
   <div class="tiers">
     <div class="tier"><code>observe</code><span>look, never touch, never even suggest commands</span></div>
     <div class="tier"><code>suggest</code><span>default — diagnose and propose exact fixes; never executes</span></div>

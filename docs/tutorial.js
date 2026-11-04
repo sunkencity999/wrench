@@ -22,9 +22,14 @@
         { t: "wrote ~/.config/wrench/config.toml", cls: "c-ok" },
         { t: "recording first sensor sample + drift baseline...", cls: "c-dim" },
         { t: "╭──────────────────── 🔧 wrench initialized ────────────────────╮", cls: "c-ok" },
+        { t: "│ I'm wrench — your systems administrator. I live here now.    │", cls: "c-ok" },
+        { t: "│ I read the logs so you don't have to, I remember what        │", cls: "c-ok" },
+        { t: "│ changes on this box, and with your permission I fix problems │", cls: "c-ok" },
+        { t: "│ before you ever see them.                                     │", cls: "c-ok" },
+        { t: "│                                                               │", cls: "c-ok" },
         { t: "│ provider: meta · model: muse-spark-1.3 · policy: suggest      │", cls: "c-ok" },
         { t: "│ data: ~/.local/share/wrench/wrench.db                         │", cls: "c-ok" },
-        { t: "│ next: wrench doctor · wrench patrol · wrench web              │", cls: "c-ok" },
+        { t: "│ put me to work: doctor · patrol · fixxer · web                │", cls: "c-ok" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
         { t: "wrench now knows what \"normal\" looks like. (Option 4 runs a guided local setup: it detects your RAM/GPU, recommends a tool-calling model, pulls it with consent, and smoke-tests the loop.)", cls: "c-dim", note: true }
       ]
@@ -75,7 +80,7 @@
       label: "4 · wrench patrol",
       cmd: "wrench patrol",
       out: [
-        { t: "patrolling with muse-spark-1.3 (tier: suggest)...", cls: "c-dim" },
+        { t: "I'm on patrol — sweeping sensors, drift, and logs (muse-spark-1.3, tier: suggest)...", cls: "c-dim" },
         { t: "  ⚙ run_diag {\"command\": \"systemctl --user list-units --state=failed\"}", cls: "c-cyan" },
         { t: "  ⚙ read_logs {\"unit\": \"smartd\", \"lines\": 60}", cls: "c-cyan" },
         { t: "  ⚙ run_diag {\"command\": \"smartctl -H /dev/sda\"}", cls: "c-cyan" },
@@ -93,6 +98,39 @@
         { t: "│   sudo smartctl -a /dev/sda · sudo apt install mailutils      │", cls: "c-mag" },
         { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-warn" },
         { t: "This is a real finding from wrench's first day: a dying disk whose alert pipeline was ALSO broken. Nobody would have known. wrench install-service makes this run every 15 minutes, forever.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "fixxer",
+      label: "5 · wrench fixxer",
+      cmd: "wrench fixxer",
+      out: [
+        { t: "I'm going through the box looking for things I can fix myself...", cls: "c-dim" },
+        { t: "                 🔧 correctable issues I found", cls: "c-acc" },
+        { t: " #   risk      fix                        evidence", cls: "c-dim" },
+        { t: " 1   safe      Shrink journald logs       journald uses 4096 MB — vacuum to 500M", cls: "c-ok" },
+        { t: " 2   safe      Clear package cache        apt archives hold 2015 MB of old .debs", cls: "c-ok" },
+        { t: " 3   moderate  Apply pending updates      242 packages upgradable (3 security)", cls: "c-warn" },
+        { t: " 4   moderate  Remove orphaned packages   3 removable, incl. 1 old kernel", cls: "c-warn" },
+        { t: "╭──────────────────────────── 🔧 wrench ────────────────────────────╮", cls: "c-acc" },
+        { t: "│ I'd start with 1 and 2 — both are safe-tier housekeeping:     │", cls: "" },
+        { t: "│ 6 GB back, nothing changes behavior. 3 is worth doing soon    │", cls: "" },
+        { t: "│ (3 security patches) but it's 'moderate': package versions    │", cls: "" },
+        { t: "│ move. 4 includes an old kernel — fine to remove, apt keeps    │", cls: "" },
+        { t: "│ your running one. Your call; nothing happens until you pick.  │", cls: "" },
+        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "apply which? [a]ll / [n]one / numbers e.g. 1,3 ▸ 1,2", cls: "c-cyan" },
+        { t: "⚙ Shrink journald logs (safe)", cls: "c-cyan" },
+        { t: "  $ sudo journalctl --vacuum-size=500M", cls: "c-dim" },
+        { t: "  ✓ fixed + verified · 3.4s · journald now uses 488 MB", cls: "c-ok" },
+        { t: "⚙ Clear package download cache (safe)", cls: "c-cyan" },
+        { t: "  $ sudo apt-get clean", cls: "c-dim" },
+        { t: "  ✓ fixed + verified · 0.8s · apt cache now 0 MB", cls: "c-ok" },
+        { t: "╭─────────────────────────── 🔧 fixxer report ──────────────────────╮", cls: "c-ok" },
+        { t: "│ 2 fixed + verified                                            │", cls: "c-ok" },
+        { t: "│ every action is in the audit log: fixxer_audit.jsonl          │", cls: "c-ok" },
+        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
+        { t: "The fixes are real; the authorship is the point. Every command came from a hand-written, risk-tiered catalog — the model (muse-spark) explains and recommends, it never writes the shell. For self-healing boxes, `wrench fixxer --auto` applies safe-tier fixes unattended — after an explicit consent ceremony, with every action audited. `--dry-run` shows what it would do.", cls: "c-dim", note: true }
       ]
     }
   ];
