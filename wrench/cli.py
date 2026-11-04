@@ -249,10 +249,11 @@ def web(
     store.close()
     port = port or cfg.web_port
     httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
-                  bind=bind, sample_thread=not no_sample)
+                  bind=bind, sample_thread=not no_sample, cfg=cfg)
     console.print(Panel(
         f"dashboard live at [bold bright_blue]http://{bind}:{port}[/bold bright_blue]\n"
-        f"[dim]sampling every 30s in the background · Ctrl-C to stop[/dim]",
+        f"[dim]sampling every 30s in the background · 🔧 chat bubble bottom-right · "
+        f"press ? for shortcuts · Ctrl-C to stop[/dim]",
         border_style="bright_blue", title="🔧 wrench web"))
     try:
         httpd.serve_forever()
