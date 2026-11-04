@@ -87,6 +87,14 @@ Real patrol reports from the dev box live in [`examples/`](examples/) — every
 one also lands as a styled, self-contained [HTML report](examples/) and a row
 in the dashboard's patrol feed.
 
+## The dashboard
+
+`wrench web` — live vitals, 24h timelines, patrol feed, drift feed, action log,
+and a token-spend widget, all rendered from the same SQLite store the agent
+writes to. Zero build step, zero CDN, one file.
+
+![wrench dashboard](docs/assets/dashboard.png)
+
 ## Commands
 
 | command | what it does |
