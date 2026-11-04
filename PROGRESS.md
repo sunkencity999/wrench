@@ -1,5 +1,53 @@
 # wrench — build progress
 
+## 2026-11-04 ~02:00 — MAJOR UPGRADE PASS (v0.2.0)
+
+Three workstreams, all pushed to main and verified live:
+
+### 1. Cross-platform (Linux / macOS / Windows)
+- New `wrench/platforms.py` abstraction: OS identity, per-OS config/data dirs
+  (XDG / `~/Library/Application Support` / `%APPDATA%`+`%LOCALAPPDATA%`),
+  capability detection (service manager, log backend).
+- New `wrench/scheduler.py`: `install-service` targets systemd / launchd plist /
+  schtasks per OS, plus `--uninstall`. Plan/apply split for testability.
+- driftscan, tools, sensors, policy all platform-dispatched: psutil-first core,
+  OS-native tools as graceful enrichers (unified log, wevtutil, launchctl,
+  sc/schtasks/tasklist, brew/pacman/apk, pure-Python du fallback).
+- `tests/`: **70 unit tests**, all platform branches covered with mocks. All pass.
+- `scripts/install.sh` (curl|bash) + `scripts/install.ps1` (irm|iex).
+- **PLATFORMS.md** support matrix. HONESTY: Linux = tested end-to-end;
+  macOS/Windows = implemented + unit-tested, **need native smoke tests**.
+  Do not claim mac/win tested anywhere public.
+
+### 2. README rewrite (first principles)
+- Sells the problem to a stranger (silent degradation, no change memory);
+  no references to predecessor tools as known things.
+- sense/remember/explain/patrol framing, per-OS quickstart, full CLI tour with
+  real sanitized outputs in <details>, patrol anatomy + failing-disk incident
+  story, provider setup, mermaid architecture diagram (renders on GitHub), FAQ.
+- 2 new real GIFs (asciinema+agg, casts sanitized pre-render):
+  docs/assets/status.gif (25K), docs/assets/ask.gif (171K).
+
+### 3. Site rewrite (docs/ → Pages)
+- First-principles hero + problem cards + feature cards + case study +
+  OS-tabbed install snippets.
+- **Interactive tutorial**: simulated terminal in vanilla JS (docs/tutorial.js),
+  plays init→status→ask→patrol with typing animation + real canned output.
+  Verified in a real browser locally AND on the live Pages deploy: 0 console
+  errors, all steps play.
+
+### Verified after push (2026-11-04 ~01:55 PST)
+- Pages 200 + new content live; tutorial.js 200; GIFs/raw installers 200.
+- GitHub README renders (mermaid container present, GIFs embedded).
+- Fresh venv `pip install git+.../wrench` → wrench 0.2.0, drift works.
+- Local pipx reinstall → `wrench status` clean; wrench-patrol.timer still active.
+
+### Pending
+- [ ] Native macOS smoke test (install, doctor, status, drift, install-service)
+- [ ] Native Windows smoke test (same)
+- [ ] Ollama provider live test (GPUs still pinned)
+
+
 Deadline: 2026-11-04 ~14:00 PST. Builder notes for the orchestrator.
 
 ## 2026-11-03 ~20:20 — ALL PHASES FUNCTIONALLY COMPLETE
