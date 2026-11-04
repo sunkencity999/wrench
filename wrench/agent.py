@@ -82,6 +82,7 @@ class Agent:
 
         steps: list[dict] = []
         tokens = 0
+        nudged_prose = False
         for step_i in range(max_steps + 1):
             force_final = step_i == max_steps
             if force_final:
@@ -98,13 +99,19 @@ class Agent:
             obj = extract_json(raw)
             if obj is None or "action" not in obj:
                 # Looks like it meant to follow the protocol but flubbed it — nudge.
-                if ('"action"' in raw or raw.lstrip().startswith("{")) and not force_final:
+                looks_jsonish = '"action"' in raw or raw.lstrip().startswith("{")
+                # Prose with zero investigation is usually stated *intent*, not an
+                # answer ("I'll check your disk..."). One nudge back to the rails.
+                premature_prose = not steps and not nudged_prose and len(raw) < 400
+                if (looks_jsonish or premature_prose) and not force_final:
+                    nudged_prose = nudged_prose or premature_prose
                     messages.append({"role": "assistant", "content": raw})
                     messages.append({
                         "role": "user",
-                        "content": "Protocol violation: reply with exactly ONE valid JSON "
-                                   'object ({"action":"tool",...} or {"action":"final",...}) '
-                                   "and no other text.",
+                        "content": "Protocol reminder: reply with exactly ONE valid JSON "
+                                   'object — {"action":"tool",...} to gather data, or '
+                                   '{"action":"final","answer":"..."} with your complete '
+                                   "answer. No other text.",
                     })
                     continue
                 # Plain prose answer — accept as final.
