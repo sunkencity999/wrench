@@ -2,26 +2,39 @@
 
 Deadline: 2026-11-04 ~14:00 PST. Builder notes for the orchestrator.
 
-## 2026-11-03 ~20:00 — Phases A–C complete + pushed
-- Repo live: https://github.com/sunkencity999/wrench (main)
-- Meta API verified live. Gotcha discovered: muse-spark-1.3 / muse-wonder-1.0 are
-  reasoning models — ~350+ hidden reasoning tokens even on trivial prompts, so
-  max_tokens must be generous (default 6144) or content comes back null.
-  Key = the FULL pipe-delimited string from the credentials file.
-- All modules written: config, store (sqlite: samples/baselines/anomalies/snapshots/
-  diffs/patrols/actions/tokens), providers (meta/openai/anthropic native/ollama/
-  lmstudio/litellm), sensors (os/docker/gpu + EWMA z-score anomalies), driftscan
-  (ports/services/packages/users/cron), policy (4 tiers + allowlists + forbidden
-  patterns, no shell chaining), tools (7 agent tools, no-shell exec), agent
-  (JSON-protocol tool loop, works on any provider), report (rich terminal + HTML),
-  webapp (stdlib server + dark dashboard), cli (all 12 commands).
-- Verified on Devbox2: pipx install -e ✔, status ✔, doctor ✔ (meta ping pong ✔),
-  drift baseline ✔, **first real patrol ✔** — muse-spark-1.3, 8 tool calls, 57k
-  tokens, 120s, status=attention with genuinely useful findings.
-- `wrench web` serves; all 6 /api/* endpoints return real data.
+## 2026-11-03 ~20:20 — ALL PHASES FUNCTIONALLY COMPLETE
 
-## Remaining
-- [x] Phase D polish (dashboard verified via curl; screenshot for README)
-- [ ] Phase E: README (muse-wonder drafted), docs/ Pages site, demo GIF (asciinema+agg),
-      2-3 sanitized sample patrol reports, token-burn log
-- [ ] install-service test, more live patrols/asks (burn credits), final verify pass
+**Repo:** https://github.com/sunkencity999/wrench (main, pushed)
+**Pages:** https://sunkencity999.github.io/wrench/ → **200** (landing + dashboard.png + demo.gif all serve)
+
+### Verified working on Devbox2
+- `pipx install -e .` ✔ · `wrench version/status/doctor/drift/ask/chat/explain/patrol/web/init/install-service/report` all exercised live ✔
+- Meta provider live: muse-spark-1.3 (patrols/asks), muse-wonder-1.0 (--deep). Both reasoning
+  models — max_tokens 6144 default. Key = full pipe-delimited string, read via api_key_file.
+- 3 real patrols stored (2 spark, 1 wonder-deep). Deep patrol found: /dev/sda pending sectors,
+  PCIe AER errors, broken smartd mail, blocked sudo probes. Genuinely useful output.
+- `wrench install-service` → wrench-patrol.timer every 30min; first scheduled run exit 0,
+  46.7k tokens. Timer left ENABLED to keep feeding the dashboard until the deadline.
+- `wrench web` dashboard verified in a real browser: vitals gauges, 4 SVG timelines, patrol
+  feed, drift feed, action log, token-spend widget. Screenshot (host=devbox) in docs/assets/.
+- 2 sanitized HTML patrol reports in examples/ (sanitizer with leak-check: scripts/sanitize_report.py).
+- Agent-loop hardening from live testing: (1) nudge on malformed protocol JSON, (2) nudge on
+  premature prose intent ("I'll check...") with 0 tool calls — both verified fixed.
+- Token burn so far: **~354k tokens / 69 calls** (see reports/state/wrench_hackathon_tokens.md).
+
+### In flight
+- scripts/demo_batch.sh running: 12 varied ask/explain calls (spark + wonder) → transcripts
+  in .wrench-dev/demo_transcripts/ (will sanitize 2-3 into examples/).
+- wrench-patrol.timer keeps patrolling every 30min.
+
+### Remaining before deadline
+- [ ] Sanitize + commit 1-2 text transcripts from the batch (examples/)
+- [ ] Ollama provider live test — DEFERRED while GPUs are pinned by the P-H3 trial
+      (ollama would want VRAM). Code-complete; graceful-error path verified. Test if GPUs free up.
+- [ ] Final verify sweep: fresh pipx install from GitHub, README render check, Pages check
+- [ ] Update token log with final totals
+
+### Known notes
+- Port 8787 is taken on Devbox2 by an unrelated service → use `wrench web --port 8790` here.
+  (Default stays 8787 for the public tool; config web_port handles it.)
+- muse models: ~300-500 reasoning tokens before any content; never set max_tokens < 2000.
