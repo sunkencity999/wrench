@@ -155,8 +155,10 @@ def test_choose_provider_default_enter_is_meta():
 
 
 @pytest.mark.parametrize("entry,expected", [
-    ("4", "ollama"),
+    ("5", "ollama"),
     ("ollama", "ollama"),
+    ("4", "azure"),
+    ("azure", "azure"),
     ("2", "openai"),
     ("ANTHROPIC", "anthropic"),
     ("garbage", "meta"),   # unknown input falls back to meta with a warning

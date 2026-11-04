@@ -42,7 +42,8 @@ def _confirm(command: str, label: str) -> bool:
     return typer.confirm("run it?", default=False)
 
 
-PROVIDER_OPT = typer.Option(None, "--provider", "-p", help="meta|openai|anthropic|ollama|lmstudio|litellm")
+PROVIDER_OPT = typer.Option(None, "--provider", "-p",
+                            help="meta|openai|anthropic|azure|ollama|lmstudio|litellm")
 MODEL_OPT = typer.Option(None, "--model", "-m", help="model override")
 
 
@@ -295,6 +296,7 @@ PROVIDER_MENU = [
     ("meta", "Meta muse models — hosted, default"),
     ("openai", "OpenAI"),
     ("anthropic", "Anthropic Claude"),
+    ("azure", "Azure OpenAI / AI Foundry — enterprise"),
     ("ollama", "Ollama — local, private + free, guided setup"),
     ("lmstudio", "LM Studio — local server"),
     ("litellm", "LiteLLM — proxy to anything"),
@@ -319,7 +321,8 @@ def _choose_provider() -> str:
     for i, (name, blurb) in enumerate(PROVIDER_MENU, 1):
         t.add_row(str(i), name + (" (default)" if name == "meta" else ""), blurb)
     console.print(t)
-    raw = typer.prompt("provider [1-6 or name]", default="1", show_default=False).strip().lower()
+    raw = typer.prompt(f"provider [1-{len(PROVIDER_MENU)} or name]",
+                       default="1", show_default=False).strip().lower()
     names = [n for n, _ in PROVIDER_MENU]
     if raw.isdigit() and 1 <= int(raw) <= len(names):
         return names[int(raw) - 1]
@@ -401,12 +404,58 @@ def _ollama_guided_setup(interactive: bool, assume_yes: bool,
     return model
 
 
+def _azure_guided_setup(interactive: bool,
+                        endpoint: str | None,
+                        api_version: str | None,
+                        api_key: str | None,
+                        model: str | None) -> tuple[str, str, str | None, str | None]:
+    """Collect the Azure specifics (endpoint, api-version, optional key).
+    Returns (endpoint, api_version, api_key, model). Never echoes the key."""
+    import os
+    console.print(Panel(
+        "Two endpoint styles are accepted:\n"
+        "  [bold]Azure OpenAI[/bold]        https://<resource>.openai.azure.com\n"
+        "  [bold]AI Foundry serverless[/bold]  https://<name>.<region>.models.ai.azure.com\n"
+        "[dim]The model name below is your DEPLOYMENT name on Azure OpenAI.\n"
+        "Auth: the native api-key header is tried first; Bearer on 401 (auto).[/dim]",
+        border_style="cyan", title="☁ Azure OpenAI / AI Foundry"))
+    if not endpoint:
+        env_ep = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+        if interactive:
+            endpoint = typer.prompt("endpoint URL", default=env_ep or None).strip()
+        else:
+            endpoint = env_ep
+    if not endpoint:
+        console.print("[red]azure needs an endpoint — pass --azure-endpoint or set "
+                      "AZURE_OPENAI_ENDPOINT[/red]")
+        raise typer.Exit(1)
+    if interactive and not model:
+        model = typer.prompt("deployment / model name", default="gpt-4o-mini").strip()
+    if not api_version:
+        api_version = (typer.prompt("api-version", default="2024-10-21").strip()
+                       if interactive else "2024-10-21")
+    if not api_key and interactive and not os.environ.get("AZURE_OPENAI_API_KEY"):
+        entered = typer.prompt("API key (enter to skip — use AZURE_OPENAI_API_KEY env)",
+                               default="", show_default=False, hide_input=True).strip()
+        api_key = entered or None
+    return endpoint.rstrip("/"), api_version, api_key, model
+
+
 @app.command()
 def init(
     provider: str = typer.Option(None, "--provider", "-p",
-                                 help="meta|openai|anthropic|ollama|lmstudio|litellm "
+                                 help="meta|openai|anthropic|azure|ollama|lmstudio|litellm "
                                       "(omit for interactive menu)"),
     model: str = typer.Option(None, "--model", "-m", help="model tag override"),
+    azure_endpoint: str = typer.Option(None, "--azure-endpoint",
+                                       help="Azure endpoint URL (or AZURE_OPENAI_ENDPOINT)"),
+    azure_deployment: str = typer.Option(None, "--azure-deployment",
+                                         help="Azure deployment name (alias for --model)"),
+    azure_api_version: str = typer.Option(None, "--azure-api-version",
+                                          help="Azure api-version (default 2024-10-21)"),
+    api_key: str = typer.Option(None, "--api-key",
+                                help="write the API key into config.toml (chmod 600); "
+                                     "prefer the provider's env var"),
     yes: bool = typer.Option(False, "--yes", "-y",
                              help="non-interactive: accept defaults/recommendations "
                                   "(consents to ollama install + model pull)"),
@@ -414,6 +463,7 @@ def init(
 ):
     """Set up wrench: pick a provider (interactive menu), write config, record baselines."""
     interactive = _isatty() and not yes
+    model = model or azure_deployment
     if provider is None:
         if interactive:
             provider = _choose_provider()
@@ -434,7 +484,15 @@ def init(
     else:
         if provider == "ollama":
             model = _ollama_guided_setup(interactive, yes, model)
-        p = write_default_config(provider, model=model)
+        if provider == "azure":
+            azure_endpoint, azure_api_version, api_key, model = _azure_guided_setup(
+                interactive, azure_endpoint, azure_api_version, api_key, model)
+            p = write_default_config(provider, model=model,
+                                     azure_endpoint=azure_endpoint,
+                                     azure_api_version=azure_api_version,
+                                     api_key=api_key)
+        else:
+            p = write_default_config(provider, model=model)
         console.print(f"[green]wrote[/green] {p}")
     cfg, store = _ctx()
     with console.status("[cyan]recording first sensor sample + drift baseline..."):
@@ -464,11 +522,10 @@ def init(
         f"policy: [bold]{cfg.policy_tier}[/bold]\n"
         f"data: {cfg.db_path}{smoke_note}\n\n"
         "put me to work:\n"
-        + (""
-           if cfg.provider in ("ollama", "lmstudio")
-           else f"  1. export {_key_env(cfg.provider)}=...   (or set api_key_file in config)\n")
         + ("  1. (no API key needed — it's your hardware)\n"
-           if cfg.provider in ("ollama", "lmstudio") else "")
+           if cfg.provider in ("ollama", "lmstudio")
+           else "  1. (API key configured ✔)\n" if cfg.api_key
+           else f"  1. export {_key_env(cfg.provider)}=...   (or set api_key_file in config)\n")
         +
         "  2. wrench doctor      — verify everything\n"
         "  3. wrench patrol      — I'll sweep the box and report\n"
