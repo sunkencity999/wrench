@@ -50,8 +50,8 @@ PROVIDER_DEFAULTS = {
     },
     "ollama": {
         "base_url": "http://127.0.0.1:11434/v1",
-        "model": "llama3.1",
-        "deep_model": "llama3.1:70b",
+        "model": "qwen2.5:3b",    # tools-capable; guided setup picks a size for your hardware
+        "deep_model": "qwen2.5:7b",
         "key_env": "OLLAMA_API_KEY",  # usually unset; ollama needs none
         "max_tokens": 4096,
     },
@@ -175,15 +175,17 @@ web_port = 8787
 """
 
 
-def write_default_config(provider: str = "meta", interval: int = 15) -> Path:
+def write_default_config(provider: str = "meta", interval: int = 15,
+                         model: str | None = None,
+                         deep_model: str | None = None) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     d = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])
     CONFIG_PATH.write_text(
         DEFAULT_CONFIG_TOML.format(
             provider=provider,
             base_url=d["base_url"],
-            model=d["model"],
-            deep_model=d["deep_model"],
+            model=model or d["model"],
+            deep_model=deep_model or model or d["deep_model"],
             interval=interval,
         )
     )
