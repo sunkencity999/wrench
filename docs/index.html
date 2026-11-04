@@ -15,9 +15,20 @@ body { background:var(--bg); color:var(--fg);
 a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
 
 /* hero */
-.hero { text-align:center; padding:4.5rem 0 2.5rem;
+.hero { text-align:center; padding:4.5rem 0 2.5rem; position:relative; overflow:hidden;
   background:radial-gradient(ellipse 70% 50% at 50% 0%, #15233a 0%, var(--bg) 70%); }
-.hero .tool { font-size:3rem; }
+.hero .tool { font-size:3rem; position:relative; display:inline-block; animation:tool-in 1s ease-out; }
+@keyframes tool-in { from { opacity:0; transform:translateY(-14px) rotate(-30deg); } }
+.hero .gear { position:absolute; left:50%; top:3.1rem; width:110px; height:110px;
+  transform:translateX(-50%); border:2px dashed #24344e; border-radius:50%;
+  animation:gearspin 24s linear infinite; pointer-events:none; }
+.hero .gear.g2 { width:160px; height:160px; top:2.3rem; border-color:#1b2940;
+  animation-duration:40s; animation-direction:reverse; }
+@keyframes gearspin { to { transform:translateX(-50%) rotate(360deg); } }
+.hero .wrap > * { animation:rise .7s ease-out backwards; }
+.hero h1 { animation-delay:.08s } .hero .sub { animation-delay:.16s }
+.hero .ctas { animation-delay:.24s } .hero .platbadge { animation-delay:.32s }
+@keyframes rise { from { opacity:0; transform:translateY(16px); } }
 .hero h1 { font-size:clamp(1.7rem, 4.6vw, 2.8rem); margin:.4rem 0 .8rem; letter-spacing:-.02em; }
 .hero h1 .blink { animation:blink 1.2s step-end infinite; color:var(--accent); }
 @keyframes blink { 50% { opacity:0 } }
@@ -115,9 +126,69 @@ h2 { font-size:1.1rem; text-transform:uppercase; letter-spacing:.14em; color:var
 
 footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center;
   color:var(--dim); font-size:.85rem; }
+
+/* scroll reveal */
+.reveal { opacity:0; transform:translateY(22px); transition:opacity .6s ease, transform .6s ease; }
+.reveal.in { opacity:1; transform:none; }
+.cards .card { transition:opacity .6s ease, transform .6s ease, border-color .25s, box-shadow .25s; }
+.cards .card:hover { border-color:var(--accent); box-shadow:0 8px 30px #0006; transform:translateY(-3px); }
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity:1; transform:none; transition:none; }
+  .hero .gear, .hero .wrap > *, .hero .tool { animation:none !important; }
+}
+
+/* site chat teaser (simulated — the real one lives in `wrench web`) */
+#chat-fab { position:fixed; right:1.4rem; bottom:1.4rem; width:58px; height:58px;
+  border-radius:50%; background:var(--accent); color:#06101f; font-size:1.7rem; border:none;
+  cursor:pointer; box-shadow:0 10px 30px #000a; z-index:50; transition:transform .18s;
+  display:flex; align-items:center; justify-content:center; }
+#chat-fab:hover { transform:scale(1.08) rotate(-12deg); }
+#chat-panel { position:fixed; right:1.4rem; bottom:5.6rem; width:min(400px, calc(100vw - 2.8rem));
+  height:min(520px, calc(100vh - 8rem)); background:var(--panel); border:1px solid var(--border);
+  border-radius:16px; box-shadow:0 20px 60px #000c; z-index:51; display:none;
+  flex-direction:column; overflow:hidden; transform-origin:bottom right; }
+#chat-panel.open { display:flex; animation:chat-in .22s ease-out; }
+@keyframes chat-in { from { opacity:0; transform:scale(.88) translateY(12px); } }
+#chat-head { padding:.8rem 1rem; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:.6rem; font-size:.9rem; }
+#chat-head .t { font-weight:bold; } #chat-head .s { color:var(--dim); font-size:.72rem; }
+#chat-head button { margin-left:auto; background:none; border:none; color:var(--dim);
+  font-size:1.1rem; cursor:pointer; }
+#chat-log { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column;
+  gap:.7rem; font-size:.82rem; }
+.cmsg { max-width:88%; padding:.55rem .8rem; border-radius:12px; white-space:pre-wrap;
+  word-wrap:break-word; animation:msg-in .18s ease-out; }
+@keyframes msg-in { from { opacity:0; transform:translateY(6px); } }
+.cmsg.you { align-self:flex-end; background:var(--accent); color:#06101f;
+  border-bottom-right-radius:4px; }
+.cmsg.bot { align-self:flex-start; background:#0a0d12; border:1px solid var(--border);
+  border-bottom-left-radius:4px; }
+.cmsg.bot .meta { display:block; color:var(--dim); font-size:.68rem; margin-top:.35rem; }
+.cmsg.sys { align-self:center; color:var(--cyan); font-style:italic; font-size:.78rem;
+  text-align:center; background:none; }
+.typing { align-self:flex-start; display:flex; gap:.25rem; padding:.7rem .9rem; }
+.typing span { width:7px; height:7px; border-radius:50%; background:var(--dim);
+  animation:blinkdot 1.2s infinite; }
+.typing span:nth-child(2){ animation-delay:.2s } .typing span:nth-child(3){ animation-delay:.4s }
+@keyframes blinkdot { 0%,80%,100%{opacity:.25} 40%{opacity:1} }
+#chat-bar { padding:.7rem; border-top:1px solid var(--border); color:var(--dim);
+  font-size:.78rem; text-align:center; }
+#chat-bar a { font-weight:bold; }
+
+/* shortcuts overlay */
+#overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:60; display:none;
+  align-items:center; justify-content:center; }
+#overlay.open { display:flex; }
+#overlay .ocard { background:var(--panel); border:1px solid var(--border); border-radius:14px;
+  padding:1.4rem 1.8rem; box-shadow:0 20px 60px #000c; min-width:300px; }
+#overlay h3 { margin-bottom:.9rem; font-size:1rem; }
+#overlay .row { display:flex; justify-content:space-between; gap:2rem; padding:.3rem 0;
+  font-size:.86rem; color:var(--dim); }
+.kbd { border:1px solid var(--border); border-bottom-width:2px; border-radius:5px;
+  padding:0 .45em; font-size:.8rem; color:var(--fg); background:#0a0d12; }
 </style></head><body>
 
-<div class="hero"><div class="wrap">
+<div class="hero"><div class="gear"></div><div class="gear g2"></div><div class="wrap">
   <div class="tool">🔧</div>
   <h1>Nobody is watching your machine.<br>Now something is<span class="blink">▌</span></h1>
   <p class="sub">Disks fill silently. Services die at 3 a.m. Configs drift. When something finally
@@ -174,6 +245,11 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       fat logs, bloated caches, failed services — and applies the fixes <b>you pick</b>, verifying
       each one. Every command comes from a <b>hand-written catalog</b>; the model explains and
       recommends, it never writes the shell. Consent-gated auto mode for self-healing boxes.</p></div>
+    <div class="card"><span class="ico">🛰️</span><h3>Watch the horizon</h3>
+      <p><code>wrench cve</code> checks your installed packages against <b>OSV.dev</b> and your
+      OS/kernel/runtimes against <b>endoflife.date</b> — free public APIs, no keys. Known CVEs
+      land in patrols and the dashboard; <code>fixxer</code> can apply <b>targeted security
+      updates</b> for exactly the affected packages. Cached locally; patrols never fail offline.</p></div>
   </div>
 </div></section>
 
@@ -235,9 +311,10 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
 
 <section><div class="wrap">
   <h2>The dashboard</h2>
-  <p class="lead"><code>wrench web</code> — live vitals, 24h timelines, patrol + drift feeds, the agent's
-    action log, and a token-spend widget. All from one SQLite file. This is a real
-    screenshot from the dev box.</p>
+  <p class="lead"><code>wrench web</code> — live vitals, 24h timelines, patrol + drift + security-intel
+    feeds, the agent's action log, and a token-spend widget. All from one SQLite file — plus a
+    <b>live chat with the agent</b> (the 🔧 bubble, bottom-right — like the one on this page,
+    except real) and keyboard shortcuts (<span class="kbd">?</span> to see them, there and here).</p>
   <img src="assets/dashboard.png" alt="wrench web dashboard"
        style="width:100%;border:1px solid var(--border);border-radius:12px;box-shadow:0 20px 60px #0008">
 </div></section>
@@ -315,6 +392,25 @@ wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 mi
   </div>
 </div></section>
 
+<button id="chat-fab" title="chat with wrench (c)" aria-label="open the chat demo">🔧</button>
+<div id="chat-panel" role="dialog" aria-label="simulated wrench chat">
+  <div id="chat-head"><span>🔧</span><div><div class="t">wrench</div>
+    <div class="s">simulated replay — the real one lives on your machine</div></div>
+    <button id="chat-close" title="close (Esc)">✕</button></div>
+  <div id="chat-log"></div>
+  <div id="chat-bar">on your machine this chat is real —
+    <a href="#install">install</a> and run <b>wrench web</b></div>
+</div>
+
+<div id="overlay"><div class="ocard">
+  <h3>keyboard shortcuts</h3>
+  <div class="row"><span>chat demo</span><span class="kbd">c</span></div>
+  <div class="row"><span>run next tour step</span><span class="kbd">Enter</span></div>
+  <div class="row"><span>this overlay</span><span class="kbd">?</span></div>
+  <div class="row"><span>close panels</span><span class="kbd">Esc</span></div>
+  <div class="row" style="margin-top:.6rem"><span style="font-style:italic">the same keys work in <b>wrench web</b></span></div>
+</div></div>
+
 <footer><div class="wrap">
   <p>wrench — MIT-licensed, locally nosy, and it knocks before it touches anything.</p>
   <p style="margin-top:.6rem">
@@ -344,6 +440,94 @@ wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 mi
         setTimeout(function () { b.textContent = "copy"; }, 1500);
       }
     });
+  });
+})();
+</script>
+<script>
+// scroll reveal + shortcuts overlay + simulated chat (vanilla, tiny)
+(function () {
+  // reveal sections and cards as they enter the viewport
+  var targets = document.querySelectorAll("section .wrap, .cards .card, .case, .term, .tiers, .steps");
+  targets.forEach(function (el) { el.classList.add("reveal"); });
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          en.target.classList.add("in");
+          io.unobserve(en.target);
+        }
+      });
+    }, { threshold: 0.12 });
+    targets.forEach(function (el) { io.observe(el); });
+    // stagger cards inside the same grid
+    document.querySelectorAll(".cards").forEach(function (grid) {
+      Array.prototype.forEach.call(grid.children, function (c, i) {
+        c.style.transitionDelay = (i * 70) + "ms";
+      });
+    });
+  } else {
+    targets.forEach(function (el) { el.classList.add("in"); });
+  }
+
+  // ---- simulated chat ----
+  var panel = document.getElementById("chat-panel");
+  var log = document.getElementById("chat-log");
+  var played = false, chatTimers = [];
+  function clater(fn, ms) { chatTimers.push(setTimeout(fn, ms)); }
+  function cmsg(cls, text, meta) {
+    var d = document.createElement("div");
+    d.className = "cmsg " + cls;
+    d.textContent = text;
+    if (meta) { var m = document.createElement("span"); m.className = "meta";
+      m.textContent = meta; d.appendChild(m); }
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+    return d;
+  }
+  function typing() {
+    var t = document.createElement("div");
+    t.className = "typing";
+    t.innerHTML = "<span></span><span></span><span></span>";
+    log.appendChild(t); log.scrollTop = log.scrollHeight;
+    return t;
+  }
+  var SCRIPT = [
+    { who: "bot", text: "I'm wrench. I live here. Ask me anything about this machine — what's eating RAM, what changed overnight, whether that port should be open.", wait: 400 },
+    { who: "you", text: "what's eating RAM right now?", wait: 1300 },
+    { who: "bot", think: 2000, text: "Top consumer is an image-generation worker at 48 GB (72% of RAM) — started 14:02, still alive, not leaking: usage is flat. Next are two python services at ~2 GB each. Swap is 24% but stable; these are cold pages from last week's spike, not live pressure. Nothing to kill — but if you want headroom I'd pause the image worker.", meta: "muse-spark-1.3 · 3 tool calls · proc_top, run_diag, security_intel", wait: 1600 },
+    { who: "you", text: "any known CVEs on this box?", wait: 1400 },
+    { who: "bot", think: 2200, text: "Yes — my last OSV.dev scan (261 packages) flags aiohttp 3.13.3: 15 advisories, all fixed by 3.14.4, and two of your listeners run it on 0.0.0.0. That's my first fix. The kernel line also reached EOL in June — plan a supported upgrade. Run `wrench fixxer` and I'll stage the targeted security updates.", meta: "muse-spark-1.3 · security_intel + net_listeners", wait: 1200 },
+    { who: "sys", text: "⚡ this was a replay of a real session — on your machine, the chat is live", wait: 0 }
+  ];
+  function playChat(i) {
+    if (i >= SCRIPT.length) return;
+    var s = SCRIPT[i];
+    function show() {
+      cmsg(s.who, s.text, s.meta);
+      clater(function () { playChat(i + 1); }, s.wait || 800);
+    }
+    if (s.think) {
+      var t = typing();
+      clater(function () { t.remove(); show(); }, s.think);
+    } else { show(); }
+  }
+  function toggleChat(open) {
+    var want = open !== undefined ? open : !panel.classList.contains("open");
+    panel.classList.toggle("open", want);
+    if (want && !played) { played = true; playChat(0); }
+  }
+  window.wrenchChatDemo = function () { toggleChat(true); };
+  document.getElementById("chat-fab").addEventListener("click", function () { toggleChat(); });
+  document.getElementById("chat-close").addEventListener("click", function () { toggleChat(false); });
+
+  // ---- shortcuts overlay + keys ----
+  var overlay = document.getElementById("overlay");
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.classList.remove("open"); });
+  document.addEventListener("keydown", function (e) {
+    var tag = (document.activeElement && document.activeElement.tagName) || "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "?") { overlay.classList.toggle("open"); e.preventDefault(); }
+    else if (e.key === "c") { toggleChat(); e.preventDefault(); }
+    else if (e.key === "Escape") { overlay.classList.remove("open"); toggleChat(false); }
   });
 })();
 </script>

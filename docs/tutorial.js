@@ -132,6 +132,21 @@
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
         { t: "The fixes are real; the authorship is the point. Every command came from a hand-written, risk-tiered catalog — the model (muse-spark) explains and recommends, it never writes the shell. For self-healing boxes, `wrench fixxer --auto` applies safe-tier fixes unattended — after an explicit consent ceremony, with every action audited. `--dry-run` shows what it would do.", cls: "c-dim", note: true }
       ]
+    },
+    {
+      id: "web",
+      label: "6 · wrench web",
+      cmd: "wrench web",
+      chatFinale: true,
+      out: [
+        { t: "╭──────────────────────── 🔧 wrench web ───────────────────────╮", cls: "c-acc" },
+        { t: "│ dashboard live at http://127.0.0.1:8787                       │", cls: "c-acc" },
+        { t: "│ sampling every 30s · 🔧 chat bubble bottom-right ·            │", cls: "c-dim" },
+        { t: "│ press ? for shortcuts · Ctrl-C to stop                        │", cls: "c-dim" },
+        { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "live vitals · 24h timelines · patrol + drift + security-intel feeds · action log", cls: "c-cyan" },
+        { t: "…and the 🔧 bubble in YOUR corner right now? That's the dashboard's chat — watch.", cls: "c-dim", note: true }
+      ]
     }
   ];
 
@@ -226,6 +241,10 @@
         next = idx + 1;
         setBusy(false);
         markChips();
+        // finale: pop the simulated chat — "on your machine, this chat is real"
+        if (step.chatFinale && typeof window.wrenchChatDemo === "function") {
+          later(window.wrenchChatDemo, 600);
+        }
       });
     });
   }
