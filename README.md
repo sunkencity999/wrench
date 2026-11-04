@@ -541,6 +541,40 @@ Base URLs and models remain overridable in `config.toml` or via
 Keys come from env (`META_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, …) or an `api_key_file`
 path in the config; they are never logged, and never stored in the database.
 
+## Which muse model should I pick?
+
+We benchmarked both muse models on an 18-case sysadmin-reasoning gauntlet —
+log triage from real-looking journald excerpts, CVE severity calls from
+OSV-style advisories, fixxer-style "what's safe to auto-apply" judgment, and
+config-file diagnosis. The battery lives in [`evals/`](evals/) so you can
+re-run it yourself ([full results + methodology](evals/results.md)).
+
+| category | muse-spark-1.3 | muse-wonder-1.0 |
+|---|---|---|
+| log triage (5 cases) | 4/5 | **5/5** |
+| CVE severity (4) | 4/4 | 4/4 |
+| fixxer judgment (5) | 4/5 | **5/5** |
+| config diagnosis (4) | 4/4 | 4/4 |
+| **total** | **16/18 (89%)** | **18/18 (100%)** |
+| median latency | 11.3s | 10.7s |
+
+Honest read of the numbers:
+
+- **`muse-spark-1.3` (the default) is the right default.** Its two misses
+  were both in the *cautious* direction — it omitted a detail (the attacker
+  IP) once, and once refused to call even targeted security updates
+  auto-applicable. For a consent-gated agent, failing cautious is fine.
+- **`muse-wonder-1.0` earned the `--deep` flag.** Perfect score, and its
+  answers consistently carried more actionable specifics. Reach for it when
+  the diagnosis *is* the deliverable: `wrench patrol --deep`, post-incident
+  triage, CVE briefings.
+- **Latency is a wash on single calls** (~11s median for both at this prompt
+  size). Spark's economy shows up across long agentic chains with many tool
+  calls, not per-question.
+- Neither model ever marked a destructive action (docker volume prune, kernel
+  autoremove, blind prod-database restart) as safe to automate — the
+  caution-trap cases went 10/10 across both.
+
 ## Policy tiers — the leash
 
 An agent that can touch your system needs a leash you control. wrench's whole

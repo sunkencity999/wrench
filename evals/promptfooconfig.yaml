@@ -1,0 +1,338 @@
+# wrench muse model gauntlet — muse-spark-1.3 vs muse-wonder-1.0
+#
+# Compares Meta's two muse models on the four kinds of judgment wrench
+# actually asks of them: log triage, CVE severity calls, fixxer-style
+# "what's safe to auto-apply" decisions, and config-file diagnosis.
+#
+# Run (from the repo root):
+#   export META_API_KEY="$(tr -d '\n' < ~/path/to/your/meta_api_key.txt)"
+#   promptfoo eval -c evals/promptfooconfig.yaml
+#   promptfoo view          # browse results
+#
+# Both muse models are reasoning models: they burn 300-500+ tokens thinking
+# before any visible output, so max_tokens must stay >= 4000 or you get
+# null content with finish_reason=length.
+
+description: "wrench muse gauntlet: sysadmin reasoning (log triage, CVE severity, fixxer judgment, config diagnosis)"
+
+prompts:
+  - file://prompts/sysadmin.json
+
+providers:
+  - id: openai:chat:muse-spark-1.3
+    label: muse-spark-1.3
+    config:
+      apiBaseUrl: https://api.meta.ai/v1
+      apiKeyEnvar: META_API_KEY
+      max_tokens: 4096
+      temperature: 0.2
+  - id: openai:chat:muse-wonder-1.0
+    label: muse-wonder-1.0
+    config:
+      apiBaseUrl: https://api.meta.ai/v1
+      apiKeyEnvar: META_API_KEY
+      max_tokens: 6144
+      temperature: 0.2
+
+# llm-rubric graded assertions use muse-spark as the judge (cheapest model
+# that can do it). Reasoning model: give the grader headroom too.
+defaultTest:
+  options:
+    provider:
+      id: openai:chat:muse-spark-1.3
+      config:
+        apiBaseUrl: https://api.meta.ai/v1
+        apiKeyEnvar: META_API_KEY
+        max_tokens: 4096
+        temperature: 0
+
+tests:
+  # ============================================================
+  # 1. LOG TRIAGE — identify the root cause from real-looking logs
+  # ============================================================
+  - description: "log triage: OOM killer took out mysqld"
+    vars:
+      input: |
+        What is the root cause of this outage? Journald excerpt from a database host:
+
+        Nov 02 03:12:41 db01 kernel: python3 invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+        Nov 02 03:12:41 db01 kernel: Out of memory: Killed process 1247 (mysqld) total-vm:18329844kB, anon-rss:14223180kB, file-rss:0kB, shmem-rss:0kB, UID:112 pgtables:29848kB oom_score_adj:0
+        Nov 02 03:12:42 db01 systemd[1]: mysql.service: A process of this unit has been killed by the OOM killer.
+        Nov 02 03:12:42 db01 systemd[1]: mysql.service: Main process exited, code=killed, status=9/KILL
+        Nov 02 03:12:45 db01 app-api[2211]: ERROR sqlalchemy.exc.OperationalError: (2003, "Can't connect to MySQL server on 'localhost'")
+    assert:
+      - type: icontains-any
+        value: ["oom", "out of memory"]
+      - type: icontains
+        value: "mysqld"
+
+  - description: "log triage: disk full, not a postgres bug"
+    vars:
+      input: |
+        Our Postgres instance went read-only overnight. What's the root cause?
+
+        Nov 03 02:47:18 pg01 postgres[988]: PANIC:  could not write to file "pg_wal/xlogtemp.988": No space left on device
+        Nov 03 02:47:18 pg01 postgres[988]: LOG:  WAL writer process (PID 988) was terminated by signal 6: Aborted
+        Nov 03 02:47:19 pg01 postgres[950]: LOG:  all server processes terminated; reinitializing
+        Nov 03 02:47:25 pg01 postgres[3410]: FATAL:  could not write lock file "postmaster.pid": No space left on device
+    assert:
+      - type: icontains-any
+        value: ["no space", "disk full", "disk space", "filesystem full", "out of space", "disk is full"]
+
+  - description: "log triage: SSH brute-force attack in progress"
+    vars:
+      input: |
+        Anything concerning in this auth.log excerpt?
+
+        Nov 04 09:14:02 web02 sshd[18822]: Failed password for root from 203.0.113.57 port 44122 ssh2
+        Nov 04 09:14:04 web02 sshd[18825]: Failed password for root from 203.0.113.57 port 44810 ssh2
+        Nov 04 09:14:06 web02 sshd[18829]: Failed password for invalid user admin from 203.0.113.57 port 45233 ssh2
+        Nov 04 09:14:08 web02 sshd[18833]: Failed password for invalid user oracle from 203.0.113.57 port 45801 ssh2
+        Nov 04 09:14:10 web02 sshd[18840]: Failed password for invalid user postgres from 203.0.113.57 port 46102 ssh2
+        Nov 04 09:14:12 web02 sshd[18846]: Failed password for root from 203.0.113.57 port 46518 ssh2
+    assert:
+      - type: icontains-any
+        value: ["brute", "brute-force", "attack", "credential"]
+      - type: icontains
+        value: "203.0.113.57"
+
+  - description: "log triage: crash-looping service hit start-limit"
+    vars:
+      input: |
+        Why is my service down even though I keep running systemctl start?
+
+        Nov 04 11:02:11 app01 systemd[1]: ingest.service: Main process exited, code=dumped, status=11/SEGV
+        Nov 04 11:02:11 app01 systemd[1]: ingest.service: Failed with result 'core-dump'.
+        Nov 04 11:02:12 app01 systemd[1]: ingest.service: Scheduled restart job, restart counter is at 5.
+        Nov 04 11:02:12 app01 systemd[1]: ingest.service: Start request repeated too quickly.
+        Nov 04 11:02:12 app01 systemd[1]: ingest.service: Failed with result 'start-limit-hit'.
+    assert:
+      - type: icontains-any
+        value: ["segfault", "segmentation fault", "sigsegv", "crash", "core dump", "core-dump"]
+      - type: icontains-any
+        value: ["start-limit", "start limit", "restart counter", "too quickly", "rate limit"]
+
+  - description: "log triage: DNS resolution failure, not an app bug"
+    vars:
+      input: |
+        Our API started throwing connection errors to a dependency. Root cause?
+
+        Nov 04 08:30:02 api01 systemd-resolved[612]: Using degraded feature set UDP instead of TCP for DNS server 10.0.0.1.
+        Nov 04 08:30:14 api01 app[3301]: WARN urllib3.connection: Failed to resolve 'payments.internal.example.com' ([Errno -3] Temporary failure in name resolution)
+        Nov 04 08:30:20 api01 systemd-resolved[612]: DNS server 10.0.0.1 does not respond, switching to fallback mode.
+        Nov 04 08:30:31 api01 app[3301]: ERROR requests.exceptions.ConnectionError: HTTPSConnectionPool(host='payments.internal.example.com', port=443): Max retries exceeded (NameResolutionError)
+    assert:
+      - type: icontains
+        value: "dns"
+
+  # ============================================================
+  # 2. CVE SEVERITY JUDGMENT — OSV-style advisory → correct call
+  # ============================================================
+  - description: "cve: critical pre-auth RCE, patch now"
+    vars:
+      input: |
+        How severe is this, and how urgently should I patch? Advisory (OSV format):
+
+        {"id": "CVE-2026-41337", "summary": "Heap buffer overflow in TLS handshake parsing allows unauthenticated remote code execution",
+         "affected": [{"package": {"name": "libtls", "ecosystem": "Ubuntu:24.04"}, "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.1.2-0ubuntu0.2"}]}]}],
+         "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+         "database_specific": {"cvss_base_score": 9.8, "exploited_in_wild": true}}
+
+        The host runs libtls 3.1.1 and exposes HTTPS to the internet.
+    assert:
+      - type: icontains
+        value: "critical"
+      - type: icontains-any
+        value: ["immediately", "now", "urgent", "as soon as possible", "asap", "right away", "today"]
+
+  - description: "cve: low-severity local DoS, no panic"
+    vars:
+      input: |
+        How severe is this, and how urgently should I patch? Advisory (OSV format):
+
+        {"id": "CVE-2026-22904", "summary": "NULL pointer dereference in debug CLI allows local authenticated user to crash the daemon",
+         "affected": [{"package": {"name": "fooctl", "ecosystem": "Ubuntu:24.04"}}],
+         "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L"}],
+         "database_specific": {"cvss_base_score": 3.3, "exploited_in_wild": false}}
+
+        The host is a single-user workstation; fooctl's daemon restarts automatically via systemd.
+    assert:
+      - type: icontains-any
+        value: ["low", "minor"]
+      - type: llm-rubric
+        value: "The answer does NOT demand immediate/emergency patching; it treats this as routine (e.g. patch with the next regular update cycle)."
+
+  - description: "cve: high local privilege escalation in sudo-like tool"
+    vars:
+      input: |
+        How severe is this, and how urgently should I patch? Advisory (OSV format):
+
+        {"id": "CVE-2026-31870", "summary": "Race condition in privileged helper allows local user to escalate to root",
+         "affected": [{"package": {"name": "polkitd", "ecosystem": "Ubuntu:24.04"}, "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "124-2ubuntu1.1"}]}]}],
+         "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:H"}],
+         "database_specific": {"cvss_base_score": 7.8, "exploited_in_wild": false}}
+
+        This is a multi-user shell server with 40 active local accounts.
+    assert:
+      - type: icontains
+        value: "high"
+      - type: llm-rubric
+        value: "The answer recognizes that the multi-user context raises the practical urgency (local users are the attack vector), and recommends patching promptly (within days, not months)."
+
+  - description: "cve: vulnerable but NO fixed build shipped yet — mitigate, don't pretend to patch"
+    vars:
+      input: |
+        How severe is this, and what should I actually do? Advisory (OSV format):
+
+        {"id": "CVE-2026-50112", "summary": "Integer overflow in image parsing library allows remote code execution via crafted PNG",
+         "affected": [{"package": {"name": "libimg9", "ecosystem": "Ubuntu:24.04"}, "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]}],
+         "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"}],
+         "database_specific": {"cvss_base_score": 8.8, "note": "no fixed version available yet"}}
+
+        Note: the ranges list has no "fixed" event — no patched build exists yet.
+    assert:
+      - type: llm-rubric
+        value: "The answer notices that no fixed version is available yet, and therefore recommends mitigation/monitoring (e.g. reduce exposure, watch for the patch) rather than claiming you can just upgrade now."
+
+  # ============================================================
+  # 3. FIXXER-STYLE JUDGMENT — what's safe to auto-apply?
+  #    Correct answers favor caution.
+  # ============================================================
+  - description: "fixxer: housekeeping auto-ok, big upgrade needs a human"
+    vars:
+      input: |
+        A maintenance agent found these issues. Which are safe to auto-apply unattended, and which need human review first?
+
+        1. journald logs using 4.1 GB (threshold 1 GB) — fix: journalctl --vacuum-size=500M
+        2. apt package cache holds 2.0 GB of downloaded .debs — fix: apt-get clean
+        3. 242 packages upgradable (3 security), including the NVIDIA driver and the kernel — fix: apt-get upgrade -y
+        4. 6 orphaned packages removable, including linux-image-6.8.0-45-generic — fix: apt-get autoremove --purge -y
+    assert:
+      - type: llm-rubric
+        value: "The answer classifies items 1 and 2 (journal vacuum, cache clean) as safe to auto-apply, AND flags items 3 and 4 (242-package upgrade incl. kernel/NVIDIA driver, kernel-package autoremove) as needing human review. Marking 3 or 4 as safe-to-auto is a failure."
+
+  - description: "fixxer: restarting a failed prod service is not housekeeping"
+    vars:
+      input: |
+        A maintenance agent found these issues on a production host. Which are safe to auto-apply unattended, and which need human review first?
+
+        1. apt package lists are 72h stale — fix: apt-get update
+        2. postgresql.service is in failed state — fix: systemctl restart postgresql
+        3. 3 stale failed-unit markers from a deploy two weeks ago (services since replaced) — fix: systemctl reset-failed
+    assert:
+      - type: llm-rubric
+        value: "The answer treats item 1 (metadata refresh) and item 3 (clearing stale failed markers, which restarts nothing) as low-risk, but flags item 2 (blindly restarting a failed production database) as needing human investigation first — a failed postgres may have crashed for a reason (disk full, corruption) and auto-restart can make it worse."
+
+  - description: "fixxer: deleting things that look like garbage but might not be"
+    vars:
+      input: |
+        A maintenance agent proposes these cleanups. Which are safe to auto-apply unattended, and which need human review first?
+
+        1. Delete all Docker volumes not attached to a running container (docker volume prune) — 14 volumes, 92 GB
+        2. Clear the apt download cache (apt-get clean) — 1.8 GB
+        3. Delete /tmp files older than 14 days (top-level plain files only) — 340 MB
+        4. Truncate a 12 GB /var/log/app/debug.log that is still being written to, using truncate -s 0
+    assert:
+      - type: llm-rubric
+        value: "The answer flags item 1 (docker volume prune) as dangerous to automate — stopped-container volumes often hold real data (databases, build caches) and 92 GB of deletion is irreversible. It treats item 2 as safe. If it discusses item 4, it should note truncating a live log is disruptive or that the writing process/logrotate should be handled instead. Calling item 1 safe-to-auto is a failure."
+
+  - description: "fixxer: security updates vs full dist-upgrade discrimination"
+    vars:
+      input: |
+        A maintenance agent on an internet-facing web server found these. Which are safe to auto-apply unattended, and which need human review?
+
+        1. openssl and nginx have pending SECURITY updates (fixed builds for 2 known-exploited CVEs) — fix: apt-get install --only-upgrade openssl nginx
+        2. do-release-upgrade available: Ubuntu 24.04 → 26.04 LTS
+        3. journald at 2.3 GB — fix: journalctl --vacuum-size=500M
+    assert:
+      - type: llm-rubric
+        value: "The answer supports applying the targeted security updates (item 1) promptly — auto-applying them is defensible on an internet-facing host — while clearly flagging item 2 (full OS release upgrade) as absolutely requiring human planning. Item 3 is safe. Treating the release upgrade as auto-applicable is a failure."
+
+  - description: "fixxer: the trap — agent should refuse rm -rf style overreach"
+    vars:
+      input: |
+        A junior admin wants to automate this nightly: "disk is filling up, so run: find /var -name '*.log' -mtime +7 -delete across the whole /var tree". Is this safe to automate? If not, what would you do instead?
+    assert:
+      - type: llm-rubric
+        value: "The answer says NO — blanket-deleting every *.log under /var is unsafe to automate (it would hit application data, /var/lib contents, logs that services hold open, and bypasses logrotate). It proposes safer alternatives such as configuring logrotate, journald vacuuming, targeting specific known log directories, or compressing instead of deleting."
+
+  # ============================================================
+  # 4. CONFIG-FILE DIAGNOSIS
+  # ============================================================
+  - description: "config: nginx duplicate default_server"
+    vars:
+      input: |
+        nginx -t fails after I added a new site. Here are the enabled vhosts — what's wrong?
+
+        # /etc/nginx/sites-enabled/default
+        server {
+            listen 80 default_server;
+            server_name _;
+            root /var/www/html;
+        }
+
+        # /etc/nginx/sites-enabled/shop.conf
+        server {
+            listen 80 default_server;
+            server_name shop.example.com;
+            root /var/www/shop;
+        }
+
+        Error: nginx: [emerg] a duplicate default server for 0.0.0.0:80 in /etc/nginx/sites-enabled/shop.conf:2
+    assert:
+      - type: icontains
+        value: "default_server"
+      - type: llm-rubric
+        value: "The answer explains that only one server block per listen address:port may carry default_server, and the fix is to remove default_server from one of the two blocks (usually the new shop.conf)."
+
+  - description: "config: sshd hardening review catches root login + password auth"
+    vars:
+      input: |
+        Quick security review of this sshd_config on an internet-facing host — top concerns?
+
+        Port 22
+        PermitRootLogin yes
+        PasswordAuthentication yes
+        PermitEmptyPasswords no
+        X11Forwarding yes
+        MaxAuthTries 20
+        ClientAliveInterval 0
+    assert:
+      - type: icontains
+        value: "permitrootlogin"
+      - type: icontains-any
+        value: ["passwordauthentication", "password authentication", "key-based", "publickey", "public key"]
+
+  - description: "config: fstab external drive without nofail hangs boot"
+    vars:
+      input: |
+        After adding a USB backup drive to fstab, the server hung for 90 seconds at boot when the drive wasn't plugged in, then dropped to emergency mode. The fstab line:
+
+        UUID=3f2a9c1e-8b4d-4e2f-9a1c-7d5e6f8a9b0c  /mnt/backup  ext4  defaults  0  2
+
+        What's wrong and how do I fix it?
+    assert:
+      - type: icontains
+        value: "nofail"
+
+  - description: "config: systemd unit ExecStart path typo + missing After"
+    vars:
+      input: |
+        My new unit fails instantly with status=203/EXEC. The unit file:
+
+        [Unit]
+        Description=Metrics shipper
+
+        [Service]
+        ExecStart=/usr/local/bin/metrics-shiper --config /etc/metrics/config.yaml
+        Restart=on-failure
+
+        [Install]
+        WantedBy=multi-user.target
+
+        ls /usr/local/bin/ shows: metrics-shipper
+
+        What's wrong?
+    assert:
+      - type: llm-rubric
+        value: "The answer identifies the typo in the ExecStart binary path ('metrics-shiper' vs the actual 'metrics-shipper') as the cause of status=203/EXEC (exec failure: file not found)."
