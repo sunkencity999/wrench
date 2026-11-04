@@ -32,10 +32,21 @@ else
   "$PY" -m pip install --user --upgrade "$REPO"
 fi
 
-# 3. verify
+# 3. verify + optional interactive setup
 if command -v wrench >/dev/null 2>&1; then
   say "installed: $(wrench version)"
-  say "next: wrench init && wrench doctor && wrench patrol"
+  # curl|bash pipes stdin, so talk to the real terminal when one exists
+  if [ -t 1 ] && [ -r /dev/tty ] && [ -z "${CI:-}" ]; then
+    printf '\033[1;34m[wrench]\033[0m set up now? Pick a provider — Meta (default, hosted) or fully local via Ollama. [Y/n] '
+    read -r reply < /dev/tty || reply="n"
+    case "$reply" in
+      [Nn]*) say "later, then: wrench init && wrench doctor && wrench patrol" ;;
+      *) wrench init < /dev/tty || true ;;
+    esac
+  else
+    say "next: wrench init && wrench doctor && wrench patrol"
+    say "(wrench init shows an interactive provider menu — Meta hosted by default, or local + private via Ollama)"
+  fi
 else
   say "installed, but 'wrench' is not on PATH yet."
   say "add your user bin dir to PATH (usually ~/.local/bin) and run: wrench init"

@@ -34,7 +34,14 @@ if ($pipx) {
 $wrench = Get-Command wrench -ErrorAction SilentlyContinue
 if ($wrench) {
     Say ("installed: " + (wrench version))
-    Say "next: wrench init ; wrench doctor ; wrench patrol"
+    if ([Environment]::UserInteractive -and -not $env:CI) {
+        $reply = Read-Host "[wrench] set up now? Pick a provider - Meta (default, hosted) or fully local via Ollama [Y/n]"
+        if ($reply -notmatch '^[Nn]') { wrench init }
+        else { Say "later, then: wrench init ; wrench doctor ; wrench patrol" }
+    } else {
+        Say "next: wrench init ; wrench doctor ; wrench patrol"
+        Say "(wrench init shows an interactive provider menu - Meta hosted by default, or local + private via Ollama)"
+    }
 } else {
     Say "installed, but 'wrench' is not on PATH yet."
     Say "open a NEW terminal (PATH refresh) or add your Python Scripts dir to PATH, then run: wrench init"
