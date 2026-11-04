@@ -1,6 +1,8 @@
 # 🔧 wrench
 
 > **An AI sysadmin that lives on your machine: it continuously senses, remembers the history, explains problems in plain English — and asks before touching anything.**
+>
+> ⚡ **Powered by Meta muse models** — `muse-spark-1.3` drives patrols and investigations, `muse-wonder-1.0` handles deep diagnosis — with OpenAI, Anthropic, Ollama, LM Studio, and LiteLLM available as alternatives.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-58a6ff?style=flat-square)](pyproject.toml)
@@ -37,9 +39,12 @@ staff sysadmin on the box itself. It does four things, continuously:
 | 💬 | **Explain** | An LLM agent with read-only diagnostic tools answers questions about *your* machine, grounded in its actual telemetry and logs — not generic trivia. "Why is my disk filling up?" gets investigated, not guessed at. |
 | 🚓 | **Patrol** | On a schedule, wrench reviews the sensors, the anomalies, and the drift; investigates anything suspicious with real diagnostics; and files a report a human wants to read. Ok / attention / critical, findings with evidence, exact commands to fix. |
 
-All of it runs locally. The telemetry never leaves the box unless *you* point
-the brain at a cloud model — and you can point it at [Ollama](https://ollama.com)
-instead and keep everything in the house.
+All of it runs locally, with **Meta's muse models as the default brain**: the
+fast agentic `muse-spark-1.3` for patrols and questions, and the deep-reasoning
+`muse-wonder-1.0` behind `--deep` for the hard cases. The telemetry never
+leaves the box unless *you* point the brain at a cloud model — and you can
+point it at [Ollama](https://ollama.com) instead and keep everything in the
+house.
 
 ### `wrench status` — the one-glance answer to "are we okay?"
 
@@ -502,8 +507,10 @@ token-spend widget so the cost is never a mystery.
 
 ## Built for the Meta hackathon
 
-wrench was built for the Meta Llama hackathon (2026) and uses Meta's Muse
-models as its default brain. Parts of this README's humor were drafted by
+wrench was built for the Meta Llama hackathon (2026) and is **Meta-powered
+end to end by default**: every patrol, ask, explain, demo transcript, and GIF
+in this repo was generated through the Meta Model API (`muse-spark-1.3` /
+`muse-wonder-1.0`). Parts of this README's humor were drafted by
 `muse-wonder-1.0`, which makes it possibly the first README that is also a
 demo artifact.
 
