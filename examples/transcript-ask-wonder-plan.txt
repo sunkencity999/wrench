@@ -1,0 +1,104 @@
+  ⚙ run_diag {"command": "df -h"}
+  ⚙ run_diag {"command": "systemctl --failed"}
+  ⚙ run_diag {"command": "free -h"}
+  ⚙ proc_top {"sort": "mem", "n": 15}
+  ⚙ proc_top {"sort": "cpu", "n": 15}
+  ⚙ net_listeners {}
+  ⚙ read_logs {"lines": 50, "priority": "err"}
+  ⚙ run_diag {"command": "nvidia-smi"}
+╭───────────────────────────────── 🔧 wrench ──────────────────────────────────╮
+│                                                                              │
+│                    devbox — Prioritized Maintenance Plan                    │
+│                                                                              │
+│  No changes made (suggest tier). All figures below are observed, not         │
+│  estimated.                                                                  │
+│                                                                              │
+│  P1 — Today: /dev/sda is failing, and its alerting is broken                 │
+│                                                                              │
+│   • Evidence: smartd logs Device: /dev/sda [SAT], 7 Currently unreadable     │
+│     (pending) sectors every 30 min, all day Nov 03. /dev/sda1 is             │
+│     /mnt/datastorelrg — 5.5T, 2.8T used (53%). Pending sectors = data        │
+│     already unreadable, drive is on the way out.                             │
+│   • Compounding: smartd tried to warn you and failed: Your system does not   │
+│     have /usr/bin/mail. Install the mailx or mailutils package (Nov 03       │
+│     08:01). You would never have been emailed about this.                    │
+│   • Human to run:                                                            │
+│      • sudo smartctl -a /dev/sda — check Reallocated/Pending counts and      │
+│        drive age                                                             │
+│      • Verify a current backup of /mnt/datastorelrg exists off this disk,    │
+│        then sudo smartctl -t long /dev/sda                                   │
+│      • sudo apt install mailutils (or point smartd at another notifier) and  │
+│        test it                                                               │
+│      • Order a replacement drive now; plan the swap before the pending       │
+│        count grows                                                           │
+│                                                                              │
+│  P2 — Today: RAM exhausted, 37 GiB into swap — ComfyUI is the cause          │
+│                                                                              │
+│   • Evidence: free -h: 56/60 GiB used, 400 MiB free, 4.0 GiB available, 37   │
+│     GiB of 109 GiB swap in use. ComfyUI (PID 2364144, started 19:44 today)   │
+│     alone: 77.4% MEM, ~49 GB RSS, 149% CPU, 61 min CPU time in ~40 min wall  │
+│     time. Next largest is agent-host gateway at only 1.3 GB.                   │
+│   • Risk: One more large job and the OOM killer picks a victim — possibly    │
+│     vLLM or agent-host, not ComfyUI.                                           │
+│   • Human to run:                                                            │
+│      • Confirm no job is mid-render at 127.0.0.1:8188, then restart ComfyUI  │
+│        and watch RSS regrow — if it re-inflates to ~49 GB, it's holding      │
+│        model/cache state despite --cache-none                                │
+│      • ps -o ppid= -p 2364144 to find its parent/unit, then consider a       │
+│        MemoryMax= cap so it gets killed before it swaps the whole box        │
+│                                                                              │
+│  P3 — This week: Wildcard network exposure audit                             │
+│                                                                              │
+│   • Evidence: Listening on 0.0.0.0/*: 22 (SSH), 3000 (Grafana is running),   │
+│     3389 (RDP-class service), 8082/8085 (python3, PIDs 5834/5839), 8119      │
+│     (socat, PID 5844), 3100, 4200, 8880, 9090 (Prometheus is running; 9090   │
+│     is its default), 9100, 9134, plus KDE Connect on 1716.                   │
+│   • Contrast: ComfyUI (8188), Ollama (11434, 41629), and agent-host (18789)    │
+│     are correctly bound to 127.0.0.1/[::1] — that's the pattern the          │
+│     wildcard services should follow unless deliberately published.           │
+│   • Human to run: ss -tlnp and sudo ufw status verbose; for each wildcard    │
+│     port, either bind to localhost/Tailscale (100.104.249.62 listener        │
+│     suggests Tailscale is in use) or document why it's exposed. 3389 and     │
+│     the two bare python3 ports deserve first look.                           │
+│                                                                              │
+│  P4 — This week: Both GPUs saturated, three workloads fighting on GPU 1      │
+│                                                                              │
+│   • Evidence: GPU 0 (RTX PRO 6000): 97,172/97,887 MiB VRAM, held by          │
+│     VLLM::Worker (PID 1702196, 93,188 MiB, --gpu-memory-utilization 0.92,    │
+│     running since Oct 27, 6,022 min CPU time). GPU 1 (RTX 5090):             │
+│     30,915/32,607 MiB, 100% util — shared by deepseek_v41/redacted-spike      │
+│     (PID 1122343, 25,531 MiB), ComfyUI (4,574 MiB), and Ollama's embedding   │
+│     server (PID 2413921, 680 MiB).                                           │
+│   • Human to run: docker ps (dockerd is up; vLLM runs as root) to find the   │
+│     vLLM container/unit. Decide if a model idle-holding 92% of GPU 0 since   │
+│     Oct 27 is intentional; if not, stop it or lower                          │
+│     --gpu-memory-utilization. Schedule redacted-spike vs. ComfyUI so they     │
+│     don't share GPU 1, or move Ollama embeddings to GPU 0's spare cycles.    │
+│                                                                              │
+│  P5 — Investigate: PCIe errors, a failed service, and odd sudo attempts      │
+│                                                                              │
+│   • Evidence: Kernel pcieport 0000:80:1c.4: AER: Error of this Agent is      │
+│     reported first repeated Nov 03 (11:00, 12:35, 13:05, 13:36, 14:38,       │
+│     15:38) — a PCIe device downstream of that port is throwing correctable   │
+│     errors; GPU 1 sits at 85:00.0, so check that path first. User service    │
+│     library-index-refresh.service failed Nov 03 19:40. Separately, Nov 03    │
+│     06:40–06:42, user from an agent-host workspace attempted          │
+│     passwordless sudo for journalctl and tail -50 /root/.bash_history —      │
+│     confirm that's your agent behaving, not something else.                  │
+│   • Human to run: lspci -s 80:1c.4 -vv, journalctl -k --since today | grep   │
+│     -i aer, systemctl --user status library-index-refresh.service, and       │
+│     review the sudo entries in journalctl _COMM=sudo.                        │
+│                                                                              │
+│  Explicitly not a priority                                                   │
+│                                                                              │
+│  Disk space: / 44%, /mnt/nvmestripe 52%, /mnt/datastorelrg 53%, home         │
+│  storage 59% — no cleanup needed. Spend the effort on P1–P2 instead; the     │
+│  box's problems are a dying disk and memory, not capacity.                   │
+│                                                                              │
+│  muse-wonder-1.0 · 41661 tokens · 8 tool call(s)                             │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+real	1m19.297s
+user	0m0.320s
+sys	0m0.194s

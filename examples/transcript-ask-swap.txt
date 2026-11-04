@@ -1,0 +1,94 @@
+  ⚙ run_diag {"command": "free -h"}
+  ⚙ proc_top {"sort": "mem", "n": 15}
+  ⚙ run_diag {"command": "cat /proc/meminfo"}
+  ⚙ run_diag {"command": "cat /proc/sys/vm/swappiness"}
+  ⚙ run_diag {"command": "cat /proc/vmstat"}
+  ⚙ run_diag {"command": "cat /proc/1626989/status"}
+  ⚙ run_diag {"command": "cat /proc/2364144/status"}
+  ⚙ run_diag {"command": "cat /proc/pressure/memory"}
+╭───────────────────────────────── 🔧 wrench ──────────────────────────────────╮
+│                                                                              │
+│  Swap: 37Gi used with RAM free — normal, stale, no action needed yet         │
+│                                                                              │
+│  Bottom line: Don't act. That 37Gi in swap is history, not current           │
+│  pressure. Linux leaves idle anonymous pages in swap until they are          │
+│  touched, even after RAM frees up.                                           │
+│                                                                              │
+│  Evidence                                                                    │
+│                                                                              │
+│   • free -h: Mem 60Gi total / 43Gi used / 13Gi free / 17Gi available. Swap   │
+│     109Gi total / 37Gi used / 72Gi free.                                     │
+│   • Later /proc/meminfo: MemFree ~46Gi, MemAvailable ~51Gi, SwapCached       │
+│     2.3Gi, AnonPages only ~3.1Gi. You do have free RAM now — readings moved  │
+│     between samples, but both show plenty available.                         │
+│   • vm.swappiness = 10 — kernel is currently reluctant to swap. So this      │
+│     swap wasn't just created; it's leftover.                                 │
+│   • /proc/vmstat: pswpout 64980332 / pswpin 45966279, pgsteal_kswapd         │
+│     1879618126, pgscan_kswapd 2292407670 — heavy past reclaim. oom_kill 0 —  │
+│     never actually OOMed.                                                    │
+│   • /proc/pressure/memory: some avg10=0.01 avg60=0.12 avg300=0.85 / full     │
+│     avg10=0.01 — essentially no stall now, some pressure in last 5min.       │
+│   • Swap holders are idle giants, not active hogs:                           │
+│      • PID 1626989 agent-host gateway --port 18789: VmSize 100159276 kB        │
+│        (~95TiB? no, ~95GiB), VmRSS 1.3Gi, VmSwap 1.9Gi                       │
+│      • PID 2364144 comfyui/main.py --listen 127.0.0.1 --port 8188: VmSize    │
+│        355519472 kB (~339GiB), VmRSS 0.7-48Gi (grew between samples),        │
+│        VmSwap 3.1Gi                                                          │
+│      • Plus: vllm serve --model /model ... --gpu-memory-utilization 0.92     │
+│        --max-num-seqs 128 (PID 1701724/1702196), robot-app, grafana,     │
+│        prometheus, chrome --remote-debugging-port=18801. All huge VSZ, tiny  │
+│        RSS = sparse mmap touched once, then parked in swap.                  │
+│   • Committed_AS 236847632 kB (~226Gi) vs CommitLimit 147273572 kB (~140Gi)  │
+│     — massively overcommitted virtual. That virtual had to spill to swap     │
+│     during the Oct25-Oct27 startup spike.                                    │
+│                                                                              │
+│  Why free RAM + used swap co-exist                                           │
+│                                                                              │
+│   1 Under pressure, kswapd picks cold anon pages -> pswpout to swap.         │
+│   2 Pressure subsides (processes went idle/sleeping S), RAM frees.           │
+│   3 Kernel does not swap-in proactively. Pages stay in swap + SwapCached     │
+│     until faulted (pswpin/swap_ra_hit 32722707). That's by design with       │
+│     swappiness 10.                                                           │
+│                                                                              │
+│  So: free RAM is real, used swap is real, and both are true at once.         │
+│                                                                              │
+│  Should you act?                                                             │
+│                                                                              │
+│  No, unless you see swap-in storms: high avg10 full >5, pswpin climbing      │
+│  fast, or app latency on wakeup.                                             │
+│                                                                              │
+│  If curious / tidy, run (human does it, I don't at suggest-tier):            │
+│                                                                              │
+│                                                                              │
+│   free -h; cat /proc/pressure/memory; cat /proc/vmstat | grep -E             │
+│   'pswpin|pswpout|oom_kill'                                                  │
+│   for p in 1626989 2364144 11669 1701724; do echo -n "$p "; grep -H VmSwap   │
+│   /proc/$p/status 2>/dev/null; done                                          │
+│   smem -tw 2>/dev/null || grep VmSwap /proc/[0-9]*/status | sort -k2 -n |    │
+│   tail -20                                                                   │
+│   vmstat 1 5                                                                 │
+│   journalctl --priority=warning --since="-1h" | grep -i -E                   │
+│   'oom|killed|swap|memory'                                                   │
+│                                                                              │
+│                                                                              │
+│  Only if swap-in latency hurts, drain it (disruptive, will spike IO):        │
+│                                                                              │
+│                                                                              │
+│   sudo swapoff -a && sudo swapon -a                                          │
+│   # or just restart the idle holder, e.g.:                                   │
+│   systemctl --user restart agent-host-gateway                                  │
+│   # or tune:                                                                 │
+│   sudo sysctl -w vm.swappiness=10                                            │
+│                                                                              │
+│                                                                              │
+│  Better long-term: don't co-schedule vllm + comfyui + agent-host + chrome on   │
+│  60Gi RAM with 226Gi committed, or enable zswap/zram to compress that idle   │
+│  anon instead of disk swap.                                                  │
+│                                                                              │
+│  muse-spark-1.3 · 40478 tokens · 8 tool call(s)                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+real	2m12.399s
+user	0m0.318s
+sys	0m0.061s
