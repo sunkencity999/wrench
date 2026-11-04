@@ -471,6 +471,244 @@ def init(
         border_style="green", title="🔧 wrench initialized"))
 
 
+RISK_STYLE = {"safe": "green", "moderate": "yellow", "risky": "red"}
+
+
+def _render_findings(findings) -> Table:
+    t = Table(title="\U0001f527 correctable issues I found", border_style="bright_blue")
+    t.add_column("#", justify="right", style="bold cyan")
+    t.add_column("risk", justify="center")
+    t.add_column("fix")
+    t.add_column("evidence", max_width=58)
+    t.add_column("sudo", justify="center", style="dim")
+    for i, f in enumerate(findings, 1):
+        t.add_row(str(i), Text(f.risk, style=RISK_STYLE.get(f.risk, "white")),
+                  f.title, f.detail, "\u2713" if f.needs_sudo else "")
+    return t
+
+
+def _fixxer_llm_brief(cfg, store, findings, anomalies) -> None:
+    """One model call: wrench explains, in first person, what it found and what
+    it recommends. The model only ever talks ABOUT the catalog \u2014 selection and
+    execution stay in code."""
+    if not (cfg.api_key or cfg.provider in ("ollama", "lmstudio")):
+        return
+    lines = [f"{i}. [{f.risk}] {f.title} \u2014 {f.detail} (command: "
+             + " && ".join(" ".join(c) for c in f.commands) + ")"
+             for i, f in enumerate(findings, 1)]
+    if anomalies:
+        lines.append("Recent sensor anomalies (context only, not directly fixable): "
+                     + "; ".join(f"{a['metric']}={a['value']} (z={a['zscore']})"
+                                 for a in anomalies[:6]))
+    client = LLMClient(cfg, store)
+    try:
+        with console.status("[cyan]thinking about what I found..."):
+            text = client.chat(
+                [{"role": "system",
+                  "content": "You are wrench, a sysadmin agent speaking in the first person "
+                             "about YOUR machine. You are shown a numbered list of fixes you "
+                             "can apply from your vetted catalog. Briefly (4-8 sentences) "
+                             "explain what you found, which numbers you'd apply first and "
+                             "why, and anything the human should know before saying yes "
+                             "(e.g. what 'moderate' risk means here). Refer to fixes by "
+                             "their list numbers. No markdown headers, no filler."},
+                 {"role": "user", "content": "\n".join(lines)}],
+                purpose="fixxer")
+        report.render_answer(console, text, f"{cfg.model} \u00b7 fixxer briefing")
+    except Exception as e:  # noqa: BLE001 \u2014 the briefing is optional sugar
+        console.print(f"[dim]briefing unavailable ({e}) \u2014 the findings above stand on their own[/dim]")
+
+
+def _consent_ceremony(cfg) -> bool:
+    from . import fixxer as fx
+    console.print(Panel(
+        "[bold]You are about to let me fix things WITHOUT asking.[/bold]\n\n"
+        "What auto mode may do, by risk tier:\n"
+        "  [green]safe[/green]     \u2014 refresh package metadata, vacuum journald logs,\n"
+        "             clear package caches, reset stale failed-unit markers\n"
+        "  [yellow]moderate[/yellow] \u2014 apply pending package updates, remove orphaned\n"
+        "             packages, delete stale /tmp files, restart failed services\n"
+        "  [red]risky[/red]    \u2014 (reserved \u2014 nothing in the catalog today)\n\n"
+        "The rules I hold myself to:\n"
+        "  \u2022 I only run hand-written catalog commands \u2014 the model never invents shell.\n"
+        "  \u2022 Default auto scope is [green]safe[/green] only. Widening to moderate requires BOTH\n"
+        "    your consent here AND auto_tiers in config.toml \u2014 two locks.\n"
+        "  \u2022 Every action is appended to the audit log with a rollback hint:\n"
+        f"    {fx.audit_path(cfg)}\n"
+        "  \u2022 Revoke any time: [bold]wrench fixxer --revoke-auto[/bold]",
+        border_style="red", title="\u26a0 consent \u2014 autonomous fixing"))
+    if not typer.confirm("do you consent to autonomous fixing on this machine?", default=False):
+        console.print("[dim]no consent \u2014 auto mode stays off. I'll keep asking first.[/dim]")
+        return False
+    raw = typer.prompt("which tiers? [safe / safe,moderate]", default="safe").strip().lower()
+    tiers = [t.strip() for t in raw.split(",") if t.strip() in fx.RISK_TIERS]
+    if not tiers:
+        tiers = ["safe"]
+    p = fx.write_consent(cfg, tiers)
+    console.print(f"[green]consent recorded[/green] for tiers: [bold]{', '.join(tiers)}[/bold]\n"
+                  f"[dim]{p}[/dim]")
+    if "moderate" in tiers:
+        console.print("[yellow]note:[/yellow] moderate also needs "
+                      "[bold]auto_tiers = [\"safe\", \"moderate\"][/bold] under [fixxer] "
+                      f"in {CONFIG_PATH} before auto mode will touch it.")
+    return True
+
+
+@app.command()
+def fixxer(
+    auto: bool = typer.Option(False, "--auto", help="apply consented-tier fixes WITHOUT asking "
+                                                    "(requires the one-time consent ceremony)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="show what --auto would do, touch nothing"),
+    setup_auto: bool = typer.Option(False, "--setup-auto", help="run the auto-mode consent ceremony"),
+    revoke_auto: bool = typer.Option(False, "--revoke-auto", help="revoke auto-mode consent"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="skip the model briefing (findings only)"),
+    audit: bool = typer.Option(False, "--audit", help="show the last 20 audit-log entries and exit"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+):
+    """Find what I can fix \u2014 updates, bloat, failed services \u2014 and fix it with your OK."""
+    from . import fixxer as fx
+
+    cfg, store = _ctx(provider, model)
+
+    if revoke_auto:
+        if fx.revoke_consent(cfg):
+            console.print("[green]auto-mode consent revoked.[/green] I'm back to always asking first.")
+        else:
+            console.print("[dim]no consent was recorded \u2014 nothing to revoke[/dim]")
+        return
+    if setup_auto:
+        _consent_ceremony(cfg)
+        return
+    if audit:
+        rows = fx.audit_tail(cfg, 20)
+        if not rows:
+            console.print(f"[dim]audit log is empty ({fx.audit_path(cfg)})[/dim]")
+            return
+        t = Table(title="\U0001f527 fixxer audit log (last 20)", border_style="bright_blue")
+        t.add_column("when")
+        t.add_column("mode")
+        t.add_column("action")
+        t.add_column("risk")
+        t.add_column("ok", justify="center")
+        t.add_column("verified", justify="center")
+        for r in rows:
+            t.add_row(r.get("iso", "")[:16], r.get("mode", ""), r.get("action", ""),
+                      r.get("risk", ""), "\u2713" if r.get("ok") else "\u2717",
+                      "\u2713" if r.get("verified") else "\u2717")
+        console.print(t)
+        console.print(f"[dim]{fx.audit_path(cfg)}[/dim]")
+        return
+
+    console.print("[dim]I'm going through the box looking for things I can fix myself...[/dim]")
+    with console.status("[cyan]scanning (package state, journals, caches, services, /tmp)..."):
+        findings, ctx = fx.scan(cfg)
+        anomalies = store.recent_anomalies(3600 * 6)
+
+    if not findings:
+        console.print(Panel(
+            "[green]nothing to fix.[/green] I checked pending updates, orphaned packages, "
+            "journal size, package caches, failed services, and stale /tmp files \u2014 "
+            "this box is clean. I'll keep patrolling.",
+            border_style="green", title="\U0001f527 wrench fixxer"))
+        return
+
+    console.print(_render_findings(findings))
+    if not no_llm:
+        _fixxer_llm_brief(cfg, store, findings, anomalies)
+
+    # ---- dry-run: what WOULD auto do ----
+    if dry_run:
+        scope = fx.auto_scope(cfg, findings)
+        consent = fx.load_consent(cfg)
+        tiers = fx.effective_auto_tiers(cfg)
+        consent_str = ("\u2713 " + ", ".join(consent["tiers"])) if consent \
+            else "\u2717 none \u2014 run wrench fixxer --setup-auto"
+        tiers_str = ", ".join(tiers) if tiers else "(none)"
+        lines = [f"consent: {consent_str}",
+                 f"effective auto tiers (consent \u2229 config): {tiers_str}", ""]
+        if scope:
+            lines.append("auto mode would apply:")
+            lines += [f"  \u2022 ({f.risk}) {f.title} \u2014 " + " && ".join(" ".join(c) for c in f.commands)
+                      for f in scope]
+        else:
+            lines.append("auto mode would apply: nothing (no findings inside the consented tiers)")
+        skipped = [f for f in findings if f not in scope]
+        if skipped:
+            lines.append("left for you (outside auto scope): "
+                         + ", ".join(f"{f.title} ({f.risk})" for f in skipped))
+        console.print(Panel("\n".join(lines), border_style="cyan", title="\U0001f527 fixxer --dry-run"))
+        return
+
+    # ---- auto: consented tiers, no questions ----
+    if auto:
+        consent = fx.load_consent(cfg)
+        if not consent:
+            console.print(Panel(
+                "[red]auto mode is OFF \u2014 no consent recorded.[/red]\n"
+                "I don't touch this machine unattended until you've explicitly told me I may.\n"
+                "Run [bold]wrench fixxer --setup-auto[/bold] (interactive, one time).",
+                border_style="red", title="\u26a0 consent required"))
+            raise typer.Exit(2)
+        chosen = fx.auto_scope(cfg, findings)
+        if not chosen:
+            console.print("[dim]nothing inside my consented auto tiers "
+                          f"({', '.join(fx.effective_auto_tiers(cfg)) or 'none'}) \u2014 "
+                          "the rest waits for you. See wrench fixxer --dry-run.[/dim]")
+            return
+    # ---- interactive: the human picks ----
+    else:
+        raw = typer.prompt("apply which? [a]ll / [n]one / numbers e.g. 1,3", default="n").strip().lower()
+        if raw in ("n", "none", ""):
+            console.print("[dim]nothing applied. I'll be here when you're ready.[/dim]")
+            return
+        if raw in ("a", "all"):
+            chosen = list(findings)
+        else:
+            idx = set()
+            for tok in raw.replace(" ", "").split(","):
+                if tok.isdigit() and 1 <= int(tok) <= len(findings):
+                    idx.add(int(tok))
+            chosen = [findings[i - 1] for i in sorted(idx)]
+        if not chosen:
+            console.print("[yellow]didn't catch any valid numbers \u2014 nothing applied.[/yellow]")
+            return
+        for f in [f for f in chosen if f.risk == "risky"]:
+            if not typer.confirm(f"'{f.title}' is RISKY \u2014 really apply?", default=False):
+                chosen.remove(f)
+
+    mode = "auto" if auto else "interactive"
+    results = []
+    for f in chosen:
+        console.print(f"[bold cyan]\u2699 {f.title}[/bold cyan] [dim]({f.risk})[/dim]")
+        res = fx.apply_finding(cfg, store, ctx, f, mode, non_interactive=auto,
+                               on_step=lambda k, d: console.print(f"  [dim]$ {d}[/dim]"))
+        results.append(res)
+        style = "green" if res.ok and res.verified else ("yellow" if res.ok else "red")
+        mark = "\u2713 fixed + verified" if res.ok and res.verified else (
+            "\u2713 applied (verify: " + res.verify_note + ")" if res.ok else "\u2717 failed")
+        console.print(f"  [{style}]{mark}[/{style}] [dim]{res.duration_s}s \u00b7 {res.verify_note}[/dim]")
+
+    done = sum(1 for r in results if r.ok and r.verified)
+    partial = sum(1 for r in results if r.ok and not r.verified)
+    failed = sum(1 for r in results if not r.ok)
+    summary = f"[green]{done} fixed + verified[/green]"
+    if partial:
+        summary += f" \u00b7 [yellow]{partial} applied, verification inconclusive[/yellow]"
+    if failed:
+        summary += f" \u00b7 [red]{failed} failed[/red]"
+    console.print(Panel(
+        summary + f"\n[dim]every action is in the audit log: {fx.audit_path(cfg)} "
+                  "(wrench fixxer --audit)[/dim]",
+        border_style="green" if not failed else "red", title="\U0001f527 fixxer report"))
+    if failed:
+        for r in results:
+            if not r.ok:
+                console.print(Panel(r.output[-1200:], border_style="red",
+                                    title=f"\u2717 {r.finding.title}"))
+        raise typer.Exit(1)
+
+
 def _key_env(provider: str) -> str:
     from .config import PROVIDER_DEFAULTS
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]
@@ -480,6 +718,11 @@ def _key_env(provider: str) -> str:
 def install_service(
     interval: int = typer.Option(15, "--interval", help="minutes between patrols"),
     uninstall: bool = typer.Option(False, "--uninstall", help="remove the scheduled patrol"),
+    with_auto_fixxer: bool = typer.Option(
+        False, "--with-auto-fixxer",
+        help="ALSO schedule a daily `wrench fixxer --auto` run (requires prior "
+             "`wrench fixxer --setup-auto` consent; safe-tier only by default)"),
+    fixxer_hour: int = typer.Option(4, "--fixxer-hour", help="hour of day for the auto-fixxer run"),
 ):
     """Schedule patrols natively: systemd (Linux), launchd (macOS), or Task Scheduler (Windows)."""
     import shutil
@@ -499,6 +742,22 @@ def install_service(
             raise typer.Exit(1)
         plan = scheduler.plan_install(wrench_bin, interval)
         scheduler.apply_plan(plan)
+        fixxer_note = ""
+        if with_auto_fixxer:
+            from . import fixxer as fx
+            cfg, _store = _ctx()
+            if not fx.load_consent(cfg):
+                console.print(Panel(
+                    "[red]--with-auto-fixxer needs consent first.[/red]\n"
+                    "Run [bold]wrench fixxer --setup-auto[/bold], then re-run this command.",
+                    border_style="red", title="\u26a0 consent required"))
+                raise typer.Exit(2)
+            fplan = scheduler.plan_install_fixxer(wrench_bin, fixxer_hour)
+            scheduler.apply_plan(fplan)
+            fixxer_note = (f"\n[yellow]auto-fixxer scheduled daily @ {fixxer_hour:02d}:00[/yellow] "
+                           f"({fplan.kind}) \u2014 tiers: "
+                           f"{', '.join(fx.effective_auto_tiers(cfg)) or 'none (check consent/config)'}\n"
+                           f"[dim]audit log: {fx.audit_path(cfg)} \u00b7 remove: wrench install-service --uninstall[/dim]")
     except scheduler.SchedulerError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -508,7 +767,8 @@ def install_service(
         f"[dim]check:     {plan.check_hint}\n"
         f"uninstall: {plan.uninstall_hint}\n"
         "note: the service needs your provider API key; set\n"
-        f"  api_key_file = \"/path/to/keyfile\" in {CONFIG_PATH}[/dim]",
+        f"  api_key_file = \"/path/to/keyfile\" in {CONFIG_PATH}[/dim]"
+        + fixxer_note,
         border_style="green", title="🔧 wrench install-service"))
 
 

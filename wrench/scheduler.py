@@ -19,6 +19,8 @@ from . import platforms
 
 LAUNCHD_LABEL = "io.github.sunkencity999.wrench-patrol"
 WINDOWS_TASK = "WrenchPatrol"
+FIXXER_LAUNCHD_LABEL = "io.github.sunkencity999.wrench-fixxer"
+FIXXER_WINDOWS_TASK = "WrenchFixxer"
 
 
 @dataclass
@@ -132,6 +134,108 @@ PLANNERS = {
 }
 
 
+# ---------------- auto-fixxer (opt-in, consent-gated at the CLI layer) ----------------
+
+def _systemd_fixxer_plan(wrench_bin: str, hour: int, home: Path) -> InstallPlan:
+    unit_dir = home / ".config" / "systemd" / "user"
+    service = f"""[Unit]
+Description=wrench auto-fixxer — consented autonomous fixes (audited)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart={wrench_bin} fixxer --auto --no-llm
+"""
+    timer = f"""[Unit]
+Description=wrench auto-fixxer daily at {hour:02d}:00
+
+[Timer]
+OnCalendar=*-*-* {hour:02d}:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+    return InstallPlan(
+        kind="systemd",
+        files={
+            unit_dir / "wrench-fixxer.service": service,
+            unit_dir / "wrench-fixxer.timer": timer,
+        },
+        commands=[
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", "--now", "wrench-fixxer.timer"],
+        ],
+        check_hint="systemctl --user list-timers wrench-fixxer.timer",
+        uninstall_hint="systemctl --user disable --now wrench-fixxer.timer",
+    )
+
+
+def _launchd_fixxer_plan(wrench_bin: str, hour: int, home: Path) -> InstallPlan:
+    plist_path = home / "Library" / "LaunchAgents" / f"{FIXXER_LAUNCHD_LABEL}.plist"
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{FIXXER_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{wrench_bin}</string>
+    <string>fixxer</string>
+    <string>--auto</string>
+    <string>--no-llm</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>{hour}</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+"""
+    return InstallPlan(
+        kind="launchd",
+        files={plist_path: plist},
+        commands=[
+            ["launchctl", "unload", str(plist_path)],
+            ["launchctl", "load", "-w", str(plist_path)],
+        ],
+        check_hint=f"launchctl list | grep {FIXXER_LAUNCHD_LABEL}",
+        uninstall_hint=f"launchctl unload -w {plist_path} && rm {plist_path}",
+    )
+
+
+def _schtasks_fixxer_plan(wrench_bin: str, hour: int, home: Path) -> InstallPlan:  # noqa: ARG001
+    tr = f'"{wrench_bin}" fixxer --auto --no-llm'
+    return InstallPlan(
+        kind="schtasks",
+        commands=[
+            ["schtasks", "/Create", "/F", "/SC", "DAILY", "/ST", f"{hour:02d}:00",
+             "/TN", FIXXER_WINDOWS_TASK, "/TR", tr],
+        ],
+        check_hint=f"schtasks /Query /TN {FIXXER_WINDOWS_TASK}",
+        uninstall_hint=f"schtasks /Delete /F /TN {FIXXER_WINDOWS_TASK}",
+    )
+
+
+FIXXER_PLANNERS = {
+    "systemd": _systemd_fixxer_plan,
+    "launchd": _launchd_fixxer_plan,
+    "schtasks": _schtasks_fixxer_plan,
+}
+
+
+def plan_install_fixxer(wrench_bin: str, hour: int = 4, home: Path | None = None) -> InstallPlan:
+    mgr = platforms.service_manager()
+    if mgr is None:
+        raise SchedulerError(
+            "no supported scheduler found — run `wrench fixxer --auto` from your own cron instead."
+        )
+    return FIXXER_PLANNERS[mgr](wrench_bin, hour, home or Path.home())
+
+
 def plan_install(wrench_bin: str, interval_min: int, home: Path | None = None) -> InstallPlan:
     mgr = platforms.service_manager()
     if mgr is None:
@@ -151,18 +255,23 @@ def plan_uninstall(home: Path | None = None) -> InstallPlan:
             kind="systemd",
             commands=[
                 ["systemctl", "--user", "disable", "--now", "wrench-patrol.timer"],
+                ["systemctl", "--user", "disable", "--now", "wrench-fixxer.timer"],
                 ["systemctl", "--user", "daemon-reload"],
             ],
-            files={unit_dir / "wrench-patrol.service": "", unit_dir / "wrench-patrol.timer": ""},
+            files={unit_dir / "wrench-patrol.service": "", unit_dir / "wrench-patrol.timer": "",
+                   unit_dir / "wrench-fixxer.service": "", unit_dir / "wrench-fixxer.timer": ""},
         )
     if mgr == "launchd":
         plist = home / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+        fplist = home / "Library" / "LaunchAgents" / f"{FIXXER_LAUNCHD_LABEL}.plist"
         return InstallPlan(kind="launchd",
-                           commands=[["launchctl", "unload", "-w", str(plist)]],
-                           files={plist: ""})
+                           commands=[["launchctl", "unload", "-w", str(plist)],
+                                     ["launchctl", "unload", "-w", str(fplist)]],
+                           files={plist: "", fplist: ""})
     if mgr == "schtasks":
         return InstallPlan(kind="schtasks",
-                           commands=[["schtasks", "/Delete", "/F", "/TN", WINDOWS_TASK]])
+                           commands=[["schtasks", "/Delete", "/F", "/TN", WINDOWS_TASK],
+                                     ["schtasks", "/Delete", "/F", "/TN", FIXXER_WINDOWS_TASK]])
     raise SchedulerError("no supported scheduler found on this system")
 
 
