@@ -1,0 +1,23 @@
+# credentials — never commit anything key-shaped
+*key*
+*token*
+*secret*
+*.pem
+.env
+.env.*
+credentials/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# local data
+*.db
+*.sqlite
+*.cast
+.wrench-dev/

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wrench-agent"
+version = "0.1.0"
+description = "An intentional local sysadmin agent: watches, diagnoses, explains, and (with permission) fixes."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "sunkencity999" }]
+keywords = ["sysadmin", "agent", "llm", "monitoring", "cli"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "requests>=2.31",
+    "psutil>=5.9",
+    "tomli>=2.0; python_version < '3.11'",
+    "tomli-w>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/sunkencity999/wrench"
+Documentation = "https://sunkencity999.github.io/wrench/"
+
+[project.scripts]
+wrench = "wrench.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["wrench*"]
