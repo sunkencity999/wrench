@@ -1,8 +1,10 @@
 """Unified LLM client for wrench.
 
-One client, six doors: meta (default), openai, ollama, lmstudio, litellm speak
-OpenAI-compatible chat completions; anthropic gets a native adapter. Every call
-logs token usage to the store (if given one) so `wrench web` can show spend.
+One client, seven doors: meta (default), openai, ollama, lmstudio, litellm speak
+OpenAI-compatible chat completions; anthropic gets a native adapter; azure gets
+an Azure OpenAI / AI Foundry adapter (deployment URLs, api-version query,
+api-key header). Every call logs token usage to the store (if given one) so
+`wrench web` can show spend.
 
 Keys are never logged, never printed, never included in errors.
 """
@@ -43,6 +45,7 @@ class LLMClient:
         temperature: float = 0.4,
         purpose: str = "chat",
         retries: int = 2,
+        tools: list[dict] | None = None,
     ) -> str:
         """Send a chat; return assistant text. Raises ProviderError on failure."""
         model = model or self.cfg.model
@@ -52,10 +55,12 @@ class LLMClient:
             try:
                 if self.cfg.provider == "anthropic":
                     text, usage = self._anthropic(messages, model, max_tokens, temperature)
+                elif self.cfg.provider == "azure":
+                    text, usage = self._azure(messages, model, max_tokens, temperature, tools)
                 elif self.cfg.provider == "ollama" and self._wants_native_nothink(model):
                     text, usage = self._ollama_native(messages, model, max_tokens, temperature)
                 else:
-                    text, usage = self._openai_compat(messages, model, max_tokens, temperature)
+                    text, usage = self._openai_compat(messages, model, max_tokens, temperature, tools)
                 self.last_usage = usage
                 if self.store is not None and usage:
                     self.store.add_tokens(
@@ -86,28 +91,8 @@ class LLMClient:
             return False, _redact(str(e), self.cfg.api_key)[:300]
 
     # ---------------- adapters ----------------
-    def _openai_compat(self, messages, model, max_tokens, temperature):
-        url = f"{self.cfg.base_url}/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        if self.cfg.api_key:
-            headers["Authorization"] = f"Bearer {self.cfg.api_key}"
-        body = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        try:
-            r = requests.post(url, headers=headers, json=body, timeout=self.timeout)
-        except requests.RequestException as e:
-            raise ProviderError(
-                f"{self.cfg.provider} unreachable at {self.cfg.base_url}: {e.__class__.__name__}"
-            ) from e
-        if r.status_code != 200:
-            raise ProviderError(
-                f"{self.cfg.provider} HTTP {r.status_code}: {_redact(r.text[:300], self.cfg.api_key)}"
-            )
-        d = r.json()
+    def _parse_chat_response(self, d: dict):
+        """Shared parser for OpenAI-shaped chat-completions responses."""
         try:
             choice = d["choices"][0]
             content = choice["message"].get("content")
@@ -119,6 +104,100 @@ class LLMClient:
             return (content or "").strip(), usage
         except (KeyError, IndexError) as e:
             raise ProviderError(f"unexpected response shape: {list(d.keys())}") from e
+
+    def _openai_compat(self, messages, model, max_tokens, temperature, tools=None):
+        url = f"{self.cfg.base_url}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if self.cfg.api_key:
+            headers["Authorization"] = f"Bearer {self.cfg.api_key}"
+        body = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if tools:
+            body["tools"] = tools
+        try:
+            r = requests.post(url, headers=headers, json=body, timeout=self.timeout)
+        except requests.RequestException as e:
+            raise ProviderError(
+                f"{self.cfg.provider} unreachable at {self.cfg.base_url}: {e.__class__.__name__}"
+            ) from e
+        if r.status_code != 200:
+            raise ProviderError(
+                f"{self.cfg.provider} HTTP {r.status_code}: {_redact(r.text[:300], self.cfg.api_key)}"
+            )
+        return self._parse_chat_response(r.json())
+
+    # ---------------- azure (Azure OpenAI + AI Foundry serverless) ----------------
+    def _azure_url_and_body_style(self, model: str) -> tuple[str, bool]:
+        """Return (url, include_model_in_body).
+
+        Two Azure endpoint families:
+        - Azure OpenAI resource: https://<res>.openai.azure.com — the deployment
+          name lives in the URL path and the body carries no "model".
+        - AI Foundry serverless: https://<name>.<region>.models.ai.azure.com —
+          plain /chat/completions with "model" in the body.
+        A base_url that already contains /openai/deployments/... is used as-is.
+        """
+        base = self.cfg.base_url.rstrip("/")
+        if "/openai/deployments/" in base:
+            return f"{base}/chat/completions", False
+        if ".openai.azure.com" in base or ".cognitiveservices.azure.com" in base:
+            return f"{base}/openai/deployments/{model}/chat/completions", False
+        # Foundry serverless (models.ai.azure.com) or anything else OpenAI-shaped
+        return f"{base}/chat/completions", True
+
+    @staticmethod
+    def _azure_headers(api_key: str, mode: str) -> dict:
+        h = {"Content-Type": "application/json"}
+        if mode == "bearer":
+            h["Authorization"] = f"Bearer {api_key}"
+        else:  # api-key (Azure OpenAI's native header)
+            h["api-key"] = api_key
+        return h
+
+    def _azure(self, messages, model, max_tokens, temperature, tools=None):
+        if not self.cfg.base_url:
+            raise ProviderError(
+                "azure endpoint not configured — set AZURE_OPENAI_ENDPOINT or "
+                "[azure] endpoint in config.toml"
+            )
+        url, model_in_body = self._azure_url_and_body_style(model)
+        params = {"api-version": self.cfg.azure_api_version or "2024-10-21"}
+        body = {
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if model_in_body:
+            body["model"] = model
+        if tools:
+            body["tools"] = tools
+
+        auth = (self.cfg.azure_auth or "auto").lower()
+        modes = {"api-key": ["api-key"], "bearer": ["bearer"]}.get(auth, ["api-key", "bearer"])
+        r = None
+        for i, mode in enumerate(modes):
+            headers = self._azure_headers(self.cfg.api_key, mode)
+            try:
+                r = requests.post(url, headers=headers, params=params, json=body,
+                                  timeout=self.timeout)
+            except requests.RequestException as e:
+                raise ProviderError(
+                    f"azure unreachable at {self.cfg.base_url}: {e.__class__.__name__}"
+                ) from e
+            # auto mode: a 401 on api-key may just mean this endpoint wants Bearer
+            # (Foundry serverless accepts either, depending on how it was provisioned)
+            if r.status_code == 401 and i + 1 < len(modes):
+                continue
+            break
+        if r.status_code != 200:
+            raise ProviderError(
+                f"azure HTTP {r.status_code}: {_redact(r.text[:300], self.cfg.api_key)}"
+            )
+        return self._parse_chat_response(r.json())
 
     # ---------------- ollama native (thinking disabled) ----------------
     @staticmethod

@@ -69,6 +69,16 @@ PROVIDER_DEFAULTS = {
         "key_env": "LITELLM_API_KEY",
         "max_tokens": 4096,
     },
+    "azure": {
+        # No sane default endpoint — every Azure resource has its own.
+        # Set AZURE_OPENAI_ENDPOINT or [azure] endpoint in config.toml.
+        "base_url": "",
+        "model": "gpt-4o-mini",       # = your DEPLOYMENT name on Azure OpenAI
+        "deep_model": "gpt-4o",
+        "key_env": "AZURE_OPENAI_API_KEY",
+        "max_tokens": 4096,
+        "api_version": "2024-10-21",
+    },
 }
 
 
@@ -80,6 +90,8 @@ class Config:
     deep_model: str = ""
     api_key: str = ""
     max_tokens: int = 6144
+    azure_api_version: str = "2024-10-21"
+    azure_auth: str = "auto"  # api-key | bearer | auto (api-key first, bearer on 401)
     policy_tier: str = "suggest"  # observe | suggest | repair | autonomous
     patrol_interval_min: int = 15
     retention_days: int = 30
@@ -118,7 +130,13 @@ def load_config(provider_override: str | None = None, model_override: str | None
     defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])
     psec = raw.get(provider, {}) if isinstance(raw.get(provider), dict) else {}
 
-    base_url = os.environ.get("WRENCH_BASE_URL") or psec.get("base_url") or defaults["base_url"]
+    base_url = (
+        os.environ.get("WRENCH_BASE_URL")
+        or (os.environ.get("AZURE_OPENAI_ENDPOINT") if provider == "azure" else None)
+        or psec.get("base_url")
+        or psec.get("endpoint")  # [azure] section calls it "endpoint"
+        or defaults["base_url"]
+    )
     model = model_override or os.environ.get("WRENCH_MODEL") or psec.get("model") or defaults["model"]
     deep_model = os.environ.get("WRENCH_DEEP_MODEL") or psec.get("deep_model") or defaults["deep_model"]
     key = os.environ.get(defaults["key_env"], "") or os.environ.get("WRENCH_API_KEY", "") or psec.get("api_key", "")
@@ -138,6 +156,12 @@ def load_config(provider_override: str | None = None, model_override: str | None
         deep_model=deep_model,
         api_key=key,
         max_tokens=int(psec.get("max_tokens", defaults["max_tokens"])),
+        azure_api_version=(
+            os.environ.get("AZURE_OPENAI_API_VERSION")
+            or psec.get("api_version")
+            or PROVIDER_DEFAULTS["azure"]["api_version"]
+        ),
+        azure_auth=str(psec.get("auth", "auto")).lower(),
         policy_tier=os.environ.get("WRENCH_POLICY") or pol.get("tier", "suggest"),
         patrol_interval_min=int(gen.get("patrol_interval_min", 15)),
         retention_days=int(gen.get("retention_days", 30)),
@@ -153,7 +177,7 @@ DEFAULT_CONFIG_TOML = """\
 # or set api_key_file below to point at a file containing the key.
 
 [provider]
-name = "{provider}"  # meta | openai | anthropic | ollama | lmstudio | litellm
+name = "{provider}"  # meta | openai | anthropic | azure | ollama | lmstudio | litellm
 
 [{provider}]
 # base_url = "{base_url}"
@@ -182,19 +206,49 @@ cadence_hours = 24
 # distro_watchlist = ["openssl", "openssh", "sudo"]  # override the curated default
 """
 
+AZURE_SECTION_TOML = """\
+[azure]
+# Azure OpenAI resource:   https://<resource>.openai.azure.com
+# AI Foundry serverless:   https://<name>.<region>.models.ai.azure.com
+endpoint = "{endpoint}"
+model = "{model}"        # your DEPLOYMENT name (Azure OpenAI) / model name (Foundry)
+deep_model = "{deep_model}"
+api_version = "{api_version}"
+auth = "auto"            # api-key | bearer | auto (api-key first, bearer on 401)
+{key_line}
+"""
+
 
 def write_default_config(provider: str = "meta", interval: int = 15,
                          model: str | None = None,
-                         deep_model: str | None = None) -> Path:
+                         deep_model: str | None = None,
+                         azure_endpoint: str | None = None,
+                         azure_api_version: str | None = None,
+                         api_key: str | None = None) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     d = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])
-    CONFIG_PATH.write_text(
-        DEFAULT_CONFIG_TOML.format(
-            provider=provider,
-            base_url=d["base_url"],
+    text = DEFAULT_CONFIG_TOML.format(
+        provider=provider,
+        base_url=d["base_url"],
+        model=model or d["model"],
+        deep_model=deep_model or model or d["deep_model"],
+        interval=interval,
+    )
+    if provider == "azure":
+        key_line = f'api_key = "{api_key}"' if api_key \
+            else '# api_key_file = "~/.config/wrench/azure.key"  # or export AZURE_OPENAI_API_KEY'
+        section = AZURE_SECTION_TOML.format(
+            endpoint=(azure_endpoint or "").rstrip("/"),
             model=model or d["model"],
             deep_model=deep_model or model or d["deep_model"],
-            interval=interval,
+            api_version=azure_api_version or d["api_version"],
+            key_line=key_line,
         )
-    )
+        # replace the generic provider section with the azure-specific one
+        head, _, tail = text.partition(f"[{provider}]")
+        tail = tail.split("\n\n", 1)[1] if "\n\n" in tail else ""
+        text = head + section + "\n" + tail
+    CONFIG_PATH.write_text(text)
+    if provider == "azure" and api_key:
+        CONFIG_PATH.chmod(0o600)  # key inside — owner-only
     return CONFIG_PATH
