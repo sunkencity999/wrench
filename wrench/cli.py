@@ -19,8 +19,8 @@ from .providers import LLMClient
 from .store import Store
 
 app = typer.Typer(
-    help="🔧 wrench — an intentional local sysadmin agent. It watches, diagnoses, "
-    "explains, and (with permission) fixes.",
+    help="🔧 wrench — I'm the sysadmin that lives on your machine. I watch, remember, "
+    "explain, and — with your permission — fix.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode="rich",
@@ -131,8 +131,8 @@ def patrol(
             console.print(f"  [dim cyan]⚙ {detail}[/dim cyan]")
 
     if not quiet:
-        console.print(f"[dim]patrolling with {cfg.deep_model if deep else cfg.model} "
-                      f"(tier: {cfg.policy_tier})...[/dim]")
+        console.print(f"[dim italic]I'm on patrol — sweeping sensors, drift, and logs "
+                      f"({cfg.deep_model if deep else cfg.model}, tier: {cfg.policy_tier})...[/dim italic]")
     p = agent_mod.run_patrol(cfg, store, on_step=on_step, deep=deep)
     if quiet and p["status"] == "ok":
         return
@@ -455,10 +455,14 @@ def init(
         else:
             smoke_note = "\nlocal smoke test: skipped (ollama server not running)"
     console.print(Panel(
+        "[bold]I'm wrench — your systems administrator. I live here now.[/bold]\n"
+        "I read the logs so you don't have to, I remember what changes on this box,\n"
+        "and with your permission I fix problems before you ever see them.\n"
+        "I just took my first look around (sensor baseline + drift snapshot recorded).\n\n"
         f"provider: [bold]{cfg.provider}[/bold] · model: [bold]{cfg.model}[/bold] · "
         f"policy: [bold]{cfg.policy_tier}[/bold]\n"
         f"data: {cfg.db_path}{smoke_note}\n\n"
-        "next steps:\n"
+        "put me to work:\n"
         + (""
            if cfg.provider in ("ollama", "lmstudio")
            else f"  1. export {_key_env(cfg.provider)}=...   (or set api_key_file in config)\n")
@@ -466,8 +470,9 @@ def init(
            if cfg.provider in ("ollama", "lmstudio") else "")
         +
         "  2. wrench doctor      — verify everything\n"
-        "  3. wrench patrol      — first patrol\n"
-        "  4. wrench web         — dashboard",
+        "  3. wrench patrol      — I'll sweep the box and report\n"
+        "  4. wrench fixxer      — I'll find what I can fix, and ask\n"
+        "  5. wrench web         — live dashboard",
         border_style="green", title="🔧 wrench initialized"))
 
 

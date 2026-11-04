@@ -1,6 +1,6 @@
 # 🔧 wrench
 
-> **An AI sysadmin that lives on your machine: it continuously senses, remembers the history, explains problems in plain English — and asks before touching anything.**
+> **"I'm the sysadmin that lives on your machine. I read the logs so you don't have to. I remember what changed. I explain problems in plain English — and with your permission, I fix them before you ever see them."**
 >
 > ⚡ **Powered by Meta muse models** — `muse-spark-1.3` drives patrols and investigations, `muse-wonder-1.0` handles deep diagnosis — with a **first-class local mode via Ollama** (private + zero cost when your hardware allows), plus OpenAI, Anthropic, LM Studio, and LiteLLM.
 
@@ -38,6 +38,7 @@ staff sysadmin on the box itself. It does four things, continuously:
 | 🧠 | **Remember** | Snapshots what the machine *is* — listening ports, running services, installed packages, user accounts, scheduled jobs — and diffs every scan into plain-English change history: "port opened: tcp/8081 (python3)", "package upgraded: openssl 3.0.13". When something breaks, the timeline already exists. |
 | 💬 | **Explain** | An LLM agent with read-only diagnostic tools answers questions about *your* machine, grounded in its actual telemetry and logs — not generic trivia. "Why is my disk filling up?" gets investigated, not guessed at. |
 | 🚓 | **Patrol** | On a schedule, wrench reviews the sensors, the anomalies, and the drift; investigates anything suspicious with real diagnostics; and files a report a human wants to read. Ok / attention / critical, findings with evidence, exact commands to fix. |
+| 🔧 | **Fix** | `wrench fixxer` finds what's programmatically correctable — pending updates (incl. security), orphaned packages & old kernels, fat journald logs, bloated caches, stale `/tmp`, failed services — and applies the fixes you pick, with per-fix verification. Every fix is a hand-written catalog command; the model explains and helps you choose, but **never writes the shell**. Opt-in auto mode for self-healing boxes, behind a consent ceremony and an audit log. |
 
 All of it runs locally, with **Meta's muse models as the default brain**: the
 fast agentic `muse-spark-1.3` for patrols and questions, and the deep-reasoning
@@ -255,6 +256,80 @@ OS:
 | Windows | Scheduled Task (`schtasks`) |
 
 `wrench install-service --uninstall` removes it just as cleanly.
+
+### `wrench fixxer` — "with your permission, I fix it"
+
+Everything above looks and explains. `fixxer` is the hands. It scans the box
+for issues that are *programmatically correctable* and presents a numbered,
+risk-labeled menu:
+
+```text
+I'm going through the box looking for things I can fix myself...
+
+                     🔧 correctable issues I found
+ ┏━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┓
+ ┃ # ┃   risk   ┃ fix                      ┃ evidence                     ┃ sudo ┃
+ ┡━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━┩
+ │ 1 │   safe   │ Shrink journald logs     │ journald uses 4096 MB        │  ✓   │
+ │ 2 │   safe   │ Clear package cache      │ apt cache holds 2015 MB      │  ✓   │
+ │ 3 │ moderate │ Apply pending updates    │ 242 upgradable (3 security)  │  ✓   │
+ │ 4 │ moderate │ Remove orphaned packages │ 3 removable, incl. 1 kernel  │  ✓   │
+ └───┴──────────┴──────────────────────────┴──────────────────────────────┴──────┘
+
+apply which? [a]ll / [n]one / numbers e.g. 1,3 ▸
+```
+
+The model (muse, by default) briefs you in plain English on what it found and
+what it would do first — then **you** pick. Each applied fix is verified
+(re-measure, not vibes: did the journal actually shrink? are the upgrades
+actually gone?) and reported.
+
+**The safety line.** The LLM never generates the commands. Every fix lives in
+a hand-written, parameterized **action catalog** in
+[`fixxer.py`](wrench/fixxer.py) — detection is code, the command is code,
+verification is code. The model's only job is to explain the findings and help
+you choose from the menu. Detection and application degrade gracefully per
+platform: `apt` is fully exercised; `dnf` / `pacman` / `brew` / `winget` ride
+the same abstraction (best-effort, unit-tested, not yet live-tested — see
+[PLATFORMS.md](PLATFORMS.md)).
+
+| risk tier | what's in it |
+|---|---|
+| `safe` | refresh package metadata · vacuum journald · clear package caches · reset stale failed-unit markers |
+| `moderate` | apply pending package updates · remove orphans & old kernels · delete stale `/tmp` files · restart failed services |
+| `risky` | reserved — nothing in the catalog ships at this tier today |
+
+#### ⚠️ Auto mode — the self-healing box
+
+Some people build machines just to run them hands-off. For them:
+
+```bash
+wrench fixxer --setup-auto   # one-time, interactive consent ceremony
+wrench fixxer --dry-run      # see exactly what auto WOULD do, touch nothing
+wrench fixxer --auto         # apply consented-tier fixes, no questions
+wrench install-service --with-auto-fixxer   # …and schedule it daily
+```
+
+**Read this part.** Auto mode runs privileged commands on your machine with
+nobody watching. wrench gates it accordingly:
+
+- **No consent, no auto.** The first enable is an explicit interactive
+  ceremony that shows exactly what classes of action it may take and writes a
+  consent record (`fixxer_consent.json`) — host, timestamp, tiers.
+- **Safe tier only, by default.** Widening auto scope to `moderate` takes
+  **two locks**: the consent record must include the tier *and* you must set
+  `auto_tiers = ["safe", "moderate"]` under `[fixxer]` in config.toml.
+  Effective scope is the intersection.
+- **Everything is audited.** Every auto (and interactive) action appends a
+  JSONL entry — timestamp, exact command, result, verification, rollback hint
+  — to `fixxer_audit.jsonl`. `wrench fixxer --audit` shows the tail.
+- **Revocable in one command:** `wrench fixxer --revoke-auto`.
+- In auto mode sudo runs non-interactively (`sudo -n`) — it fails cleanly
+  rather than hanging; grant passwordless sudo for the specific commands via
+  `sudoers` if you want unattended privileged fixes.
+
+If any of that makes you uneasy: good instincts — don't enable it. Interactive
+`wrench fixxer` gives you the same fixes with you holding the pen.
 
 ## How a patrol works
 
@@ -492,6 +567,14 @@ forbidden-pattern list blocks destructive commands at every tier, and
 everything is logged. The only way it touches your system unsupervised is if
 you deliberately promote it to `autonomous` *and* the action is on the
 allowlist. It's an agent with a leash and a paperwork habit.
+
+**What about `fixxer` — isn't that an LLM running commands as root?**
+No — and this distinction is the whole design. In `fixxer`, the LLM never
+authors a command. It explains findings and recommends choices **from** a
+hand-written catalog of parameterized fixes (detection, command, and
+verification are all code). Auto mode additionally requires a recorded consent
+ceremony, defaults to safe-tier actions only, and writes every action to an
+audit log with rollback hints.
 
 **Why not just cron + bash?**
 Cron is great at running a script at 4 a.m. and emailing you a cryptic

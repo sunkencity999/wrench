@@ -64,9 +64,20 @@ def _ago(ts: float) -> str:
 
 # ---------------- wrench status ----------------
 
+# One voice line, then data. wrench speaks in first person — and only claims
+# what it actually does.
+PATROL_VOICE = {
+    "ok": "All quiet. I'll keep watching.",
+    "attention": "Worth a look when you have a minute — my evidence is above.",
+    "critical": "Don't sit on this one. Evidence above; I'm standing by.",
+}
+
+
 def render_status(console: Console, data: dict, history: list[tuple[float, dict]],
                   cfg=None) -> None:
     osd = data["os"]
+
+    console.print(Text("Here's the box as I see it right now.", style="dim italic"))
 
     # headline gauges
     gauges = Table.grid(padding=(0, 2))
@@ -152,6 +163,10 @@ def render_patrol(console: Console, patrol: dict) -> None:
     body.append(Text(
         f"model {patrol.get('model', '?')} · {patrol['tokens']} tokens · "
         f"{patrol.get('duration_s', '?')}s", style="dim"))
+
+    voice = PATROL_VOICE.get(patrol["status"])
+    if voice:
+        body.append(Text(voice, style="italic dim"))
 
     console.print(Panel(Group(*body), title="[bold]🔧 wrench patrol[/bold]",
                         subtitle=datetime.now().strftime("%Y-%m-%d %H:%M"),
