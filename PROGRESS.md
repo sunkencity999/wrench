@@ -27,12 +27,17 @@ Deadline: 2026-11-04 ~14:00 PST. Builder notes for the orchestrator.
   in .wrench-dev/demo_transcripts/ (will sanitize 2-3 into examples/).
 - wrench-patrol.timer keeps patrolling every 30min.
 
-### Remaining before deadline
-- [ ] Sanitize + commit 1-2 text transcripts from the batch (examples/)
+### Final verify sweep — 2026-11-03 20:30 PST — ALL GREEN
+- [x] 12-item demo batch complete; 3 sanitized transcripts + index committed to examples/
+- [x] Fresh venv install from public GitHub URL → `wrench version` + `wrench status` clean
+- [x] Pages 200 with hero copy; repo 200; README renders
+- [x] Token log updated: **746k tokens / 145 calls** (spark 617k/118, wonder 129k/27)
 - [ ] Ollama provider live test — DEFERRED while GPUs are pinned by the P-H3 trial
-      (ollama would want VRAM). Code-complete; graceful-error path verified. Test if GPUs free up.
-- [ ] Final verify sweep: fresh pipx install from GitHub, README render check, Pages check
-- [ ] Update token log with final totals
+      (ollama would want VRAM). Code-complete; same OpenAI-compat path as the proven meta
+      adapter; graceful-error path verified. Test if GPUs free up before deadline.
+- wrench-patrol.timer left ENABLED (30min cadence) — keeps the dashboard + token widget
+  live and burns credits as instructed. Disable after judging with:
+  `systemctl --user disable --now wrench-patrol.timer`
 
 ### Known notes
 - Port 8787 is taken on Devbox2 by an unrelated service → use `wrench web --port 8790` here.
