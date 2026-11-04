@@ -39,6 +39,7 @@ staff sysadmin on the box itself. It does four things, continuously:
 | 💬 | **Explain** | An LLM agent with read-only diagnostic tools answers questions about *your* machine, grounded in its actual telemetry and logs — not generic trivia. "Why is my disk filling up?" gets investigated, not guessed at. |
 | 🚓 | **Patrol** | On a schedule, wrench reviews the sensors, the anomalies, and the drift; investigates anything suspicious with real diagnostics; and files a report a human wants to read. Ok / attention / critical, findings with evidence, exact commands to fix. |
 | 🔧 | **Fix** | `wrench fixxer` finds what's programmatically correctable — pending updates (incl. security), orphaned packages & old kernels, fat journald logs, bloated caches, stale `/tmp`, failed services — and applies the fixes you pick, with per-fix verification. Every fix is a hand-written catalog command; the model explains and helps you choose, but **never writes the shell**. Opt-in auto mode for self-healing boxes, behind a consent ceremony and an audit log. |
+| 🛰️ | **Watch the horizon** | `wrench cve` checks installed packages against **[OSV.dev](https://osv.dev)** and the OS/kernel/runtimes against **[endoflife.date](https://endoflife.date)** — free public APIs, no keys. Known CVEs flow into patrols, the dashboard, and `fixxer` (which can apply *targeted* security updates for exactly the affected packages). Results cache locally with a TTL; patrols never fail because the internet is down. |
 
 All of it runs locally, with **Meta's muse models as the default brain**: the
 fast agentic `muse-spark-1.3` for patrols and questions, and the deep-reasoning
@@ -236,11 +237,42 @@ terminal sentinel instead of a scheduled service.
 ### `wrench report` / `wrench web`
 
 `report` lists recent patrols with status and token cost. `web` serves the
-dark dashboard — live vitals, 24h SVG timelines, patrol feed, drift feed,
-agent action log, token-spend widget — all rendered from the same SQLite file,
-zero build step, zero CDN.
+dashboard — live vitals, 24h SVG timelines, patrol feed, drift feed,
+security-intel feed, agent action log, token-spend widget — all rendered from
+the same SQLite file, zero build step, zero CDN. Dark and light themes.
 
 ![wrench dashboard](docs/assets/dashboard.png)
+
+**And I'm in there.** The 🔧 bubble in the corner opens a live chat with me —
+the same agent loop as `wrench chat`, tool calls and all, so "what's eating
+RAM?" gets *investigated* from your browser. The dashboard binds `127.0.0.1`
+and the chat endpoint only answers localhost origins; your machine's
+conversation stays on your machine.
+
+Keyboard shortcuts: <kbd>?</kbd> overlay · <kbd>c</kbd> chat ·
+<kbd>r</kbd> refresh · <kbd>t</kbd> theme · <kbd>Esc</kbd> close.
+
+### `wrench cve` — what the internet already knows about your box
+
+```console
+$ wrench cve
+🚨 known vulnerabilities (OSV.dev)      ← package · installed · CVE ids · severity · fixed-in
+⏳ end-of-life status (endoflife.date)  ← os · kernel · python · node
+```
+
+I inventory what's actually installed — pip packages, npm globals, and a
+curated watchlist of security-critical distro packages (openssl, openssh,
+sudo, systemd, …) — and ask OSV.dev what's known about *those exact
+versions*. Then endoflife.date tells me whether the OS, kernel, python, and
+node you're running still get security support at all. I summarize what
+matters in plain English, and if fixed builds exist, `wrench fixxer` stages a
+targeted `--only-upgrade` for just the affected packages (moderate tier — you
+consent, as always). EOL products get flagged, never auto-"fixed": a major OS
+upgrade is your decision, not mine.
+
+Everything caches in the same SQLite store (24h TTL, `[webintel]` knobs in
+config: `enable`, `cadence_hours`). Offline? I serve the cached scan and say
+so. Exit code 1 when vulns are found, so you can wire it into CI or cron.
 
 ### `wrench init` / `wrench doctor` / `wrench install-service`
 

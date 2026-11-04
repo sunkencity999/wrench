@@ -1,5 +1,58 @@
 # wrench — build progress
 
+## 2026-11-04 ~12:00 — v1.0.0: WEB INTEL + LIVE CHAT + BEAUTY (final pass)
+
+Christopher's 1.0 directive, three workstreams, all shipped + live-tested:
+
+### 1. Web intelligence (0261a63)
+- `wrench/webintel.py`: OSV.dev (querybatch + capped per-vuln detail) over a
+  sensible inventory — pip + npm globals + curated distro watchlist (openssl,
+  openssh, sudo, systemd… ~20 source pkgs) — plus endoflife.date for
+  os/kernel/python/node. 8s timeouts, sqlite TTL cache (24h, `[webintel]`
+  enable/cadence_hours knobs), offline → stale cache marked offline. Patrol
+  context gets a summary line; **patrol can never fail from network loss**.
+- `wrench cve`: severity-colored tables + first-person threat briefing;
+  exit 1 on findings. fixxer gains `cve_upgrade` catalog action (targeted
+  `apt-get install --only-upgrade` of exactly the CVE-affected binaries,
+  moderate tier) + EOL advisory panel (flagged, never auto). New agent tool
+  `security_intel` (cached, instant).
+- **LIVE**: 261 packages checked on Devbox2 — real findings: aiohttp 3.13.3
+  15 advisories (fix 3.14.4), kernel 7.0 EOL 2026-06-27. Briefing triaged
+  correctly (transcript: /tmp/wrench_cve_transcript.txt, 3.2k tok).
+
+### 2. Live chat in the dashboard (ecbdb0b)
+- 🔧 FAB → chat panel: POST /api/chat runs the same Agent loop as `wrench
+  chat` (tool calls included), session conversation memory, typing dots,
+  model/tokens/tool-call meta per reply. Greeting: "I'm wrench. I live here."
+- Security: still binds 127.0.0.1; chat enforces localhost-origin + 16KB cap;
+  503 without cfg. Shortcuts: ? overlay, c chat, r refresh, t theme (new
+  dark/light toggle, persisted), Esc. New security-intel feed panel.
+- **LIVE**: curl chat → 23.8k tok, 4 tool calls, CVE triage cross-referencing
+  live listeners; browser chat → RAM question answered (9.7k tok, 3 tools).
+  Screenshot: ~/.openclaw/workspace/reports/state/wrench_dashboard_chat_live.png
+
+### 3. Beauty pass (8fc4c63)
+- Site: scroll-reveal (reduced-motion safe), hero entrance + counter-rotating
+  gear rings, card hover lift, simulated chat replay FAB ("on your machine,
+  this chat is real"), tutorial step 6 `wrench web` pops it as the finale,
+  ? shortcuts overlay (parity with dashboard), 'Watch the horizon' CVE card.
+  Verified in a real browser. Screenshot:
+  ~/.openclaw/workspace/reports/state/wrench_site_chat_teaser.png
+- Dashboard polish rode along with #2 (theme, hover, panels).
+- CLI: `wrench cve` tables are the new-formatting showcase; existing rich
+  output untouched (already aligned/colored/spinnered).
+
+### Verification
+- **Tests: 165 pass** (138 → +20 webintel +7 webchat).
+- Token burn this pass: cve 3.2k + web-chat 33.5k; cumulative **2.27M / 398
+  calls** (reports/state/wrench_hackathon_tokens.md).
+- v1.0.0 tagged. pipx reinstall + wrench status + patrol timer + Pages
+  checked below (final verify sweep).
+
+Cut for deadline: GitHub-releases watchlist checker (optional extra),
+deeper CLI reformat (already rich), macOS/Windows native smokes (unchanged).
+
+
 ## 2026-11-04 ~11:45 — FIXXER + PERSONALITY (v0.3.0, final pre-deadline pass)
 
 Christopher's final feature directive, all shipped and live-tested:
