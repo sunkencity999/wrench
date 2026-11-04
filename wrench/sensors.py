@@ -1,7 +1,7 @@
 """Sensors: periodic sampling of os / docker / gpu / net into the sqlite store.
 
-Mechanic heritage: every sample updates an EWMA baseline per metric and flags
-z-score anomalies once the baseline has warmed up (n >= 20 samples).
+Every sample updates an EWMA baseline per metric and flags z-score anomalies
+once the baseline has warmed up (n >= 20 samples).
 """
 
 from __future__ import annotations

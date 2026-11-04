@@ -2,8 +2,8 @@
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wrench — your box is up to something</title>
-<meta name="description" content="An intentional local sysadmin agent: telemetry, drift memory, and an LLM brain with brakes. Read-only by default.">
+<title>wrench — an AI sysadmin for the machine you actually love</title>
+<meta name="description" content="wrench continuously senses your machine, remembers its history, explains problems in plain English, and asks before touching anything. Linux, macOS, Windows. Read-only by default.">
 <style>
 :root { --bg:#0b0e14; --panel:#11151f; --border:#1f2633; --fg:#dce3ee; --dim:#7d8799;
   --ok:#3fb950; --warn:#d29922; --crit:#f85149; --accent:#58a6ff; --mag:#bc8cff; --cyan:#39c5cf; }
@@ -15,38 +15,58 @@ body { background:var(--bg); color:var(--fg);
 a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
 
 /* hero */
-.hero { text-align:center; padding:5rem 0 3rem;
+.hero { text-align:center; padding:4.5rem 0 2.5rem;
   background:radial-gradient(ellipse 70% 50% at 50% 0%, #15233a 0%, var(--bg) 70%); }
 .hero .tool { font-size:3rem; }
-.hero h1 { font-size:clamp(1.8rem, 5vw, 3rem); margin:.4rem 0 .8rem; letter-spacing:-.02em; }
+.hero h1 { font-size:clamp(1.7rem, 4.6vw, 2.8rem); margin:.4rem 0 .8rem; letter-spacing:-.02em; }
 .hero h1 .blink { animation:blink 1.2s step-end infinite; color:var(--accent); }
 @keyframes blink { 50% { opacity:0 } }
-.hero p { color:var(--dim); max-width:560px; margin:0 auto 2rem; }
+.hero p.sub { color:var(--dim); max-width:640px; margin:0 auto 2rem; }
+.hero p.sub b { color:var(--fg); }
 .ctas { display:flex; gap:.8rem; justify-content:center; flex-wrap:wrap; }
 .btn { display:inline-block; padding:.65rem 1.3rem; border-radius:9px; font-weight:bold;
-  border:1px solid var(--border); background:var(--panel); color:var(--fg); font-size:.9rem; }
+  border:1px solid var(--border); background:var(--panel); color:var(--fg); font-size:.9rem; cursor:pointer; }
 .btn.primary { background:var(--accent); color:#06101f; border-color:var(--accent); }
 .btn:hover { text-decoration:none; filter:brightness(1.15); }
-.install { margin-top:1.6rem; display:inline-block; background:#0a0d12; border:1px solid var(--border);
-  border-radius:9px; padding:.6rem 1.1rem; color:var(--ok); font-size:.85rem; cursor:pointer; }
-.install .dim { color:var(--dim); }
+.platbadge { margin-top:1.4rem; color:var(--dim); font-size:.8rem; }
+.platbadge b { color:var(--fg); }
 
-/* terminal */
+/* problem strip */
+.problem { padding:2.6rem 0 0; }
+.problem .cards .card p b { color:var(--fg); }
+
+/* terminal chrome (shared) */
 .term { background:#0a0d12; border:1px solid var(--border); border-radius:12px;
-  margin:3rem auto; max-width:860px; box-shadow:0 20px 60px #0008; text-align:left; overflow:hidden; }
+  margin:1.6rem auto; max-width:900px; box-shadow:0 20px 60px #0008; text-align:left; overflow:hidden; }
 .term-bar { background:var(--panel); padding:.5rem .9rem; border-bottom:1px solid var(--border);
   display:flex; gap:.4rem; align-items:center; }
 .term-bar i { width:11px; height:11px; border-radius:50%; display:inline-block; }
 .term-bar .r { background:#f85149 } .term-bar .y { background:#d29922 } .term-bar .g { background:#3fb950 }
 .term-bar span { color:var(--dim); font-size:.75rem; margin-left:.6rem; }
-.term pre { padding:1.1rem 1.3rem; font-size:.8rem; line-height:1.55; overflow-x:auto; color:var(--fg); }
+.term pre { padding:1.1rem 1.3rem; font-size:.78rem; line-height:1.5; overflow-x:auto; color:var(--fg); }
 .c-dim { color:var(--dim) } .c-ok { color:var(--ok) } .c-warn { color:var(--warn) }
 .c-crit { color:var(--crit) } .c-acc { color:var(--accent) } .c-mag { color:var(--mag) } .c-cyan { color:var(--cyan) }
 
+/* interactive tutorial */
+#tut-screen { height:420px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+.tut-note { color:var(--cyan); font-style:italic; }
+.tut-controls { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; justify-content:center;
+  margin:1rem auto 0; max-width:900px; }
+.tut-chip { font:inherit; font-size:.78rem; padding:.45rem .8rem; border-radius:999px; cursor:pointer;
+  border:1px solid var(--border); background:var(--panel); color:var(--dim); }
+.tut-chip.current { border-color:var(--accent); color:var(--fg); }
+.tut-chip.done { border-color:var(--ok); color:var(--ok); }
+.tut-chip:hover { filter:brightness(1.25); }
+#tut-run { font:inherit; font-size:.82rem; padding:.5rem 1.1rem; border-radius:9px; cursor:pointer;
+  background:var(--accent); color:#06101f; border:1px solid var(--accent); font-weight:bold; }
+#tut-run:disabled { opacity:.55; cursor:wait; }
+
 /* sections */
-section { padding:3rem 0; }
+section { padding:2.8rem 0; }
 h2 { font-size:1.1rem; text-transform:uppercase; letter-spacing:.14em; color:var(--dim);
-  text-align:center; margin-bottom:2rem; }
+  text-align:center; margin-bottom:1.6rem; }
+.lead { text-align:center; color:var(--dim); max-width:680px; margin:-0.8rem auto 1.6rem; font-size:.9rem; }
+.lead b, .lead code { color:var(--fg); }
 .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
 .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:1.4rem; }
 .card h3 { font-size:1rem; margin-bottom:.6rem; color:var(--fg); }
@@ -66,26 +86,130 @@ h2 { font-size:1.1rem; text-transform:uppercase; letter-spacing:.14em; color:var
 .tier code { color:var(--accent); min-width:110px; font-weight:bold; }
 .tier span { color:var(--dim); }
 
+/* case study */
+.case { background:var(--panel); border:1px solid var(--border); border-left:4px solid var(--warn);
+  border-radius:12px; padding:1.6rem 1.8rem; max-width:860px; margin:0 auto; }
+.case h3 { color:var(--warn); margin-bottom:.8rem; font-size:1rem; }
+.case p, .case li { color:var(--dim); font-size:.88rem; }
+.case ul { margin:.8rem 0 .8rem 1.2rem; }
+.case li { margin-bottom:.45rem; }
+.case .sev { font-weight:bold; }
+.case .hi { color:var(--crit); } .case .med { color:var(--warn); } .case .lo { color:var(--cyan); }
+.case .punch { color:var(--fg); margin-top:.9rem; }
+
+/* install tabs */
+.tabs { max-width:760px; margin:0 auto; }
+.tabbar { display:flex; gap:.4rem; justify-content:center; margin-bottom: -1px; }
+.tabbar button { font:inherit; font-size:.85rem; padding:.55rem 1.2rem; cursor:pointer;
+  background:var(--panel); color:var(--dim); border:1px solid var(--border);
+  border-radius:10px 10px 0 0; border-bottom:none; }
+.tabbar button.active { color:var(--fg); background:#0a0d12; border-color:var(--accent); }
+.tabpane { display:none; background:#0a0d12; border:1px solid var(--accent); border-radius:0 10px 10px 10px; padding:1.1rem 1.2rem; }
+.tabpane.active { display:block; }
+.tabpane pre { overflow-x:auto; font-size:.82rem; line-height:1.7; color:var(--ok); }
+.tabpane .cmt { color:var(--dim); }
+.copybtn { float:right; font:inherit; font-size:.72rem; padding:.25rem .7rem; cursor:pointer;
+  background:var(--panel); color:var(--dim); border:1px solid var(--border); border-radius:7px; }
+.copybtn:hover { color:var(--fg); }
+.tabnote { text-align:center; color:var(--dim); font-size:.78rem; margin-top:.8rem; }
+
 footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center;
   color:var(--dim); font-size:.85rem; }
 </style></head><body>
 
 <div class="hero"><div class="wrap">
   <div class="tool">🔧</div>
-  <h1>Your box is up to something<span class="blink">▌</span></h1>
-  <p>Local telemetry and drift memory, plus an agent that asks before it acts.
-     Read-only by default.</p>
+  <h1>Nobody is watching your machine.<br>Now something is<span class="blink">▌</span></h1>
+  <p class="sub">Disks fill silently. Services die at 3 a.m. Configs drift. When something finally
+     breaks, you reconstruct history from scraps. <b>wrench</b> is an AI sysadmin that lives on the
+     box: it <b>senses</b> continuously, <b>remembers</b> every change, <b>explains</b> problems in
+     plain English — and asks before touching anything.</p>
   <div class="ctas">
-    <a class="btn primary" href="https://github.com/sunkencity999/wrench">View on GitHub</a>
-    <a class="btn" href="#patrol">Watch a patrol</a>
-    <a class="btn" href="https://github.com/sunkencity999/wrench#quickstart">Quickstart</a>
+    <a class="btn primary" href="#tutorial">▶ Try the 60-second tour</a>
+    <a class="btn" href="https://github.com/sunkencity999/wrench">View on GitHub</a>
+    <a class="btn" href="#install">Install</a>
   </div>
-  <div class="install" onclick="navigator.clipboard&&navigator.clipboard.writeText('pipx install git+https://github.com/sunkencity999/wrench')" title="click to copy">
-    <span class="dim">$</span> pipx install git+https://github.com/sunkencity999/wrench
-  </div>
+  <p class="platbadge">runs on <b>Linux</b> · <b>macOS</b> · <b>Windows</b> — read-only by default ·
+    MIT · local SQLite, your choice of brain (<a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">support matrix</a>)</p>
 </div></div>
 
+<section class="problem"><div class="wrap">
+  <h2>The problem</h2>
+  <div class="cards">
+    <div class="card"><span class="ico">📉</span><h3>Degradation is silent</h3>
+      <p>A disk creeps from 60% to 94% over three months. Swap quietly swells. A fan slows.
+      <b>Nothing pages you</b> — classic tools show you <i>right now</i> and remember nothing.</p></div>
+    <div class="card"><span class="ico">🕳️</span><h3>Changes leave no story</h3>
+      <p>An upgrade swaps a config. A port opens nobody remembers. When it breaks, you do
+      archaeology: logs, shell history, vibes. <b>The timeline you need was never recorded.</b></p></div>
+    <div class="card"><span class="ico">🚨</span><h3>Graphs can't investigate</h3>
+      <p>Monitoring stacks draw the line going up — after you build dashboards and tune alerts.
+      Then <b>you</b> go find out why. A graph can scream; it can't open the journal and look.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>What wrench does instead</h2>
+  <div class="cards">
+    <div class="card"><span class="ico">📡</span><h3>Sense</h3>
+      <p>CPU, memory, disks, network, processes, Docker, GPU — sampled into a local SQLite
+      time-series until "normal" is a <b>learned baseline, not a guess</b>. Spikes are flagged by
+      z-score, so you see what's weird, not what's loud.</p></div>
+    <div class="card"><span class="ico">🧠</span><h3>Remember</h3>
+      <p>Ports, services, packages, users, and scheduled jobs get snapshotted and diffed on every
+      scan — in English. Not a raw diff: <b>"port opened: tcp/8081 (python3)"</b>,
+      "package upgraded: openssl". The history exists <i>before</i> you need it.</p></div>
+    <div class="card"><span class="ico">💬</span><h3>Explain</h3>
+      <p>Ask "why is my disk filling up?" and an agent with read-only diagnostic tools goes and
+      <b>finds out</b> — grounded in your telemetry and logs, citing evidence, handing privileged
+      commands to you instead of running them.</p></div>
+    <div class="card"><span class="ico">🚓</span><h3>Patrol</h3>
+      <p>On a schedule, wrench reviews sensors, anomalies, and drift; investigates; and files a
+      report you'll actually read: <b>ok / attention / critical</b>, findings with evidence, exact
+      fixes. Terminal, styled HTML, and dashboard — same facts everywhere.</p></div>
+  </div>
+</div></section>
+
+<section id="tutorial"><div class="wrap">
+  <h2>Try it — the 60-second tour</h2>
+  <p class="lead">A simulated terminal with <b>real (sanitized) output</b> from the dev box.
+    Click the steps — nothing runs on your machine.</p>
+  <div class="term">
+    <div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>wrench — interactive demo</span></div>
+    <pre id="tut-screen" aria-live="polite"></pre>
+  </div>
+  <div class="tut-controls">
+    <div id="tut-chips" style="display:flex;gap:.5rem;flex-wrap:wrap;justify-content:center"></div>
+    <button id="tut-run" type="button">▶ run</button>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Case study — the night it earned its keep</h2>
+  <div class="case">
+    <h3>⚠ ATTENTION — the dying disk whose alarm was also broken</h3>
+    <p>A real patrol from wrench's first day on its dev box (sanitized report in the repo's
+       <a href="https://github.com/sunkencity999/wrench/tree/main/examples">examples/</a>):</p>
+    <ul>
+      <li><span class="sev hi">[high]</span> smartd had been reporting <b>"7 currently unreadable
+        (pending) sectors"</b> on /dev/sda every 30 minutes, all day — a 5.5T mount, 2.8T of data at risk.</li>
+      <li><span class="sev med">[medium]</span> memory pressure explained: 92% RAM traced to one
+        48&nbsp;GB image-generation process — context, not panic.</li>
+      <li><span class="sev med">[medium]</span> repeated PCIe AER errors from one root port, six
+        times that day — flagged for identification.</li>
+      <li><span class="sev lo">[low]</span> and the kicker: <b>smartd's email alerts were broken</b>
+        (<code>/usr/bin/mail</code> missing) — every disk warning had been shouted into the void.</li>
+    </ul>
+    <p>Recommendations came as exact commands: back up the at-risk mount now,
+      <code>sudo smartctl -a /dev/sda</code>, install mailutils so SMART alerts reach a human.</p>
+    <p class="punch">The machine had been asking for help every thirty minutes with the alarm wire
+      cut. A metrics dashboard shows a line. A patrol says: <b>the disk is dying, the alarm was
+      broken, here's what to do about it.</b></p>
+  </div>
+</div></section>
+
 <div class="wrap" id="patrol">
+<h2 style="font-size:1.1rem;text-transform:uppercase;letter-spacing:.14em;color:var(--dim);text-align:center;margin-top:2.6rem">What a patrol looks like</h2>
 <div class="term">
   <div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>wrench patrol — homelab</span></div>
   <pre><span class="c-dim">$</span> <span class="c-acc">wrench patrol</span>
@@ -104,29 +228,11 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
 
 <section><div class="wrap">
   <h2>The dashboard</h2>
-  <p style="text-align:center;color:var(--dim);max-width:620px;margin:-1rem auto 1.6rem;font-size:.9rem">
-    <code>wrench web</code> — live vitals, 24h timelines, patrol + drift feeds, the agent's
+  <p class="lead"><code>wrench web</code> — live vitals, 24h timelines, patrol + drift feeds, the agent's
     action log, and a token-spend widget. All from one SQLite file. This is a real
     screenshot from the dev box.</p>
   <img src="assets/dashboard.png" alt="wrench web dashboard"
        style="width:100%;border:1px solid var(--border);border-radius:12px;box-shadow:0 20px 60px #0008">
-</div></section>
-
-<section><div class="wrap">
-  <h2>What it is</h2>
-  <div class="cards">
-    <div class="card"><span class="ico">📡</span><h3>Mechanic-grade telemetry</h3>
-      <p>Everything lands in a local SQLite time-series — CPU, disk, services, journals —
-      until "normal" is a baseline, not a guess. Spikes get flagged with z-scores, so you
-      see what's actually weird, not just what's loud.</p></div>
-    <div class="card"><span class="ico">🧠</span><h3>Drift, in English</h3>
-      <p>Snapshots of packages, ports, services, users, and cron get diffed on every scan.
-      You don't get a raw diff; you get "rclone upgraded at 02:14 and a new mount appeared."</p></div>
-    <div class="card"><span class="ico">🦾</span><h3>Brain, with brakes</h3>
-      <p>Meta Muse is the default brain, with OpenAI, Anthropic, Ollama, LM Studio, and
-      LiteLLM ready to swap in. Strict policy tiers keep it read-only by default — it
-      suggests, you decide, then it touches.</p></div>
-  </div>
 </div></section>
 
 <section><div class="wrap">
@@ -136,8 +242,8 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       telemetry and a fresh drift snapshot without changing anything.</p></div>
     <div class="step"><b>2 · Orient</b><p>Compares the present against learned baselines and
       last-known state, separating real anomalies from background noise.</p></div>
-    <div class="step"><b>3 · Act</b><p>Names a fix in plain English and stops there, hands
-      off, until your policy tier says otherwise.</p></div>
+    <div class="step"><b>3 · Act</b><p>Investigates with read-only, allowlisted diagnostics; names
+      a fix in plain English and stops there until your policy tier says otherwise.</p></div>
     <div class="step"><b>4 · Report</b><p>A tidy terminal report now; the dark web dashboard
       and styled HTML reports when you want the history.</p></div>
   </div>
@@ -145,6 +251,9 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
 
 <section><div class="wrap">
   <h2>The leash</h2>
+  <p class="lead">An agent that can touch your system needs a leash you control. wrench's whole
+    permission model is one line of config. Mutations are no-shell, allowlisted, and logged —
+    and a forbidden-pattern list blocks the scary stuff at <b>every</b> tier.</p>
   <div class="tiers">
     <div class="tier"><code>observe</code><span>look, never touch, never even suggest commands</span></div>
     <div class="tier"><code>suggest</code><span>default — diagnose and propose exact fixes; never executes</span></div>
@@ -153,10 +262,78 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
   </div>
 </div></section>
 
+<section id="install"><div class="wrap">
+  <h2>Install</h2>
+  <div class="tabs">
+    <div class="tabbar">
+      <button type="button" class="active" data-tab="linux">Linux</button>
+      <button type="button" data-tab="macos">macOS</button>
+      <button type="button" data-tab="windows">Windows</button>
+    </div>
+    <div class="tabpane active" id="tab-linux">
+      <button class="copybtn" data-copy="curl -fsSL https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.sh | bash">copy</button>
+      <pre>curl -fsSL https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.sh | bash
+<span class="cmt"># or, with pipx:</span>
+pipx install git+https://github.com/sunkencity999/wrench
+
+wrench init && wrench doctor && wrench patrol
+wrench install-service   <span class="cmt"># systemd user timer, patrols every 15 min</span></pre>
+    </div>
+    <div class="tabpane" id="tab-macos">
+      <button class="copybtn" data-copy="curl -fsSL https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.sh | bash">copy</button>
+      <pre><span class="cmt"># needs python 3.10+  (brew install python)</span>
+curl -fsSL https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.sh | bash
+
+wrench init && wrench doctor && wrench patrol
+wrench install-service   <span class="cmt"># launchd user agent, patrols every 15 min</span></pre>
+    </div>
+    <div class="tabpane" id="tab-windows">
+      <button class="copybtn" data-copy="irm https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.ps1 | iex">copy</button>
+      <pre><span class="cmt"># PowerShell — needs python 3.10+ on PATH</span>
+irm https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.ps1 | iex
+
+wrench init ; wrench doctor ; wrench patrol
+wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 min</span></pre>
+    </div>
+    <p class="tabnote">Linux is tested end-to-end on real hardware; macOS/Windows branches are
+      implemented + unit-tested, pending native smoke tests —
+      <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">full support matrix</a>.
+      No API key? Sensors, drift, and the dashboard still work; add
+      <a href="https://ollama.com">Ollama</a> for a fully local brain.</p>
+  </div>
+</div></section>
+
 <footer><div class="wrap">
   <p>wrench — MIT-licensed, locally nosy, and it knocks before it touches anything.</p>
-  <p style="margin-top:.6rem"><a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a>
-   · built for the Meta Llama hackathon, 2026 · copy drafted by muse-wonder-1.0</p>
+  <p style="margin-top:.6rem">
+    <a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a>
+    · <a href="https://github.com/sunkencity999/wrench#readme">README</a>
+    · <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">platforms</a>
+    · built for the Meta Llama hackathon, 2026 · copy drafted with muse-wonder-1.0</p>
 </div></footer>
 
+<script>
+// install tabs + copy buttons (tiny, inline)
+(function () {
+  var bar = document.querySelector(".tabbar");
+  bar.addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-tab]");
+    if (!btn) return;
+    bar.querySelectorAll("button").forEach(function (b) { b.classList.toggle("active", b === btn); });
+    document.querySelectorAll(".tabpane").forEach(function (p) {
+      p.classList.toggle("active", p.id === "tab-" + btn.dataset.tab);
+    });
+  });
+  document.querySelectorAll(".copybtn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(b.dataset.copy);
+        b.textContent = "copied!";
+        setTimeout(function () { b.textContent = "copy"; }, 1500);
+      }
+    });
+  });
+})();
+</script>
+<script src="tutorial.js" defer></script>
 </body></html>
