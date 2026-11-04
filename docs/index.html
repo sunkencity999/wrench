@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wrench — your box is up to something</title>
+<meta name="description" content="An intentional local sysadmin agent: telemetry, drift memory, and an LLM brain with brakes. Read-only by default.">
+<style>
+:root { --bg:#0b0e14; --panel:#11151f; --border:#1f2633; --fg:#dce3ee; --dim:#7d8799;
+  --ok:#3fb950; --warn:#d29922; --crit:#f85149; --accent:#58a6ff; --mag:#bc8cff; --cyan:#39c5cf; }
+* { box-sizing:border-box; margin:0; }
+html { scroll-behavior:smooth; }
+body { background:var(--bg); color:var(--fg);
+  font:16px/1.6 'SF Mono',ui-monospace,Menlo,Consolas,monospace; }
+.wrap { max-width:980px; margin:0 auto; padding:0 1.2rem; }
+a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+
+/* hero */
+.hero { text-align:center; padding:5rem 0 3rem;
+  background:radial-gradient(ellipse 70% 50% at 50% 0%, #15233a 0%, var(--bg) 70%); }
+.hero .tool { font-size:3rem; }
+.hero h1 { font-size:clamp(1.8rem, 5vw, 3rem); margin:.4rem 0 .8rem; letter-spacing:-.02em; }
+.hero h1 .blink { animation:blink 1.2s step-end infinite; color:var(--accent); }
+@keyframes blink { 50% { opacity:0 } }
+.hero p { color:var(--dim); max-width:560px; margin:0 auto 2rem; }
+.ctas { display:flex; gap:.8rem; justify-content:center; flex-wrap:wrap; }
+.btn { display:inline-block; padding:.65rem 1.3rem; border-radius:9px; font-weight:bold;
+  border:1px solid var(--border); background:var(--panel); color:var(--fg); font-size:.9rem; }
+.btn.primary { background:var(--accent); color:#06101f; border-color:var(--accent); }
+.btn:hover { text-decoration:none; filter:brightness(1.15); }
+.install { margin-top:1.6rem; display:inline-block; background:#0a0d12; border:1px solid var(--border);
+  border-radius:9px; padding:.6rem 1.1rem; color:var(--ok); font-size:.85rem; cursor:pointer; }
+.install .dim { color:var(--dim); }
+
+/* terminal */
+.term { background:#0a0d12; border:1px solid var(--border); border-radius:12px;
+  margin:3rem auto; max-width:860px; box-shadow:0 20px 60px #0008; text-align:left; overflow:hidden; }
+.term-bar { background:var(--panel); padding:.5rem .9rem; border-bottom:1px solid var(--border);
+  display:flex; gap:.4rem; align-items:center; }
+.term-bar i { width:11px; height:11px; border-radius:50%; display:inline-block; }
+.term-bar .r { background:#f85149 } .term-bar .y { background:#d29922 } .term-bar .g { background:#3fb950 }
+.term-bar span { color:var(--dim); font-size:.75rem; margin-left:.6rem; }
+.term pre { padding:1.1rem 1.3rem; font-size:.8rem; line-height:1.55; overflow-x:auto; color:var(--fg); }
+.c-dim { color:var(--dim) } .c-ok { color:var(--ok) } .c-warn { color:var(--warn) }
+.c-crit { color:var(--crit) } .c-acc { color:var(--accent) } .c-mag { color:var(--mag) } .c-cyan { color:var(--cyan) }
+
+/* sections */
+section { padding:3rem 0; }
+h2 { font-size:1.1rem; text-transform:uppercase; letter-spacing:.14em; color:var(--dim);
+  text-align:center; margin-bottom:2rem; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
+.card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:1.4rem; }
+.card h3 { font-size:1rem; margin-bottom:.6rem; color:var(--fg); }
+.card p { color:var(--dim); font-size:.86rem; }
+.card .ico { font-size:1.5rem; display:block; margin-bottom:.7rem; }
+
+.steps { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; }
+.step { border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; }
+.step b { display:block; margin-bottom:.3rem; }
+.step:nth-child(2) { border-color:var(--cyan) } .step:nth-child(3) { border-color:var(--mag) }
+.step:nth-child(4) { border-color:var(--ok) }
+.step p { color:var(--dim); font-size:.85rem; }
+
+.tiers { max-width:640px; margin:0 auto; }
+.tier { display:flex; align-items:center; gap:1rem; padding:.7rem 1rem; border:1px solid var(--border);
+  border-radius:10px; margin-bottom:.6rem; background:var(--panel); font-size:.88rem; }
+.tier code { color:var(--accent); min-width:110px; font-weight:bold; }
+.tier span { color:var(--dim); }
+
+footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center;
+  color:var(--dim); font-size:.85rem; }
+</style></head><body>
+
+<div class="hero"><div class="wrap">
+  <div class="tool">🔧</div>
+  <h1>Your box is up to something<span class="blink">▌</span></h1>
+  <p>Local telemetry and drift memory, plus an agent that asks before it acts.
+     Read-only by default.</p>
+  <div class="ctas">
+    <a class="btn primary" href="https://github.com/sunkencity999/wrench">View on GitHub</a>
+    <a class="btn" href="#patrol">Watch a patrol</a>
+    <a class="btn" href="https://github.com/sunkencity999/wrench#quickstart">Quickstart</a>
+  </div>
+  <div class="install" onclick="navigator.clipboard&&navigator.clipboard.writeText('pipx install git+https://github.com/sunkencity999/wrench')" title="click to copy">
+    <span class="dim">$</span> pipx install git+https://github.com/sunkencity999/wrench
+  </div>
+</div></div>
+
+<div class="wrap" id="patrol">
+<div class="term">
+  <div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>wrench patrol — homelab</span></div>
+  <pre><span class="c-dim">$</span> <span class="c-acc">wrench patrol</span>
+<span class="c-dim">wrench · homelab · tier: suggest · brain: muse-spark-1.3</span>
+<span class="c-dim">collecting cpu/mem/disk/net/services/journals… done (6.2s, 312 metrics)</span>
+<span class="c-warn">anomaly</span>  disk.write /srv/media  196 MB/s  <span class="c-warn">z=5.1</span>  <span class="c-dim">(baseline 19 ± 8 MB/s)</span>
+<span class="c-acc">drift</span>    /etc/fstab changed 2h ago — new rclone mount on /srv/media
+<span class="c-acc">drift</span>    rclone 1.65.2 → 1.66.0  <span class="c-dim">(unattended-upgrades, 02:14)</span>
+<span class="c-ok">services</span> 18/19 healthy · <span class="c-warn">syncthing.service flapping (4 restarts / 10m)</span>
+<span class="c-cyan">likely cause:</span> syncthing is rescanning 1.2 TB after the mount moved under it
+<span class="c-mag">recommended fix:</span> pause syncthing folder 'media' 20m, remount, resume, verify
+<span class="c-ok">dry-run only — no changes made.</span> <span class="c-dim">apply: wrench patrol --tier repair</span>
+<span class="c-dim">patrol done in 8.4s · full report: wrench web → http://127.0.0.1:8787</span></pre>
+</div>
+</div>
+
+<section><div class="wrap">
+  <h2>What it is</h2>
+  <div class="cards">
+    <div class="card"><span class="ico">📡</span><h3>Mechanic-grade telemetry</h3>
+      <p>Everything lands in a local SQLite time-series — CPU, disk, services, journals —
+      until "normal" is a baseline, not a guess. Spikes get flagged with z-scores, so you
+      see what's actually weird, not just what's loud.</p></div>
+    <div class="card"><span class="ico">🧠</span><h3>Drift, in English</h3>
+      <p>Snapshots of packages, ports, services, users, and cron get diffed on every scan.
+      You don't get a raw diff; you get "rclone upgraded at 02:14 and a new mount appeared."</p></div>
+    <div class="card"><span class="ico">🦾</span><h3>Brain, with brakes</h3>
+      <p>Meta Muse is the default brain, with OpenAI, Anthropic, Ollama, LM Studio, and
+      LiteLLM ready to swap in. Strict policy tiers keep it read-only by default — it
+      suggests, you decide, then it touches.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>The intentional loop</h2>
+  <div class="steps">
+    <div class="step"><b>1 · Observe</b><p>Patrols on demand or on a schedule, collecting
+      telemetry and a fresh drift snapshot without changing anything.</p></div>
+    <div class="step"><b>2 · Orient</b><p>Compares the present against learned baselines and
+      last-known state, separating real anomalies from background noise.</p></div>
+    <div class="step"><b>3 · Act</b><p>Names a fix in plain English and stops there, hands
+      off, until your policy tier says otherwise.</p></div>
+    <div class="step"><b>4 · Report</b><p>A tidy terminal report now; the dark web dashboard
+      and styled HTML reports when you want the history.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>The leash</h2>
+  <div class="tiers">
+    <div class="tier"><code>observe</code><span>look, never touch, never even suggest commands</span></div>
+    <div class="tier"><code>suggest</code><span>default — diagnose and propose exact fixes; never executes</span></div>
+    <div class="tier"><code>repair</code><span>allowlisted fixes only, each one confirmed by you</span></div>
+    <div class="tier"><code>autonomous</code><span>allowlisted chores unattended — explicit opt-in, fully logged</span></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <p>wrench — MIT-licensed, locally nosy, and it knocks before it touches anything.</p>
+  <p style="margin-top:.6rem"><a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a>
+   · built for the Meta Llama hackathon, 2026 · copy drafted by muse-wonder-1.0</p>
+</div></footer>
+
+</body></html>
