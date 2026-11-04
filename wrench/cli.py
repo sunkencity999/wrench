@@ -290,28 +290,181 @@ def explain(
                          f"{cfg.model} · {res['tokens']} tokens · {len(res['steps'])} tool call(s)")
 
 
+PROVIDER_MENU = [
+    ("meta", "Meta muse models — hosted, default"),
+    ("openai", "OpenAI"),
+    ("anthropic", "Anthropic Claude"),
+    ("ollama", "Ollama — local, private + free, guided setup"),
+    ("lmstudio", "LM Studio — local server"),
+    ("litellm", "LiteLLM — proxy to anything"),
+]
+
+
+def _isatty() -> bool:
+    import sys
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _choose_provider() -> str:
+    """Interactive provider menu. Enter = meta."""
+    t = Table(title="🔧 choose your model provider", border_style="bright_blue",
+              show_header=False, pad_edge=True)
+    t.add_column(justify="right", style="bold cyan")
+    t.add_column(style="bold")
+    t.add_column(style="dim")
+    for i, (name, blurb) in enumerate(PROVIDER_MENU, 1):
+        t.add_row(str(i), name + (" (default)" if name == "meta" else ""), blurb)
+    console.print(t)
+    raw = typer.prompt("provider [1-6 or name]", default="1", show_default=False).strip().lower()
+    names = [n for n, _ in PROVIDER_MENU]
+    if raw.isdigit() and 1 <= int(raw) <= len(names):
+        return names[int(raw) - 1]
+    if raw in names:
+        return raw
+    console.print(f"[yellow]unknown choice {raw!r} — using meta[/yellow]")
+    return "meta"
+
+
+def _ollama_guided_setup(interactive: bool, assume_yes: bool,
+                         model_override: str | None) -> str:
+    """Detect resources, recommend a tool-calling model, ensure ollama + model
+    exist (with consent), and return the model tag to write into config."""
+    from . import localsetup
+
+    res = localsetup.detect_resources()
+    rec_tag, rec_gb, reason = localsetup.recommend(res)
+    hw = f"{res.ram_gb:.0f} GB RAM"
+    if res.vram_gb:
+        hw += f" · {res.vram_gb:.0f} GB NVIDIA VRAM"
+    if res.apple_silicon:
+        hw += " · Apple Silicon unified memory"
+    console.print(Panel(
+        f"detected: [bold]{hw}[/bold]\n"
+        f"recommended model: [bold green]{rec_tag}[/bold green] (~{rec_gb:g} GB download)\n"
+        f"[dim]{reason}[/dim]\n\n"
+        "[dim]all suggestions are tool-calling-capable — wrench needs that.\n"
+        "other sizes: " + ", ".join(t for t, _, _ in localsetup.TIERS) + "[/dim]",
+        border_style="cyan", title="🧠 local model recommendation"))
+
+    model = model_override or rec_tag
+    if interactive and not assume_yes and not model_override:
+        model = typer.prompt("model to use", default=rec_tag).strip() or rec_tag
+
+    # 1. binary
+    if not localsetup.ollama_binary():
+        cmds = localsetup.install_commands()
+        console.print(Panel(
+            "[yellow]ollama is not installed.[/yellow]\n"
+            "I can run the official installer:\n  " + "\n  ".join(cmds),
+            border_style="yellow", title="ollama missing"))
+        do_install = assume_yes or (interactive and typer.confirm("install ollama now?",
+                                                                  default=True))
+        if not do_install:
+            console.print("[yellow]skipped — install ollama yourself, then re-run "
+                          "`wrench init -p ollama --force`[/yellow]")
+            return model
+        with console.status("[cyan]installing ollama..."):
+            ok = localsetup.run_install()
+        if not ok or not localsetup.ollama_binary():
+            console.print("[red]ollama install did not complete — finish it manually "
+                          "(https://ollama.com/download) and re-run wrench init[/red]")
+            return model
+        console.print("[green]ollama installed[/green]")
+
+    # 2. server
+    if not localsetup.server_alive():
+        console.print("[yellow]ollama server not responding at 127.0.0.1:11434 — "
+                      "start it with `ollama serve` (or your service manager) "
+                      "and re-run `wrench doctor`[/yellow]")
+        return model
+
+    # 3. model present?
+    have = localsetup.installed_models()
+    if not any(m == model or m.startswith(model + ":") or model == m.split(":")[0]
+               for m in have):
+        console.print(f"[yellow]{model} is not pulled yet "
+                      f"(download ≈ {rec_gb:g} GB for {rec_tag}).[/yellow]")
+        do_pull = assume_yes or (interactive and typer.confirm(f"pull {model} now?",
+                                                               default=True))
+        if do_pull:
+            console.print(f"[cyan]pulling {model}... (this can take a while)[/cyan]")
+            if not localsetup.pull_model(model):
+                console.print(f"[red]pull failed — run `ollama pull {model}` manually[/red]")
+                return model
+        else:
+            console.print(f"[yellow]skipped — run `ollama pull {model}` before first use[/yellow]")
+            return model
+    return model
+
+
 @app.command()
 def init(
-    provider: str = typer.Option("meta", "--provider", "-p",
-                                 help="meta|openai|anthropic|ollama|lmstudio|litellm"),
+    provider: str = typer.Option(None, "--provider", "-p",
+                                 help="meta|openai|anthropic|ollama|lmstudio|litellm "
+                                      "(omit for interactive menu)"),
+    model: str = typer.Option(None, "--model", "-m", help="model tag override"),
+    yes: bool = typer.Option(False, "--yes", "-y",
+                             help="non-interactive: accept defaults/recommendations "
+                                  "(consents to ollama install + model pull)"),
     force: bool = typer.Option(False, "--force", help="overwrite existing config"),
 ):
-    """Create the config file and record first baselines."""
+    """Set up wrench: pick a provider (interactive menu), write config, record baselines."""
+    interactive = _isatty() and not yes
+    if provider is None:
+        if interactive:
+            provider = _choose_provider()
+        else:
+            provider = "meta"
+            console.print("[dim]no TTY — defaulting to the meta provider. "
+                          "Re-run `wrench init --force` in a terminal for the menu, or use "
+                          "`wrench init -p <provider> --force`.[/dim]")
+    provider = provider.lower()
+    from .config import PROVIDER_DEFAULTS
+    if provider not in PROVIDER_DEFAULTS:
+        console.print(f"[red]unknown provider {provider!r} — choose from: "
+                      f"{', '.join(PROVIDER_DEFAULTS)}[/red]")
+        raise typer.Exit(1)
+
     if CONFIG_PATH.exists() and not force:
         console.print(f"[yellow]config already exists:[/yellow] {CONFIG_PATH} (use --force)")
     else:
-        p = write_default_config(provider)
+        if provider == "ollama":
+            model = _ollama_guided_setup(interactive, yes, model)
+        p = write_default_config(provider, model=model)
         console.print(f"[green]wrote[/green] {p}")
     cfg, store = _ctx()
     with console.status("[cyan]recording first sensor sample + drift baseline..."):
         sensors.sample_all(store)
         driftscan.scan(store)
+
+    smoke_note = ""
+    if cfg.provider == "ollama":
+        from . import localsetup
+        if localsetup.server_alive():
+            with console.status(f"[cyan]smoke test: one tool-calling round-trip on {cfg.model}..."):
+                ok, detail = localsetup.smoke_test(cfg, store)
+            if ok:
+                console.print(f"[green]✔ local smoke test passed[/green] — {detail}")
+                smoke_note = "\nlocal smoke test: ✔ tool-calling verified"
+            else:
+                console.print(f"[red]✖ local smoke test failed[/red] — {detail}")
+                smoke_note = "\nlocal smoke test: ✖ FAILED — fix before relying on patrols"
+        else:
+            smoke_note = "\nlocal smoke test: skipped (ollama server not running)"
     console.print(Panel(
         f"provider: [bold]{cfg.provider}[/bold] · model: [bold]{cfg.model}[/bold] · "
         f"policy: [bold]{cfg.policy_tier}[/bold]\n"
-        f"data: {cfg.db_path}\n\n"
+        f"data: {cfg.db_path}{smoke_note}\n\n"
         "next steps:\n"
-        f"  1. export {_key_env(cfg.provider)}=...   (or set api_key_file in config)\n"
+        + (""
+           if cfg.provider in ("ollama", "lmstudio")
+           else f"  1. export {_key_env(cfg.provider)}=...   (or set api_key_file in config)\n")
+        + ("  1. (no API key needed — it's your hardware)\n"
+           if cfg.provider in ("ollama", "lmstudio") else "")
+        +
         "  2. wrench doctor      — verify everything\n"
         "  3. wrench patrol      — first patrol\n"
         "  4. wrench web         — dashboard",
