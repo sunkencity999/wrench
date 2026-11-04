@@ -221,3 +221,34 @@ Deadline: 2026-11-04 ~14:00 PST. Builder notes for the orchestrator.
 - Port 8787 is taken on Devbox2 by an unrelated service → use `wrench web --port 8790` here.
   (Default stays 8787 for the public tool; config web_port handles it.)
 - muse models: ~300-500 reasoning tokens before any content; never set max_tokens < 2000.
+
+## v1.0.1 — Azure OpenAI / AI Foundry provider — 2026-11-04
+
+### Shipped
+- New `azure` provider in the adapter layer (providers.py `_azure`): Azure OpenAI
+  deployment-path URLs (`/openai/deployments/<dep>/chat/completions?api-version=...`)
+  AND AI Foundry serverless (`https://<name>.<region>.models.ai.azure.com` — model in body).
+  Auth modes: `api-key` (Azure-native header), `bearer`, or `auto` (api-key first,
+  one Bearer retry on 401). Native `tools` passthrough added to chat() for all
+  OpenAI-shaped adapters (wrench's agent keeps its provider-agnostic JSON protocol).
+- Config: `[azure]` section (endpoint, model=deployment, api_version default 2024-10-21,
+  auth), env support AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_VERSION.
+  Config written with a key inside gets chmod 600.
+- `wrench init`: menu entry #4 "Azure OpenAI / AI Foundry — enterprise" with guided
+  prompts (endpoint, deployment, api-version, hidden key prompt, enter-to-skip for env).
+  Headless: `--provider azure --azure-endpoint ... --azure-deployment ...
+  [--azure-api-version ...] [--api-key ...] --yes`.
+- Tests: 16 new mocked-HTTP unit tests (URL construction for all 3 endpoint shapes,
+  api-key vs Bearer vs auto-401-fallback, api-version query param, tools passthrough,
+  429 + key redaction, token-usage logging, env + toml config loading, chmod 600).
+  183 total, all green (was 165 + 2 renumbered menu cases).
+- Docs: README provider example + Azure details block + architecture diagram;
+  site tabnote mentions Azure.
+
+### Honest status
+- Adapter implemented + fully unit-tested against mocked HTTP. **No live Azure smoke
+  test** — no wrench-usable Azure key on this box (OpenClaw's own Azure creds are
+  off-limits for wrench testing by policy). First user with a real deployment:
+  `wrench init -p azure ...` then `wrench doctor`.
+- No Meta API calls made for this work — token log unchanged.
+- wrench-patrol.timer untouched and active throughout.
