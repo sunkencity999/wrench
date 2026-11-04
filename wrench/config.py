@@ -172,6 +172,14 @@ tier = "suggest"
 patrol_interval_min = {interval}
 retention_days = 30
 web_port = 8787
+
+[webintel]
+# Built-in web intelligence: OSV.dev CVE lookups for installed packages and
+# endoflife.date EOL checks. Free APIs, no keys. Results cache in sqlite;
+# patrols reuse the cache and NEVER fail if the internet is down.
+enable = true
+cadence_hours = 24
+# distro_watchlist = ["openssl", "openssh", "sudo"]  # override the curated default
 """
 
 

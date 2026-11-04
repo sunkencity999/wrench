@@ -195,7 +195,18 @@ class Agent:
                 lines.append(f"drift [{d['kind']}]: " + "; ".join(d["changes"][:10]))
         else:
             lines.append("drift: no changes since last scan")
-        return "\n".join(lines), {"sensor": data, "drift": drift_changes, "anomalies": anomalies}
+        # web intelligence (OSV + endoflife.date) — cached, offline-safe, optional
+        webintel_res = None
+        try:
+            from . import webintel
+            webintel_res = webintel.cached_or_refresh(self.cfg, self.store,
+                                                      on_step=self.on_step)
+            if webintel_res is not None:
+                lines.append(webintel.summary_line(webintel_res))
+        except Exception:  # noqa: BLE001 — patrol never fails because the internet did
+            pass
+        return "\n".join(lines), {"sensor": data, "drift": drift_changes,
+                                   "anomalies": anomalies, "webintel": webintel_res}
 
 
 PATROL_GOAL = """\

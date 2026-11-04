@@ -477,6 +477,94 @@ def init(
 
 
 RISK_STYLE = {"safe": "green", "moderate": "yellow", "risky": "red"}
+SEV_STYLE = {"critical": "bold red", "high": "red", "moderate": "yellow",
+             "medium": "yellow", "low": "green"}
+
+
+def _sev_text(sev: str) -> Text:
+    s = (sev or "?").strip()
+    return Text(s or "?", style=SEV_STYLE.get(s.lower().split(":")[0], "white"))
+
+
+@app.command()
+def cve(
+    refresh: bool = typer.Option(False, "--refresh", help="force a fresh scan (ignore cache)"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="skip the model briefing"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+):
+    """Check installed packages against OSV.dev and the OS/runtimes against endoflife.date."""
+    from . import webintel
+
+    cfg, store = _ctx(provider, model)
+    with console.status("[cyan]asking OSV.dev + endoflife.date about this box..."):
+        res = webintel.scan(cfg, store, force=refresh,
+                            on_step=lambda k, d: None)
+    vulns = res.get("vulns", [])
+    age_min = (time.time() - res.get("ts", time.time())) / 60
+    src_note = (f"checked {res.get('packages_checked', 0)} packages "
+                f"(pip + npm + distro watchlist) · "
+                + (f"cached {age_min:.0f}m ago" if age_min > 2 else "fresh scan")
+                + (" · [red]OFFLINE — cached data[/red]" if not res.get("online", True) else ""))
+
+    if vulns:
+        t = Table(title="\U0001f6a8 known vulnerabilities (OSV.dev)", border_style="red")
+        t.add_column("package", style="bold")
+        t.add_column("installed")
+        t.add_column("src", style="dim")
+        t.add_column("CVE / id")
+        t.add_column("severity", justify="center")
+        t.add_column("fixed in", style="green")
+        t.add_column("what", max_width=46, style="dim")
+        for v in vulns[:40]:
+            ids = ", ".join(v.get("aliases") or [v.get("vuln_id", "?")])
+            t.add_row(v["package"], v["version"], v["source"], ids,
+                      _sev_text(v.get("severity", "")), v.get("fixed", "") or "—",
+                      v.get("summary", ""))
+        console.print(t)
+    else:
+        console.print(Panel("[green]no known vulnerabilities[/green] in the packages I checked",
+                            border_style="green", title="\U0001f6e1 OSV.dev"))
+
+    eol = res.get("eol", [])
+    if eol:
+        t = Table(title="\u23f3 end-of-life status (endoflife.date)", border_style="bright_blue")
+        t.add_column("product", style="bold")
+        t.add_column("cycle")
+        t.add_column("status")
+        for e in eol:
+            style = "red bold" if e["is_eol"] else "green"
+            t.add_row(e["product"], e["cycle"], Text(e["label"].split(": ", 1)[-1], style=style))
+        console.print(t)
+    console.print(f"[dim]{src_note}[/dim]")
+    for err in res.get("errors", []):
+        console.print(f"[yellow]⚠ {err}[/yellow]")
+
+    if not no_llm and (vulns or any(e["is_eol"] for e in eol)) \
+            and (cfg.api_key or cfg.provider in ("ollama", "lmstudio")):
+        lines = [f"- {v['package']} {v['version']} ({v['source']}): "
+                 + ",".join(v.get('aliases') or [v['vuln_id']])
+                 + (f" fixed in {v['fixed']}" if v.get("fixed") else " (no fixed version listed)")
+                 + f" — {v.get('summary', '')[:150]}" for v in vulns[:20]]
+        lines += [f"- EOL: {e['label']}" for e in eol if e["is_eol"]]
+        client = LLMClient(cfg, store)
+        try:
+            with console.status("[cyan]thinking about what this means for this box..."):
+                text = client.chat(
+                    [{"role": "system",
+                      "content": "You are wrench, a sysadmin agent speaking in the first person "
+                                 "about YOUR machine. You are shown known vulnerabilities in "
+                                 "installed packages and any end-of-life products. In 4-8 "
+                                 "sentences: triage honestly (which matter on a typical box, "
+                                 "which are noise), name the most urgent action, and mention "
+                                 "that `wrench fixxer` can apply targeted security updates if "
+                                 "fixed builds exist. No markdown headers, no filler."},
+                     {"role": "user", "content": "\n".join(lines)}],
+                    purpose="cve")
+            report.render_answer(console, text, f"{cfg.model} · threat briefing")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[dim]briefing unavailable ({e}) — the tables stand on their own[/dim]")
+    raise typer.Exit(1 if vulns else 0)
 
 
 def _render_findings(findings) -> Table:
@@ -619,6 +707,21 @@ def fixxer(
         return
 
     console.print(_render_findings(findings))
+
+    # EOL advisories from cached web intel — flagged, risk-tiered, NEVER auto-fixed
+    try:
+        from . import webintel
+        advisories = webintel.eol_advisories(
+            store.cache_get("webintel_scan", float("inf")) or {})
+        if advisories:
+            console.print(Panel(
+                "\n".join(f"[red]⚠ {a}[/red]" for a in advisories)
+                + "\n[dim]EOL products need a human decision (major upgrade/migration) — "
+                  "I flag them, I never auto-fix them.[/dim]",
+                border_style="red", title="⏳ end-of-life advisories"))
+    except Exception:  # noqa: BLE001
+        pass
+
     if not no_llm:
         _fixxer_llm_brief(cfg, store, findings, anomalies)
 

@@ -257,6 +257,32 @@ def fix_action(store: Store, command: str, tier: str, confirm_fn=None) -> str:
     return f"EXECUTED ({decision.label}):\n{out}"
 
 
+def security_intel(store: Store) -> str:
+    """Cached webintel scan, formatted for the model. Never touches the network."""
+    res = store.cache_get("webintel_scan", float("inf"))
+    if not res:
+        return ("No web-intel scan cached yet. Suggest the human runs `wrench cve` "
+                "to query OSV.dev and endoflife.date.")
+    import time as _t
+    lines = [f"web-intel scan from {_t.strftime('%Y-%m-%d %H:%M', _t.localtime(res.get('ts', 0)))}"
+             + (" (OFFLINE/cached)" if not res.get("online", True) else ""),
+             f"packages checked: {res.get('packages_checked', 0)}"]
+    vulns = res.get("vulns", [])
+    if vulns:
+        lines.append(f"known vulnerabilities ({len(vulns)}):")
+        for v in vulns[:15]:
+            cve = ",".join(v.get("aliases") or [v.get("vuln_id", "?")])
+            fx = f" fixed in {v['fixed']}" if v.get("fixed") else ""
+            lines.append(f"- {v['package']} {v['version']} ({v['source']}): {cve}"
+                         f" sev={v.get('severity') or '?'}{fx} — {v.get('summary', '')[:120]}")
+    else:
+        lines.append("no known vulnerabilities in checked packages")
+    eol = res.get("eol", [])
+    if eol:
+        lines.append("end-of-life status: " + "; ".join(e["label"] for e in eol))
+    return "\n".join(lines)
+
+
 # ---------------- tool registry (for the agent loop) ----------------
 
 TOOL_SPECS = [
@@ -292,6 +318,13 @@ TOOL_SPECS = [
         "desc": "Top processes by CPU or memory.",
     },
     {
+        "name": "security_intel",
+        "args": {},
+        "desc": "Cached web intelligence: known CVEs in installed packages (OSV.dev) and "
+                "end-of-life status of the OS/kernel/python/node (endoflife.date). Instant, "
+                "no network. If empty, suggest the human runs `wrench cve`.",
+    },
+    {
         "name": "fix_action",
         "args": {"command": "string — one allowlisted mutation (e.g. 'systemctl restart foo')"},
         "desc": "Execute a repair. Only works at repair/autonomous policy tiers; "
@@ -317,6 +350,8 @@ def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None) ->
             return net_listeners(store)
         if name == "proc_top":
             return proc_top(store, str(args.get("sort", "cpu")), int(args.get("n", 15) or 15))
+        if name == "security_intel":
+            return security_intel(store)
         if name == "fix_action":
             return fix_action(store, str(args.get("command", "")), tier, confirm_fn)
         return f"unknown tool: {name}"

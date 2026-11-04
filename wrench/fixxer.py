@@ -477,6 +477,77 @@ def _verify_restart_failed(ctx: dict, f: Finding) -> tuple[bool, str]:
     return (not left), (f"still failed: {', '.join(left[:5])}" if left else "all services recovered")
 
 
+# ---------------- web-intel driven: targeted CVE upgrades ----------------
+# Uses the CACHED webintel scan only — fixxer never blocks on the network.
+
+def _cve_affected_binaries(ctx: dict) -> tuple[list[str], list[str]]:
+    """(installed binary packages whose SOURCE package has known vulns, cve ids)."""
+    cfg = ctx.get("cfg")
+    if cfg is None or ctx["pkg_manager"] != "apt":
+        return [], []
+    try:
+        from . import webintel
+        from .store import Store
+        store = Store(cfg.db_path)
+        try:
+            res = store.cache_get("webintel_scan", float("inf"))
+        finally:
+            store.close()
+        if not res:
+            return [], []
+        sources = set(webintel.distro_vuln_packages(res))
+        if not sources:
+            return [], []
+        cves = sorted({a for v in res.get("vulns", []) if v.get("source") == "distro"
+                       for a in (v.get("aliases") or [v.get("vuln_id", "")])})
+        code, out = _run(["dpkg-query", "-W", "-f", "${Package}\t${source:Package}\n"],
+                         timeout=30)
+        if code != 0:
+            return [], cves
+        bins = sorted({ln.split("\t")[0] for ln in out.splitlines()
+                       if "\t" in ln and ln.split("\t")[1].split(" ")[0] in sources})
+        return bins, cves
+    except Exception:  # noqa: BLE001 — web intel is an enricher, never a blocker
+        return [], []
+
+
+def _apt_upgradable_subset(bins: list[str]) -> list[str]:
+    """Which of these binaries actually have an upgrade staged (simulation, no sudo)."""
+    if not bins:
+        return []
+    code, out = _run(["apt-get", "-s", "install", "--only-upgrade", *bins], timeout=120)
+    if code != 0:
+        return []
+    return [ln.split()[1] for ln in out.splitlines() if ln.startswith("Inst ")]
+
+
+def _detect_cve_upgrade(ctx: dict) -> Finding | None:
+    bins, cves = _cve_affected_binaries(ctx)
+    if not bins:
+        return None
+    upgradable = _apt_upgradable_subset(bins)
+    if not upgradable:
+        return None  # vulns known but no fixed build shipped yet — advisory, not a fix
+    cve_str = ", ".join(cves[:4]) + ("…" if len(cves) > 4 else "")
+    return Finding(
+        "cve_upgrade", "Apply security updates for CVE-affected packages", "moderate",
+        f"OSV.dev reports known vulnerabilities ({cve_str}) in installed packages; "
+        f"fixed builds are available for: {', '.join(upgradable[:8])}"
+        + ("…" if len(upgradable) > 8 else ""),
+        commands=[["apt-get", "install", "--only-upgrade", "-y", *upgradable]],
+        needs_sudo=True,
+        env_extra={"DEBIAN_FRONTEND": "noninteractive"},
+        rollback_hint="apt history records versions: /var/log/apt/history.log; "
+                      "`apt-get install pkg=old-version` reverts one package")
+
+
+def _verify_cve_upgrade(ctx: dict, f: Finding) -> tuple[bool, str]:
+    bins, _ = _cve_affected_binaries(ctx)
+    left = _apt_upgradable_subset(bins)
+    return (not left), (f"still upgradable: {', '.join(left[:5])}" if left
+                        else "no CVE-affected packages still have pending updates")
+
+
 CATALOG: list[ActionSpec] = [
     ActionSpec("pkg_refresh", "Refresh package metadata", "safe",
                _detect_pkg_refresh, _verify_pkg_refresh),
@@ -494,6 +565,8 @@ CATALOG: list[ActionSpec] = [
                _detect_tmp_clean, _verify_tmp_clean, platforms=("linux", "macos")),
     ActionSpec("restart_failed", "Restart failed system services", "moderate",
                _detect_restart_failed, _verify_restart_failed, platforms=("linux",)),
+    ActionSpec("cve_upgrade", "Apply security updates for CVE-affected packages", "moderate",
+               _detect_cve_upgrade, _verify_cve_upgrade, platforms=("linux",)),
 ]
 
 ACTIONS_BY_ID = {a.id: a for a in CATALOG}
@@ -503,7 +576,7 @@ ACTIONS_BY_ID = {a.id: a for a in CATALOG}
 
 def build_ctx(cfg) -> dict:
     return {"pkg_manager": pkg_manager(), "platform": platforms.current_platform(),
-            "cfg_fixxer": _fixxer_cfg(cfg)}
+            "cfg_fixxer": _fixxer_cfg(cfg), "cfg": cfg}
 
 
 def scan(cfg, on_step=None) -> tuple[list[Finding], dict]:

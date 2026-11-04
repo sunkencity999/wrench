@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS actions (
     result TEXT
 );
 
+CREATE TABLE IF NOT EXISTS webintel_cache (
+    key TEXT PRIMARY KEY,
+    ts REAL NOT NULL,
+    payload TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tokens_spent (
     ts REAL NOT NULL,
     provider TEXT NOT NULL,
@@ -245,6 +251,25 @@ class Store:
             dict(provider=r[0], model=r[1], prompt=r[2], completion=r[3], total=r[4], calls=r[5])
             for r in cur.fetchall()
         ]
+
+    # ---- web-intel cache (TTL key-value) ----
+    def cache_get(self, key: str, max_age_s: float) -> dict | list | None:
+        cur = self.db.execute("SELECT ts, payload FROM webintel_cache WHERE key=?", (key,))
+        row = cur.fetchone()
+        if row is None or (time.time() - row[0]) > max_age_s:
+            return None
+        try:
+            return json.loads(row[1])
+        except json.JSONDecodeError:
+            return None
+
+    def cache_put(self, key: str, payload: dict | list) -> None:
+        self.db.execute(
+            "INSERT INTO webintel_cache (key, ts, payload) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET ts=excluded.ts, payload=excluded.payload",
+            (key, time.time(), json.dumps(payload)),
+        )
+        self.db.commit()
 
     # ---- housekeeping ----
     def prune(self, retention_days: int = 30) -> None:
