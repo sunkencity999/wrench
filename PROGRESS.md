@@ -1,5 +1,43 @@
 # wrench — build progress
 
+## 2026-11-04 ~11:45 — FIXXER + PERSONALITY (v0.3.0, final pre-deadline pass)
+
+Christopher's final feature directive, all shipped and live-tested:
+
+- **`wrench fixxer`** (55e37c6): scans for programmatically correctable issues
+  (pending updates incl. security, orphans/old kernels, fat journald, bloated
+  package caches, stale /tmp, failed services) → numbered risk-labeled menu
+  (safe/moderate/risky) → first-person muse briefing → all/none/pick →
+  applies with sudo where needed → **verifies each fix by re-measuring**.
+  SAFETY LINE: every command is a hand-written parameterized catalog entry in
+  wrench/fixxer.py — the LLM explains/recommends, never authors shell. apt
+  fully implemented; dnf/pacman/brew/winget best-effort behind the same
+  abstraction.
+- **Auto mode**: `--setup-auto` interactive consent ceremony (recorded to
+  fixxer_consent.json), effective scope = consent ∩ config auto_tiers
+  (default safe-only — widening moderate takes two locks), `--dry-run`
+  preview, `--revoke-auto`, JSONL audit log with rollback hints +
+  `--audit` viewer, `install-service --with-auto-fixxer` daily scheduled
+  run (systemd/launchd/schtasks; consent-gated; uninstall removes both).
+- **Personality pass** (9a2d542): wrench speaks first person — init greeting
+  ("I'm wrench — your systems administrator. I live here now."), status/patrol
+  voice lines (one line, then data), README top quote + fixxer section with
+  loud auto-mode warnings, site hero/feature card/leash copy (d028164).
+  All claims true: fixes only with permission or recorded consent.
+- **Tests: 138 pass** (106 + 32 new: catalog detect/plan/apply(mock)/verify
+  per action, tier gating incl. consent∩config intersection, consent
+  roundtrip/corruption, audit, scheduler plans for all 3 OSes).
+- **LIVE test on Devbox2 (meta provider)**: interactive fixxer found 4 real
+  issues; muse-spark briefed first-person (1,901 tok), human picked the two
+  safe ones → journald 4096→439 MB, apt cache 2015→0 MB, both verified,
+  rescan showed them gone. Consent ceremony → dry-run (consent ∩ config =
+  safe, correctly empty scope) → audit table → revoke, all live. nvidia*/GPU/
+  docker/llama services untouched; auto mode NOT left enabled on this box.
+- Token totals after pass: muse-spark 2,045,458/352 + muse-wonder 129,258/27
+  = **2.17M tokens / 379 calls** (reports/state/wrench_hackathon_tokens.md).
+- v0.3.0. pipx reinstall verified; wrench-patrol.timer still active; Pages
+  200 with fixxer tutorial finale (step 5) + Fix feature card deployed.
+
 ## 2026-11-04 ~02:30 — PROVIDER MENU + OLLAMA GUIDED LOCAL SETUP (shipped)
 
 Christopher's explicit ask from the v0.2.0 pass, now done end-to-end:
