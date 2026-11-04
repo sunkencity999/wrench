@@ -192,6 +192,42 @@ class LLMClient:
             # (Foundry serverless accepts either, depending on how it was provisioned)
             if r.status_code == 401 and i + 1 < len(modes):
                 continue
+            # Newer Azure deployments (gpt-5+/reasoning models) reject the legacy
+            # "max_tokens" param and require "max_completion_tokens"; older ones
+            # are the reverse. On an unsupported_parameter 400, swap and retry
+            # once with the same auth mode.
+            if r.status_code == 400 and ("unsupported_parameter" in r.text
+                                        or "unsupported_value" in r.text):
+                swapped = False
+                if "max_tokens" in body and '"max_tokens"' in r.text:
+                    body["max_completion_tokens"] = body.pop("max_tokens")
+                    swapped = True
+                elif "max_completion_tokens" in body and "max_completion_tokens" in r.text:
+                    body["max_tokens"] = body.pop("max_completion_tokens")
+                    swapped = True
+                if not swapped and "temperature" in body and '"temperature"' in r.text:
+                    # some reasoning deployments only accept the default temperature
+                    body.pop("temperature")
+                    swapped = True
+                if swapped:
+                    # the retry may surface a second complaint (e.g. token param
+                    # fixed, now temperature) — give it two passes, not one
+                    for _ in range(2):
+                        try:
+                            r = requests.post(url, headers=headers, params=params,
+                                              json=body, timeout=self.timeout)
+                        except requests.RequestException as e:
+                            raise ProviderError(
+                                f"azure unreachable at {self.cfg.base_url}: "
+                                f"{e.__class__.__name__}"
+                            ) from e
+                        if (r.status_code == 400 and "temperature" in r.text
+                                and "temperature" in body
+                                and ("unsupported_parameter" in r.text
+                                     or "unsupported_value" in r.text)):
+                            body.pop("temperature")
+                            continue
+                        break
             break
         if r.status_code != 200:
             raise ProviderError(

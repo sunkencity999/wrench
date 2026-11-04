@@ -237,3 +237,69 @@ def test_write_config_with_key_is_owner_only(monkeypatch, tmp_path):
     monkeypatch.delenv("WRENCH_API_KEY", raising=False)
     cfg = load_config(provider_override="azure")
     assert cfg.api_key == "sk-secret"
+
+
+# ---------------- live-smoke regressions: newer deployment param dialects ----------------
+
+def _cfg_azure(**kw):
+    defaults = dict(provider="azure", base_url="https://res.cognitiveservices.azure.com",
+                    api_key="sk-test", model="gpt-6.1-terra", max_tokens=512,
+                    azure_api_version="2025-04-01-preview", azure_auth="api-key")
+    defaults.update(kw)
+    return Config(**defaults)
+
+
+def _err_400(text):
+    return FakeResponse(400, text=text)
+
+
+def test_azure_swaps_max_tokens_for_max_completion_tokens(monkeypatch):
+    """gpt-5-class deployments reject legacy max_tokens → adapter must swap + retry."""
+    rec = Recorder([
+        _err_400('{"error":{"code":"unsupported_parameter","param":"max_tokens",'
+                 '"message":"Unsupported parameter: \'max_tokens\' is not supported '
+                 'with this model. Use \'max_completion_tokens\' instead."}}'),
+        _ok_response("ok"),
+    ])
+    monkeypatch.setattr(requests, "post", rec)
+    client = LLMClient(_cfg_azure())
+    text = client.chat([{"role": "user", "content": "hi"}])
+    assert text == "ok"
+    assert len(rec.calls) == 2
+    assert "max_tokens" not in rec.calls[1]["json"]
+    assert rec.calls[1]["json"]["max_completion_tokens"] == 512
+
+
+def test_azure_drops_pinned_temperature_after_token_swap(monkeypatch):
+    """Reasoning deployments pin temperature; a second 400 after the token swap
+    must drop temperature and succeed on the third call (observed live on a
+    real AI Foundry gpt-6.1 deployment, 2026-11-04)."""
+    rec = Recorder([
+        _err_400('{"error":{"code":"unsupported_parameter","param":"max_tokens",'
+                 '"message":"use max_completion_tokens"}}'),
+        _err_400('{"error":{"code":"unsupported_value","param":"temperature",'
+                 '"message":"Only the default (1) value is supported."}}'),
+        _ok_response("ok"),
+    ])
+    monkeypatch.setattr(requests, "post", rec)
+    client = LLMClient(_cfg_azure())
+    text = client.chat([{"role": "user", "content": "hi"}])
+    assert text == "ok"
+    assert len(rec.calls) == 3
+    final = rec.calls[2]["json"]
+    assert "temperature" not in final
+    assert final["max_completion_tokens"] == 512
+
+
+def test_azure_drops_temperature_alone(monkeypatch):
+    """Temperature-only rejection (no token-param complaint) also recovers."""
+    rec = Recorder([
+        _err_400('{"error":{"code":"unsupported_value","param":"temperature",'
+                 '"message":"Only the default (1) value is supported."}}'),
+        _ok_response("ok"),
+    ])
+    monkeypatch.setattr(requests, "post", rec)
+    client = LLMClient(_cfg_azure())
+    text = client.chat([{"role": "user", "content": "hi"}])
+    assert text == "ok"
+    assert "temperature" not in rec.calls[1]["json"]

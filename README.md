@@ -482,9 +482,13 @@ path, auth via the native `api-key` header) and **AI Foundry serverless**
 endpoints (`https://<name>.<region>.models.ai.azure.com` — model in the body).
 Auth is `auto` by default: `api-key` first, Bearer retry on 401 (set
 `auth = "api-key"` or `"bearer"` in the `[azure]` config section to pin it).
-`api-version` defaults to `2024-10-21`. The adapter is fully unit-tested
-against mocked HTTP; it has not yet had a live smoke test against a real
-Azure deployment — if you run one, `wrench doctor` is the one-command verdict.
+`api-version` defaults to `2024-10-21`. Newer deployments (gpt-5-class and
+reasoning models) reject the legacy `max_tokens` parameter and pin
+`temperature` — the adapter detects both and adapts automatically, so any
+deployment vintage works without config twiddling. The adapter is fully
+unit-tested against mocked HTTP **and live smoke-tested against a real Azure
+AI Foundry deployment** (every feature — chat, fixxer, CVE briefings — same
+as any other provider). `wrench doctor` is the one-command verdict on yours.
 </details>
 
 <details>
