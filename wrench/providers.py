@@ -30,6 +30,9 @@ class LLMClient:
         self.cfg = cfg
         self.store = store
         self.last_usage: dict = {}
+        # Local backends run on whatever hardware is present — a CPU-only box
+        # can legitimately take minutes per reply. Don't kill it at 3 minutes.
+        self.timeout = 600 if cfg.provider in ("ollama", "lmstudio") else 180
 
     # ---------------- public API ----------------
     def chat(
@@ -49,6 +52,8 @@ class LLMClient:
             try:
                 if self.cfg.provider == "anthropic":
                     text, usage = self._anthropic(messages, model, max_tokens, temperature)
+                elif self.cfg.provider == "ollama" and self._wants_native_nothink(model):
+                    text, usage = self._ollama_native(messages, model, max_tokens, temperature)
                 else:
                     text, usage = self._openai_compat(messages, model, max_tokens, temperature)
                 self.last_usage = usage
@@ -93,7 +98,7 @@ class LLMClient:
             "temperature": temperature,
         }
         try:
-            r = requests.post(url, headers=headers, json=body, timeout=180)
+            r = requests.post(url, headers=headers, json=body, timeout=self.timeout)
         except requests.RequestException as e:
             raise ProviderError(
                 f"{self.cfg.provider} unreachable at {self.cfg.base_url}: {e.__class__.__name__}"
@@ -114,6 +119,37 @@ class LLMClient:
             return (content or "").strip(), usage
         except (KeyError, IndexError) as e:
             raise ProviderError(f"unexpected response shape: {list(d.keys())}") from e
+
+    # ---------------- ollama native (thinking disabled) ----------------
+    @staticmethod
+    def _wants_native_nothink(model: str) -> bool:
+        """Thinking-family local models burn their whole token budget (and, on a
+        CPU box, many minutes) reasoning before one JSON line. Ollama's native
+        /api/chat supports `think: false`; the OpenAI-compat endpoint doesn't."""
+        return any(fam in model.lower() for fam in ("qwen3", "deepseek-r1", "magistral"))
+
+    def _ollama_native(self, messages, model, max_tokens, temperature):
+        base = self.cfg.base_url
+        base = base[:-3] if base.endswith("/v1") else base
+        body = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "options": {"num_predict": max_tokens, "temperature": temperature},
+        }
+        try:
+            r = requests.post(f"{base}/api/chat", json=body, timeout=self.timeout)
+        except requests.RequestException as e:
+            raise ProviderError(
+                f"ollama unreachable at {base}: {e.__class__.__name__}") from e
+        if r.status_code != 200:
+            raise ProviderError(f"ollama HTTP {r.status_code}: {r.text[:300]}")
+        d = r.json()
+        text = (d.get("message", {}).get("content") or "").strip()
+        pt, ct = d.get("prompt_eval_count", 0), d.get("eval_count", 0)
+        return text, {"prompt_tokens": pt, "completion_tokens": ct,
+                      "total_tokens": pt + ct}
 
     def _anthropic(self, messages, model, max_tokens, temperature):
         url = f"{self.cfg.base_url}/messages"

@@ -22,6 +22,23 @@ from .providers import LLMClient, ProviderError, extract_json
 
 MAX_STEPS = 8
 
+
+def _normalize_action(obj: dict) -> dict:
+    """Tolerate common small-model protocol flubs instead of burning a nudge.
+
+    Seen in the wild (qwen2.5:3b): {"action": "run_diag", "args": {...}} —
+    the tool name lands in "action". Normalize any shape that unambiguously
+    names a known tool into {"action": "tool", "tool": <name>, "args": {...}}.
+    """
+    action = obj.get("action")
+    if action in ("tool", "final"):
+        return obj
+    known = {spec["name"] for spec in tools.TOOL_SPECS}
+    name = obj.get("tool") or (action if action in known else None)
+    if name in known:
+        return {"action": "tool", "tool": name, "args": obj.get("args", {}) or {}}
+    return obj
+
 SYSTEM_PERSONA = """\
 You are wrench, a careful and competent staff sysadmin agent running ON the machine you administer.
 Hostname: {host} ({os_info}). Policy tier: {tier}.
@@ -75,10 +92,13 @@ class Agent:
     def run(self, user_goal: str, context: str = "", model: str | None = None,
             purpose: str = "ask", max_steps: int = MAX_STEPS) -> dict:
         """Run the observe→orient→act loop. Returns {answer, steps, tokens}."""
+        def _user(content: str) -> dict:
+            return {"role": "user", "content": content}
+
         messages = [{"role": "system", "content": _system_prompt(self.cfg)}]
         if context:
             messages.append({"role": "system", "content": f"Current telemetry context:\n{context}"})
-        messages.append({"role": "user", "content": user_goal})
+        messages.append(_user(user_goal))
 
         steps: list[dict] = []
         tokens = 0
@@ -86,10 +106,8 @@ class Agent:
         for step_i in range(max_steps + 1):
             force_final = step_i == max_steps
             if force_final:
-                messages.append({
-                    "role": "user",
-                    "content": 'Tool budget exhausted. Reply now with {"action":"final","answer":"..."}.',
-                })
+                messages.append(_user(
+                    'Tool budget exhausted. Reply now with {"action":"final","answer":"..."}.'))
             try:
                 raw = self.client.chat(messages, model=model, purpose=purpose)
             except ProviderError as e:
@@ -97,6 +115,8 @@ class Agent:
                         "error": str(e)}
             tokens += self.client.last_usage.get("total_tokens", 0)
             obj = extract_json(raw)
+            if obj is not None:
+                obj = _normalize_action(obj)
             if obj is None or "action" not in obj:
                 # Looks like it meant to follow the protocol but flubbed it — nudge.
                 looks_jsonish = '"action"' in raw or raw.lstrip().startswith("{")
@@ -106,13 +126,11 @@ class Agent:
                 if (looks_jsonish or premature_prose) and not force_final:
                     nudged_prose = nudged_prose or premature_prose
                     messages.append({"role": "assistant", "content": raw})
-                    messages.append({
-                        "role": "user",
-                        "content": "Protocol reminder: reply with exactly ONE valid JSON "
-                                   'object — {"action":"tool",...} to gather data, or '
-                                   '{"action":"final","answer":"..."} with your complete '
-                                   "answer. No other text.",
-                    })
+                    messages.append(_user(
+                        "Protocol reminder: reply with exactly ONE valid JSON "
+                        'object — {"action":"tool",...} to gather data, or '
+                        '{"action":"final","answer":"..."} with your complete '
+                        "answer. No other text."))
                     continue
                 # Plain prose answer — accept as final.
                 return {"answer": raw, "steps": steps, "tokens": tokens}
@@ -128,13 +146,11 @@ class Agent:
                                         self.confirm_fn)
                 steps.append({"tool": name, "args": args, "result": result[:2000]})
                 messages.append({"role": "assistant", "content": raw})
-                messages.append({"role": "user",
-                                 "content": f"TOOL RESULT for {name}:\n{result}"})
+                messages.append(_user(f"TOOL RESULT for {name}:\n{result}"))
                 continue
             # unknown action — nudge once
             messages.append({"role": "assistant", "content": raw})
-            messages.append({"role": "user",
-                             "content": "Invalid action. Use \"tool\" or \"final\" exactly."})
+            messages.append(_user('Invalid action. Use "tool" or "final" exactly.'))
         return {"answer": "(no final answer produced)", "steps": steps, "tokens": tokens}
 
     # ---------------- patrol ----------------
