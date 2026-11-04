@@ -303,3 +303,45 @@ def test_azure_drops_temperature_alone(monkeypatch):
     text = client.chat([{"role": "user", "content": "hi"}])
     assert text == "ok"
     assert "temperature" not in rec.calls[1]["json"]
+
+
+# ---------------- OpenAI-compatible local server helpers (LM Studio / LiteLLM) ----------------
+
+def test_openai_server_alive_and_models(monkeypatch):
+    from wrench import localsetup
+
+    class FakeGet:
+        def __init__(self, status, payload):
+            self.status_code = status
+            self._p = payload
+        def json(self):
+            return self._p
+        def raise_for_status(self):
+            if self.status_code != 200:
+                raise requests.HTTPError(str(self.status_code))
+
+    monkeypatch.setattr(requests, "get",
+                        lambda url, timeout=0: FakeGet(200, {"data": [
+                            {"id": "qwen2.5-7b-instruct"}, {"id": "llama-3.2-3b"},
+                            {"notid": "x"}]}))
+    assert localsetup.openai_server_alive("http://127.0.0.1:1234/v1")
+    assert localsetup.openai_models("http://127.0.0.1:1234/v1") == [
+        "qwen2.5-7b-instruct", "llama-3.2-3b"]
+
+    def boom(url, timeout=0):
+        raise requests.ConnectionError("refused")
+    monkeypatch.setattr(requests, "get", boom)
+    assert not localsetup.openai_server_alive("http://127.0.0.1:1234/v1")
+    assert localsetup.openai_models("http://127.0.0.1:1234/v1") == []
+
+
+def test_write_config_uncomments_chosen_base_url(monkeypatch, tmp_path):
+    import wrench.config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "config.toml")
+    p = write_default_config("lmstudio", model="qwen2.5-7b-instruct",
+                             base_url="http://127.0.0.1:1234/v1")
+    text = p.read_text()
+    assert 'base_url = "http://127.0.0.1:1234/v1"' in text
+    assert '# base_url = "http://127.0.0.1:1234/v1"' not in text
+    assert 'model = "qwen2.5-7b-instruct"' in text

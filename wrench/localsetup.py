@@ -179,6 +179,29 @@ def pull_model(tag: str) -> bool:
         return False
 
 
+# ------- OpenAI-compatible local servers (LM Studio, LiteLLM) -------
+
+def openai_server_alive(base_url: str) -> bool:
+    """True if an OpenAI-compatible server answers GET <base>/models."""
+    try:
+        return requests.get(f"{base_url.rstrip('/')}/models",
+                            timeout=3).status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def openai_models(base_url: str) -> list[str]:
+    """Model ids from an OpenAI-compatible /models endpoint
+    ({"data": [{"id": ...}, ...]}). Empty list on any failure."""
+    try:
+        r = requests.get(f"{base_url.rstrip('/')}/models", timeout=5)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        return [m.get("id", "") for m in data if isinstance(m, dict) and m.get("id")]
+    except (requests.RequestException, ValueError, AttributeError):
+        return []
+
+
 # ---------------- smoke test ----------------
 
 def smoke_test(cfg, store) -> tuple[bool, str]:

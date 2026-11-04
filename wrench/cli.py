@@ -404,6 +404,64 @@ def _ollama_guided_setup(interactive: bool, assume_yes: bool,
     return model
 
 
+def _openai_local_guided_setup(provider: str, interactive: bool,
+                               model: str | None) -> tuple[str, str | None, bool]:
+    """Guided setup for OpenAI-compatible local servers (LM Studio, LiteLLM).
+
+    Probes the server, lists its models, lets the user pick. Returns
+    (base_url, model, complete). complete=False means no model was verified —
+    the caller must NOT print the success greeting."""
+    from . import localsetup
+    from .config import PROVIDER_DEFAULTS
+    label = "LM Studio" if provider == "lmstudio" else "LiteLLM"
+    default_base = PROVIDER_DEFAULTS[provider]["base_url"]
+    base_url = default_base
+    if interactive:
+        base_url = typer.prompt(f"{label} server URL",
+                                default=default_base).strip().rstrip("/")
+    if not localsetup.openai_server_alive(base_url):
+        hint = ("open LM Studio → Developer tab → [bold]Start Server[/bold] "
+                "(default port 1234)"
+                if provider == "lmstudio"
+                else "start your LiteLLM proxy (e.g. `litellm --port 4000`)")
+        console.print(Panel(
+            f"[yellow]{label} isn't answering at {base_url}.[/yellow]\n"
+            f"{hint}, then re-run:  [bold]wrench init -p {provider} --force[/bold]",
+            border_style="yellow", title=f"⚠ {label} not running"))
+        return base_url, model, False
+    models = localsetup.openai_models(base_url)
+    if not models:
+        detail = ("the server is up but no model is loaded — load one in "
+                  "LM Studio (or `lms load <model>`)"
+                  if provider == "lmstudio"
+                  else "the proxy is up but lists no models — check its config")
+        console.print(Panel(
+            f"[yellow]{detail}, then re-run:  "
+            f"[bold]wrench init -p {provider} --force[/bold][/yellow]",
+            border_style="yellow", title=f"⚠ {label}: no models available"))
+        return base_url, model, False
+    if model and model not in models:
+        console.print(f"[yellow]{model!r} isn't served — pick from what "
+                      f"{label} offers:[/yellow]")
+        model = None
+    if not model:
+        if interactive and len(models) > 1:
+            t = Table(show_header=False, box=box.ROUNDED, border_style="cyan")
+            for i, mid in enumerate(models, 1):
+                t.add_row(f"[bold]{i}[/bold]", mid)
+            console.print(t)
+            idx = typer.prompt(f"model [1-{len(models)}]", default="1").strip()
+            try:
+                model = models[max(1, min(len(models), int(idx))) - 1]
+            except ValueError:
+                model = next((m for m in models if m == idx), models[0])
+        else:
+            model = models[0]
+    console.print(f"[green]✔ {label} answering at {base_url}[/green] — "
+                  f"model: [bold]{model}[/bold]")
+    return base_url, model, True
+
+
 def _azure_guided_setup(interactive: bool,
                         endpoint: str | None,
                         api_version: str | None,
@@ -479,11 +537,20 @@ def init(
                       f"{', '.join(PROVIDER_DEFAULTS)}[/red]")
         raise typer.Exit(1)
 
+    setup_complete = True
+    incomplete_reason = ""
     if CONFIG_PATH.exists() and not force:
         console.print(f"[yellow]config already exists:[/yellow] {CONFIG_PATH} (use --force)")
     else:
+        local_base_url = None
         if provider == "ollama":
             model = _ollama_guided_setup(interactive, yes, model)
+        elif provider in ("lmstudio", "litellm"):
+            local_base_url, model, setup_complete = _openai_local_guided_setup(
+                provider, interactive, model)
+            if not setup_complete:
+                incomplete_reason = ("no model verified — start the server, "
+                                     f"then re-run `wrench init -p {provider} --force`")
         if provider == "azure":
             azure_endpoint, azure_api_version, api_key, model = _azure_guided_setup(
                 interactive, azure_endpoint, azure_api_version, api_key, model)
@@ -492,16 +559,24 @@ def init(
                                      azure_api_version=azure_api_version,
                                      api_key=api_key)
         else:
-            p = write_default_config(provider, model=model)
+            p = write_default_config(provider, model=model, base_url=local_base_url)
         console.print(f"[green]wrote[/green] {p}")
     cfg, store = _ctx()
     with console.status("[cyan]recording first sensor sample + drift baseline..."):
         sensors.sample_all(store)
         driftscan.scan(store)
 
+    if not setup_complete:
+        console.print(Panel(
+            f"[yellow]⚠ setup is NOT complete:[/yellow] {incomplete_reason}\n"
+            f"[dim]config written to {CONFIG_PATH} — your provider choice is saved;\n"
+            "baseline sensors + drift snapshot were still recorded.[/dim]",
+            border_style="yellow", title="⚠ wrench init: unfinished"))
+        return
+
     smoke_note = ""
+    from . import localsetup
     if cfg.provider == "ollama":
-        from . import localsetup
         if localsetup.server_alive():
             with console.status(f"[cyan]smoke test: one tool-calling round-trip on {cfg.model}..."):
                 ok, detail = localsetup.smoke_test(cfg, store)
@@ -513,6 +588,15 @@ def init(
                 smoke_note = "\nlocal smoke test: ✖ FAILED — fix before relying on patrols"
         else:
             smoke_note = "\nlocal smoke test: skipped (ollama server not running)"
+    elif cfg.provider in ("lmstudio", "litellm") and localsetup.openai_server_alive(cfg.base_url):
+        with console.status(f"[cyan]smoke test: one tool-calling round-trip on {cfg.model}..."):
+            ok, detail = localsetup.smoke_test(cfg, store)
+        if ok:
+            console.print(f"[green]✔ local smoke test passed[/green] — {detail}")
+            smoke_note = "\nlocal smoke test: ✔ tool-calling verified"
+        else:
+            console.print(f"[red]✖ local smoke test failed[/red] — {detail}")
+            smoke_note = "\nlocal smoke test: ✖ FAILED — fix before relying on patrols"
     console.print(Panel(
         "[bold]I'm wrench — your systems administrator. I live here now.[/bold]\n"
         "I read the logs so you don't have to, I remember what changes on this box,\n"
@@ -520,17 +604,22 @@ def init(
         "I just took my first look around (sensor baseline + drift snapshot recorded).\n\n"
         f"provider: [bold]{cfg.provider}[/bold] · model: [bold]{cfg.model}[/bold] · "
         f"policy: [bold]{cfg.policy_tier}[/bold]\n"
-        f"data: {cfg.db_path}{smoke_note}\n\n"
-        "put me to work:\n"
-        + ("  1. (no API key needed — it's your hardware)\n"
-           if cfg.provider in ("ollama", "lmstudio")
-           else "  1. (API key configured ✔)\n" if cfg.api_key
-           else f"  1. export {_key_env(cfg.provider)}=...   (or set api_key_file in config)\n")
+        f"data: {cfg.db_path}{smoke_note}\n"
+        + ("api key: none needed — it's your hardware\n"
+           if cfg.provider in ("ollama", "lmstudio", "litellm")
+           else "api key: configured ✔\n" if cfg.api_key
+           else f"api key: [yellow]missing[/yellow] — "
+                f"export {_key_env(cfg.provider)}=... (or set api_key_file in config)\n")
         +
-        "  2. wrench doctor      — verify everything\n"
-        "  3. wrench patrol      — I'll sweep the box and report\n"
-        "  4. wrench fixxer      — I'll find what I can fix, and ask\n"
-        "  5. wrench web         — live dashboard",
+        "\nput me to work — every line below is a command you can type:\n"
+        "  wrench doctor    — verify everything\n"
+        "  wrench patrol    — I'll sweep the box and report\n"
+        "  wrench fixxer    — I'll find what I can fix, and ask\n"
+        "  wrench web       — live dashboard\n\n"
+        + ("[yellow]⚠ setup finished but the smoke test failed — run `wrench doctor` "
+           "and check that your model supports tool calling[/yellow]"
+           if "FAILED" in smoke_note
+           else "[green]✅ setup complete — start with: wrench doctor[/green]"),
         border_style="green", title="🔧 wrench initialized"))
 
 

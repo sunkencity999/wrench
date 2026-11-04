@@ -524,10 +524,17 @@ with one real tool-calling round-trip and tells you plainly if it failed.
 <summary>LM Studio / LiteLLM (local & proxy)</summary>
 
 ```bash
-wrench init -p lmstudio        # http://127.0.0.1:1234/v1
-wrench init -p litellm         # http://127.0.0.1:4000/v1 — any model behind the proxy
+wrench init -p lmstudio        # guided: probes the server → lists loaded models →
+                               # you pick → tool-calling smoke test
+wrench init -p litellm         # same guided flow against your proxy (port 4000)
 ```
-Base URLs and models are overridable in `config.toml` or via
+The guided flow probes the server first (`http://127.0.0.1:1234/v1` for LM
+Studio, `:4000` for LiteLLM — custom URLs prompted for), lists the models it
+actually serves and lets you pick, then runs a one-round tool-calling smoke
+test before declaring success. If the server isn't running or has no model
+loaded, init says so plainly (**⚠ setup is NOT complete**) with the exact
+steps to finish — it never prints a success greeting over a broken setup.
+Base URLs and models remain overridable in `config.toml` or via
 `WRENCH_BASE_URL` / `WRENCH_MODEL` env vars.
 </details>
 

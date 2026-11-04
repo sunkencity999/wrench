@@ -224,16 +224,20 @@ def write_default_config(provider: str = "meta", interval: int = 15,
                          deep_model: str | None = None,
                          azure_endpoint: str | None = None,
                          azure_api_version: str | None = None,
-                         api_key: str | None = None) -> Path:
+                         api_key: str | None = None,
+                         base_url: str | None = None) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     d = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])
     text = DEFAULT_CONFIG_TOML.format(
         provider=provider,
-        base_url=d["base_url"],
+        base_url=base_url or d["base_url"],
         model=model or d["model"],
         deep_model=deep_model or model or d["deep_model"],
         interval=interval,
     )
+    if base_url:
+        # a guided setup chose/confirmed this base URL — write it uncommented
+        text = text.replace(f'# base_url = "{base_url}"', f'base_url = "{base_url}"')
     if provider == "azure":
         key_line = f'api_key = "{api_key}"' if api_key \
             else '# api_key_file = "~/.config/wrench/azure.key"  # or export AZURE_OPENAI_API_KEY'
