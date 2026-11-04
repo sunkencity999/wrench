@@ -384,7 +384,10 @@ wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 mi
     <p class="tabnote"><code>wrench init</code> opens a provider menu — Meta muse models by default
       (press enter), or a <strong>guided fully-local setup via <a href="https://ollama.com">Ollama</a></strong>:
       wrench detects your RAM / GPU, recommends a tool-calling model that fits, installs and pulls
-      with your consent, then proves it with a live tool-calling smoke test. Private + free.</p>
+      with your consent, then proves it with a live tool-calling smoke test. Private + free.
+      Enterprise shop? <strong>Azure OpenAI / AI Foundry</strong> is a first-class provider too —
+      both classic deployment endpoints and Foundry serverless, native <code>api-key</code> auth
+      (<code>wrench init -p azure</code>).</p>
     <p class="tabnote">Linux is tested end-to-end on real hardware; macOS/Windows branches are
       implemented + unit-tested, pending native smoke tests —
       <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">full support matrix</a>.

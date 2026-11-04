@@ -429,11 +429,12 @@ wrench patrol --deep                   # muse-wonder-1.0 for the hard cases
 wrench ask -p ollama -m qwen2.5:7b "…"  # fully local, nothing leaves the box
 wrench ask -p openai "…"               # or OpenAI
 wrench ask -p anthropic "…"            # or Anthropic (native adapter)
+wrench ask -p azure "…"                # or Azure OpenAI / AI Foundry (enterprise)
 wrench ask -p lmstudio "…"             # or LM Studio
 wrench ask -p litellm "…"              # or anything behind a LiteLLM proxy
 ```
 
-One agent loop, six doors. Tool calling uses a strict JSON protocol instead of
+One agent loop, seven doors. Tool calling uses a strict JSON protocol instead of
 provider-specific function-calling APIs, so every backend — including small
 local models — drives the same tools.
 
@@ -462,6 +463,28 @@ wrench init -p openai
 export ANTHROPIC_API_KEY=...   # claude-3-5-haiku default; native messages API adapter
 wrench init -p anthropic
 ```
+</details>
+
+<details>
+<summary>Azure OpenAI / AI Foundry — enterprise</summary>
+
+```bash
+export AZURE_OPENAI_API_KEY=...
+export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+wrench init -p azure --azure-deployment gpt-4o-mini        # guided prompts if run bare
+# fully explicit / scripted:
+wrench init -p azure --azure-endpoint https://<resource>.openai.azure.com \
+            --azure-deployment gpt-4o-mini --azure-api-version 2024-10-21 --yes
+```
+Both endpoint styles are accepted: classic **Azure OpenAI** resources
+(`https://<resource>.openai.azure.com` — your deployment name goes in the URL
+path, auth via the native `api-key` header) and **AI Foundry serverless**
+endpoints (`https://<name>.<region>.models.ai.azure.com` — model in the body).
+Auth is `auto` by default: `api-key` first, Bearer retry on 401 (set
+`auth = "api-key"` or `"bearer"` in the `[azure]` config section to pin it).
+`api-version` defaults to `2024-10-21`. The adapter is fully unit-tested
+against mocked HTTP; it has not yet had a live smoke test against a real
+Azure deployment — if you run one, `wrench doctor` is the one-command verdict.
 </details>
 
 <details>
@@ -504,7 +527,7 @@ Base URLs and models are overridable in `config.toml` or via
 `WRENCH_BASE_URL` / `WRENCH_MODEL` env vars.
 </details>
 
-Keys come from env (`META_API_KEY`, `OPENAI_API_KEY`, …) or an `api_key_file`
+Keys come from env (`META_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, …) or an `api_key_file`
 path in the config; they are never logged, and never stored in the database.
 
 ## Policy tiers — the leash
@@ -542,7 +565,7 @@ flowchart TB
         agent["agent.py<br/>observe → orient → act → report"]
         tools["tools.py<br/>read_logs · service_status · disk_tree<br/>net_listeners · proc_top · run_diag · fix_action"]
         policy["policy.py<br/>tiers + allowlists + forbidden patterns"]
-        providers["providers.py<br/>meta · openai · anthropic<br/>ollama · lmstudio · litellm"]
+        providers["providers.py<br/>meta · openai · anthropic · azure<br/>ollama · lmstudio · litellm"]
     end
 
     subgraph show["📺 report"]
