@@ -302,6 +302,15 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       (<code>--restore-test</code>). Zero detected jobs is a <b>warning, not a shrug</b>. Untested
       backups don't exist. <code>--json</code> (<code>wrench.backups.v1</code>) + Prometheus
       freshness gauges included.</p></div>
+    <div class="card"><span class="ico">📋</span><h3>Prove the baseline</h3>
+      <p><code>wrench comply</code> audits the box against <b>declarative compliance packs</b> —
+      <code>cis-ubuntu-essentials</code> (~40 checks inspired by CIS L1, honestly named) and an
+      opinionated <code>wrench-baseline</code> — covering sshd posture, auth-file permissions,
+      sysctl hardening, mounts, and legacy services. Packs are <b>data, not code</b>: rules map to
+      read-only check primitives, verdicts are <b>deterministic</b> (never a model's opinion), and
+      it all runs offline with a score. <code>comply accept</code> blesses known debt by consent
+      (audit-sealed); patrols alarm only on <b>new</b> failures. <code>wrench.comply.v1</code> +
+      Prometheus score gauges.</p></div>
   </div>
   <h3 class="arc-head">FIX<span class="sub">with your permission — consent-gated, auto-rollback</span></h3>
   <div class="cards">

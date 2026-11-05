@@ -43,6 +43,7 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
 | `wrench forecast --json` | `wrench.forecast.v1` | `count`, `worst`, `incidents[]` — kind (`capacity\|cert`), what, current, growth_per_day, threshold, eta_days, eta_date, severity, confidence, r2, samples | 0 |
 | `wrench backups --json` | `wrench.backups.v1` | `count`, `worst`, `no_jobs`, `severity_counts{}`, `jobs[]` — name, tool, command, origin, schedule, cadence_s, source, dest, last_run_ts, last_run_evidence, age_s, freshness (`fresh\|stale\|unknown`), integrity (`ok\|locked\|failed\|unknown\|skipped`), integrity_note, restore_test | **1 when worst is critical** |
 | `wrench notifications --json [--all]` | `wrench.notifications.v1` | `count`, `unread_count`, `notifications[]` — id, ts, severity, summary, kind, report_id, read | 0 |
+| `wrench comply --json [--pack N]` | `wrench.comply.v1` | `packs[]` — pack, title, score, counts{pass,fail,skip}, severity_fails{}; `critical_fails`; `results[]` — pack, id, title, severity, status (`pass\|fail\|skip`), detail | **1 when any critical rule fails** |
 | `wrench doctor --json` | `wrench.doctor.v1` | `healthy`, `checks{}` — platform, scheduler, log_backend, provider, base_url, model, policy_tier, api_key_present, db_path, sensor_os/docker/gpu, provider_ping{ok, detail} | **1 when the provider is unreachable** |
 | `wrench version --json` | `wrench.version.v1` | envelope only | 0 |
 
@@ -162,13 +163,13 @@ Recent sealed events plus the chain verdict. Each entry is a full chain record.
   "schema": "wrench.audit.v1",
   "generated_at": 1793914272.825,
   "host": "devbox",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "count": 7,
   "shown": 7,
   "intact": true,
   "entries": [
     {"ts": 1793914200.1, "actor": "wrench", "kind": "genesis",
-     "detail": {"msg": "audit chain initialized", "version": "2.0.1"},
+     "detail": {"msg": "audit chain initialized", "version": "2.1.0"},
      "prev_hash": "0000…0000", "hash": "4dd6…ef75"},
     {"ts": 1793914260.4, "actor": "alice", "kind": "fixxer:disk-clean",
      "detail": {"tier": "repair", "command": "…", "approved": true, "result": "…"},
@@ -186,7 +187,7 @@ Re-walks the on-disk chain. **Exit 0 = INTACT, exit 1 = tampered.**
   "schema": "wrench.audit.verify.v1",
   "generated_at": 1793914272.9,
   "host": "devbox",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "intact": false,
   "count": 7,
   "broken_index": 3,
@@ -204,7 +205,7 @@ Approval-token states (hashes only; plaintext tokens are never stored or emitted
   "schema": "wrench.approvals.v1",
   "generated_at": 1793914300.0,
   "host": "devbox",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "count": 1,
   "approvals": [
     {"action": "blueprint --execute", "detail": "harden sshd",
@@ -228,7 +229,7 @@ cadence_s`.
   "schema": "wrench.fleet.v1",
   "generated_at": 1793914400.0,
   "host": "hub",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "summary": {"total": 3, "green": 1, "yellow": 1, "red": 0, "silent": 1},
   "nodes": [
     {"node_id": "web-01", "hostname": "web-01", "status": "attention",
@@ -257,7 +258,7 @@ unreachable and the report will retry next patrol.
   "schema": "wrench.fleet.report.v1",
   "generated_at": 1793914400.0,
   "host": "web-01",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "pushed": true,
   "queued": false,
   "detail": "HTTP 200",
