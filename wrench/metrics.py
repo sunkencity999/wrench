@@ -255,6 +255,31 @@ def render(store, data_dir: Path) -> str:
     except Exception:  # noqa: BLE001
         pass
 
+    # ---- compliance (from the last comply scan snapshot) ----
+    try:
+        from .comply import BASELINE_KIND as _CB, SCAN_KIND as _CS
+        snap = store.last_snapshot(_CS)
+        if snap:
+            _, rep = snap
+            b.metric("wrench_comply_score",
+                     "Compliance score percentage per pack at the newest scan.",
+                     "gauge")
+            b.metric("wrench_comply_fails",
+                     "Failing compliance rules per pack and severity.", "gauge")
+            for p in rep.get("packs", []):
+                b.sample("wrench_comply_score", p.get("score", 0),
+                         {"pack": p["pack"]})
+                for sev, n in (p.get("severity_fails") or {}).items():
+                    b.sample("wrench_comply_fails", n,
+                             {"pack": p["pack"], "severity": sev})
+            b.metric("wrench_comply_baseline_accepted",
+                     "1 when a compliance baseline has been accepted by "
+                     "consent.", "gauge")
+            b.sample("wrench_comply_baseline_accepted",
+                     1 if store.last_snapshot(_CB) else 0)
+    except Exception:  # noqa: BLE001
+        pass
+
     # ---- capacity forecast (from the last computed feed snapshot) ----
     try:
         from .forecast import FORECAST_KIND
