@@ -39,6 +39,7 @@ staff sysadmin on the box itself. It does four things, continuously:
 | 💬 | **Explain** | An LLM agent with read-only diagnostic tools answers questions about *your* machine, grounded in its actual telemetry and logs — not generic trivia. "Why is my disk filling up?" gets investigated, not guessed at. |
 | 🚓 | **Patrol** | On a schedule, wrench reviews the sensors, the anomalies, and the drift; investigates anything suspicious with real diagnostics; and files a report a human wants to read. Ok / attention / critical, findings with evidence, exact commands to fix. |
 | 🔧 | **Fix** | `wrench fixxer` finds what's programmatically correctable — pending updates (incl. security), orphaned packages & old kernels, fat journald logs, bloated caches, stale `/tmp`, failed services — and applies the fixes you pick, with per-fix verification. Every fix is a hand-written catalog command; the model explains and helps you choose, but **never writes the shell**. Opt-in auto mode for self-healing boxes, behind a consent ceremony and an audit log. |
+| 🔔 | **Notify** | When a patrol finds something worth your attention, wrench taps you on the shoulder: a desktop notification, an optional webhook (ntfy / Slack / Discord), a toast on the live dashboard, and a `🔔` banner on your next CLI command. Severity-thresholded, best-effort, never breaks a patrol. |
 | 🛰️ | **Watch the horizon** | `wrench cve` checks installed packages against **[OSV.dev](https://osv.dev)** and the OS/kernel/runtimes against **[endoflife.date](https://endoflife.date)** — free public APIs, no keys. Known CVEs flow into patrols, the dashboard, and `fixxer` (which can apply *targeted* security updates for exactly the affected packages). Results cache locally with a TTL; patrols never fail because the internet is down. |
 
 All of it runs locally, with **Meta's muse models as the default brain**: the
@@ -251,6 +252,35 @@ conversation stays on your machine.
 
 Keyboard shortcuts: <kbd>?</kbd> overlay · <kbd>c</kbd> chat ·
 <kbd>r</kbd> refresh · <kbd>t</kbd> theme · <kbd>Esc</kbd> close.
+
+### Notifications — "wrench taps you on the shoulder"
+
+A patrol that finds trouble shouldn't wait for you to ask. When a patrol's
+findings meet the severity threshold, wrench writes a notification to a local
+JSONL inbox (`~/.local/share/wrench/notifications.jsonl`) and fans it out:
+
+- **Desktop** — `notify-send` (Linux), `osascript` (macOS), or a PowerShell
+  toast (Windows). Best-effort: silently skipped if unavailable.
+- **Webhook** — one generic JSON POST that ntfy, Slack, and Discord-style
+  receivers all understand. Short timeout; failures are logged, never fatal.
+- **Dashboard** — unread notifications appear as toasts (top-right) on
+  `wrench web`; clicking one opens that patrol's report and marks it read.
+- **CLI** — `status`, `report`, `chat`, and `ask` print a one-line 🔔 banner
+  when unread findings exist; viewing `wrench report` marks them read.
+  `wrench watch` prints notifications inline as they occur.
+
+Configure it in `config.toml`:
+
+```toml
+[notify]
+enabled = true               # master switch
+min_severity = "attention"   # attention | error | critical
+desktop = true
+# webhook_url = "https://ntfy.sh/your-topic"
+```
+
+Severity is the worst of the patrol's status and its individual findings, so
+an "attention" patrol carrying one `[critical]` finding notifies as critical.
 
 ### `wrench cve` — what the internet already knows about your box
 
