@@ -267,6 +267,22 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       <b>read-only</b>; a baseline is blessed only by explicit <code>security accept</code>, and the
       OSV scan <b>fails soft</b> offline. Findings land in patrols, <code>--json</code>
       (<code>wrench.security.v1</code>), and Prometheus gauges.</p></div>
+    <div class="card"><span class="ico">🔮</span><h3>See it coming</h3>
+      <p><code>wrench forecast</code> runs a <b>least-squares trend engine</b> over the sensor
+      history the box already records — disk per mount, <b>inodes</b>, memory, swap,
+      <code>/var/log</code> growth — and projects when each crosses its danger threshold.
+      Certificate expiry joins the same <b>unified future-incidents feed</b>, paging up one
+      lead-time ladder (≤14d info → ≤7d warning → ≤3d critical). Confidence comes from R² and
+      history depth; the trend math is code, <b>never the model's guess</b>. Feeds patrols,
+      <code>--json</code> (<code>wrench.forecast.v1</code>), and Prometheus gauges.</p></div>
+    <div class="card"><span class="ico">🧰</span><h3>Trust your backups</h3>
+      <p><code>wrench backups</code> finds the backup jobs the box <b>actually has</b> — crontabs,
+      systemd timers, wrapper scripts followed to the real tool (borg, restic, rsync, pg_dump,
+      mysqldump…) — then climbs a <b>verification ladder</b>: did it run on its own cadence, does
+      the repository answer (read-only), and optionally a <b>consent-gated restore proof</b>
+      (<code>--restore-test</code>). Zero detected jobs is a <b>warning, not a shrug</b>. Untested
+      backups don't exist. <code>--json</code> (<code>wrench.backups.v1</code>) + Prometheus
+      freshness gauges included.</p></div>
     <div class="card"><span class="ico">📐</span><h3>Blueprint the configs</h3>
       <p><code>wrench blueprint "harden sshd"</code> — the brain drafts the change as a
       <b>unified diff against your real files</b>; it never runs a command. Code validates with the

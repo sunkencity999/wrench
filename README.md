@@ -444,6 +444,62 @@ and an optional brain briefing that triages the lot in plain English — analysi
 only, it never executes anything. Bring your own mind; the doors are watched
 either way.
 
+### `wrench forecast` — see the incident coming
+
+Monitoring tells you the disk *is* full. Forecasting tells you it *will be* —
+while there's still time to be graceful about it.
+
+```console
+$ wrench forecast
+🔮 future incidents          ← what · now · growth/day · crosses · ETA · confidence
+   disk /var                  78.4%   +1.9%/day        95%     in ~9d    high
+   cert jellyfin.local        —       —                expiry  in 11d    certain
+```
+
+A **least-squares trend engine** runs over the sensor history the box already
+records (the same samples `wrench status` stores): disk per mount, **inodes**,
+memory, swap, and `/var/log` growth. It refuses to guess — projections need a
+minimum sample count *and* time span, confidence comes from R² and history
+depth, and a shrinking series never cries wolf. Certificate expiry joins the
+same **unified future-incidents feed**, so "disk full Tuesday" and "cert dead
+Friday" page through one lead-time ladder (≤14d info, ≤7d warning, ≤3d
+critical). Feeds patrols, `--json` (`wrench.forecast.v1`), and Prometheus
+(`wrench_forecast_days_to_threshold`, `…_incidents`). The trend math is code —
+the model is never asked when your disk fills.
+
+### `wrench backups` — untested backups don't exist
+
+Every sysadmin horror story ends the same way: *"…and then we checked the
+backups."* `wrench backups` checks them **before** the story starts.
+
+```console
+$ wrench backups
+🧰 backup jobs               ← job · origin · schedule · last run · freshness · integrity
+   borg:borg-system-backup    borg-system-backup.timer   Sun 03:00   2.1d ago   fresh   ok
+   pg_dump:app-nightly        /etc/cron.d/app            @daily      26h ago    fresh   ok
+```
+
+**Detection** — I find the backup jobs the box *actually* has: crontabs
+(system, `/etc/cron.d`, user, the periodic dirs) and **systemd timers**, with
+recognition for borg, restic, rsync, pg_dump/pg_dumpall, mysqldump,
+rdiff-backup, and duplicity. Wrapper scripts are **followed and read** — a
+`backup.sh` that exports `BORG_REPO` and calls `borg create "::$ARCHIVE"`
+resolves to the real tool and the real repository.
+
+**Verification ladder** — L1: *did it run recently?* (systemd exec timestamps,
+destination mtimes, judged against each job's own parsed cadence — a weekly
+job isn't "stale" on day three). L2: *is the repository sane?* (read-only:
+`borg list`, `restic snapshots`, dump freshness + a zero-byte check; an
+encrypted repo I can't open is reported **locked**, not failed). L3, optional
+and consent-gated: `--restore-test` proves restorability with read-only
+variants (borg `extract --dry-run`, `restic check`).
+
+A box with **zero detected backup jobs gets a warning** — that's a finding,
+not a shrug. Everything feeds patrols, `--json` (`wrench.backups.v1`, exit 1
+on critical), Prometheus (`wrench_backup_freshness_seconds`,
+`…_job_severity`), and an optional brain briefing that answers the only
+question that matters: *could this box be restored today?*
+
 ### `wrench blueprint` — declarative config automation
 
 You describe the change; the brain drafts it **as a unified diff against your
