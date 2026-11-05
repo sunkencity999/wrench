@@ -767,3 +767,181 @@ def history(cfg, n: int = 20) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return rows
+
+
+# ---------------- drafting (the brain writes the diff, never commands) ----
+
+TARGETS_PROMPT = """\
+You are wrench's config-blueprint planner on a {os_info} machine.
+A human wants this configuration change:
+
+  {intent}
+
+Name the config FILE(S) that should be edited or created to achieve it.
+Rules:
+- absolute paths only, at most {max_files} files, prefer drop-in dirs
+  (/etc/ssh/sshd_config.d/, /etc/sysctl.d/, /etc/logrotate.d/,
+  /etc/sudoers.d/, /etc/nginx/sites-available/, /etc/fail2ban/jail.d/)
+  over editing a daemon's main config file
+- NEVER /etc/passwd, /etc/shadow, /etc/sudoers directly
+- existing files listed below may be edited; anything else will be created new
+
+Existing candidate files on this machine:
+{listing}
+
+Reply with EXACTLY one JSON object, nothing else:
+  {{"targets": ["/abs/path", ...], "reason": "<one line>"}}
+"""
+
+DIFF_PROMPT = """\
+You are wrench's config-blueprint author on a {os_info} machine.
+Produce a configuration change as a UNIFIED DIFF. You never run commands —
+your entire job is the diff text; code will validate and apply it under a
+consent ceremony with automatic rollback.
+
+Intent:
+  {intent}
+
+Current content of each target file is below between markers. A file shown as
+(NEW FILE — does not exist) must be created with a /dev/null old side.
+
+{files_block}
+
+STRICT output rules:
+- Output ONLY a unified diff (optionally inside one ``` fence). No prose.
+- Use headers exactly like:  --- a{example}   and   +++ b{example}
+  (or --- /dev/null for a new file).
+- Hunk headers `@@ -l,c +l,c @@` must match their body line counts.
+- Context lines must be copied VERBATIM from the current content shown.
+- Keep the change minimal and idiomatic for the daemon. Include comments in
+  the config explaining non-obvious choices.
+- Never touch files other than the targets listed.
+{retry_note}"""
+
+
+def _default_target_listing(cfg) -> str:
+    """A short listing of plausible existing config files to ground phase 1."""
+    roots = allowed_roots(cfg)
+    hints = ("ssh/sshd_config", "ssh/sshd_config.d", "nginx/nginx.conf",
+             "nginx/sites-available", "sysctl.conf", "sysctl.d", "logrotate.conf",
+             "logrotate.d", "fail2ban/jail.conf", "fail2ban/jail.d",
+             "sudoers.d", "systemd/system")
+    lines: list[str] = []
+    for root in roots:
+        for h in hints:
+            p = Path(root) / h
+            if p.is_file():
+                lines.append(str(p))
+            elif p.is_dir():
+                try:
+                    kids = sorted(x.name for x in p.iterdir() if x.is_file())[:12]
+                except OSError:
+                    kids = []
+                lines.append(f"{p}/ (dir: {', '.join(kids) if kids else 'empty'})")
+    return "\n".join(f"- {ln}" for ln in lines) or "(none found)"
+
+
+def _extract_diff(text: str) -> str:
+    """Pull the unified diff out of model output (tolerates one code fence)."""
+    t = text.strip()
+    if "```" in t:
+        # take the largest fenced block that contains a '--- ' header
+        blocks = re.findall(r"```(?:diff|patch)?\n(.*?)```", t, flags=re.S)
+        candidates = [b for b in blocks if "--- " in b and "+++ " in b]
+        if candidates:
+            t = max(candidates, key=len).strip()
+    # drop any prose before the first file header
+    idx = t.find("--- ")
+    if idx > 0:
+        t = t[idx:]
+    if not t.startswith("--- "):
+        raise BlueprintError("model did not produce a unified diff")
+    return t.rstrip() + "\n"
+
+
+def _os_info() -> str:
+    import platform as _pf
+    return f"{_pf.system()} {_pf.release()} ({_pf.node() or 'localhost'})"
+
+
+def propose_targets(cfg, store, intent: str, client=None, on_step=None) -> list[str]:
+    """Phase 1: the model names target files; code validates every one."""
+    from .providers import LLMClient, extract_json
+    client = client or LLMClient(cfg, store)
+    if on_step:
+        on_step("draft", "asking the brain which files to touch")
+    raw = client.chat(
+        [{"role": "user", "content": TARGETS_PROMPT.format(
+            os_info=_os_info(), intent=intent, max_files=MAX_TARGET_FILES,
+            listing=_default_target_listing(cfg))}],
+        purpose="blueprint-targets", temperature=0.2)
+    obj = extract_json(raw)
+    if not obj or not isinstance(obj.get("targets"), list) or not obj["targets"]:
+        raise BlueprintError(f"planner returned no usable targets: {raw[:200]}")
+    targets = [str(t) for t in obj["targets"]][:MAX_TARGET_FILES]
+    for t in targets:
+        ok, reason = path_allowed(cfg, t)
+        if not ok:
+            raise BlueprintError(f"proposed target {t}: {reason}")
+    return targets
+
+
+def _files_block(targets: list[str]) -> str:
+    parts: list[str] = []
+    for t in targets:
+        content = _read_target(t)
+        if content == "" and not Path(t).exists():
+            parts.append(f"===== {t} (NEW FILE — does not exist) =====\n(empty)\n")
+        else:
+            parts.append(f"===== {t} (current content) =====\n{content}\n"
+                         f"===== end {t} =====\n")
+    return "\n".join(parts)
+
+
+def draft(cfg, store, intent: str, targets: list[str] | None = None,
+          client=None, on_step=None, retries: int = 1) -> BlueprintPlan:
+    """Full draft: (optionally) pick targets, then produce a validated plan.
+
+    The model outputs TEXT ONLY; validate_plan() proves the diff parses, stays
+    on allowlisted paths, and applies cleanly against the live files before a
+    plan is ever returned."""
+    from .providers import LLMClient
+    client = client or LLMClient(cfg, store)
+    if not targets:
+        targets = propose_targets(cfg, store, intent, client=client, on_step=on_step)
+    else:
+        for t in targets:
+            ok, reason = path_allowed(cfg, t)
+            if not ok:
+                raise BlueprintError(f"target {t}: {reason}")
+    if on_step:
+        on_step("draft", f"drafting diff for {', '.join(targets)}")
+    example = targets[0]
+    retry_note = ""
+    last_err: BlueprintError | None = None
+    for attempt in range(retries + 1):
+        raw = client.chat(
+            [{"role": "user", "content": DIFF_PROMPT.format(
+                os_info=_os_info(), intent=intent,
+                files_block=_files_block(targets), example=example,
+                retry_note=retry_note)}],
+            purpose="blueprint-draft", temperature=0.2)
+        try:
+            diff_text = _extract_diff(raw)
+            plan = validate_plan(cfg, intent, diff_text,
+                                 model=getattr(cfg, "model", ""))
+        except BlueprintError as e:
+            last_err = e
+            retry_note = (f"\nYOUR PREVIOUS ATTEMPT FAILED VALIDATION: {e}\n"
+                          "Fix that exact problem and output the corrected diff only.")
+            if on_step:
+                on_step("draft", f"attempt {attempt + 1} rejected: {e}")
+            continue
+        extra = [p.path for p in plan.patches if p.path not in targets]
+        if extra:
+            last_err = BlueprintError(f"diff touches non-target files: {extra}")
+            retry_note = (f"\nYOUR PREVIOUS ATTEMPT touched files outside the "
+                          f"target list: {extra}. Only edit {targets}.")
+            continue
+        return plan
+    raise BlueprintError(f"could not draft a valid diff: {last_err}")
