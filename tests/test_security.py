@@ -427,3 +427,134 @@ def test_cve_findings_skipped_notice_when_unavailable():
     assert findings[0].category == "cve"
     # truly empty/unavailable with no error → no noise
     assert sec.cve_findings({"available": False}) == []
+
+
+# =====================================================================
+# group 5 — orchestration: scan, consent baseline, patrol hooks, narration
+# =====================================================================
+
+def test_worst_severity_and_finding_as_dict():
+    fs = [Finding("info", "auth", "a"), Finding("critical", "cve", "b"),
+          Finding("warning", "access", "c")]
+    assert sec.worst_severity(fs) == "critical"
+    assert sec.worst_severity([{"severity": "warning"}, {"severity": "info"}]) == "warning"
+    assert sec.worst_severity([]) == "info"
+    d = Finding("warning", "auth", "t", "det", {"k": 1}).as_dict()
+    assert d == {"severity": "warning", "category": "auth", "title": "t",
+                 "detail": "det", "meta": {"k": 1}}
+
+
+def _wire_scan_sources(monkeypatch, *, listeners=None, access=None, auth_lines=None):
+    monkeypatch.setattr(sec, "read_auth_lines",
+                        lambda lookback_s=0: (auth_lines or [], "fixture"))
+    monkeypatch.setattr(sec, "collect_access_state", lambda st=None: access or {
+        "sudoers": {"files": {"/etc/sudoers": "h"}, "unreadable": []},
+        "authorized_keys": {}, "uid0": ["root"],
+        "empty_passwords": [], "shadow_readable": True, "world_writable": []})
+    monkeypatch.setattr(sec, "listener_inventory",
+                        lambda: listeners if listeners is not None
+                        else [_lrow("tcp/22", 22, "sshd")])
+
+
+def test_scan_integration_read_only_report(monkeypatch, store):
+    _wire_scan_sources(monkeypatch)
+    report = sec.scan(FakeCfg(), store, include_cve=False)
+    assert set(report) >= {"findings", "worst", "counts", "baseline_exists",
+                           "observed", "components"}
+    assert report["baseline_exists"] is False
+    assert report["components"]["auth"]["source"] == "fixture"
+    assert report["components"]["listeners"]["count"] == 1
+    # a slim snapshot is persisted for /metrics + patrol (without bulk rows)
+    snap = store.last_snapshot(sec.LASTSCAN_KIND)
+    assert snap is not None
+    assert "rows" not in snap[1]["components"]["listeners"]
+    assert "observed" not in snap[1]
+
+
+def test_scan_never_raises_even_if_a_source_explodes(monkeypatch, store):
+    _wire_scan_sources(monkeypatch)
+    monkeypatch.setattr(sec, "listener_inventory",
+                        lambda: (_ for _ in ()).throw(RuntimeError("ss died")))
+    with pytest.raises(RuntimeError):
+        # sanity: our injected failure is real
+        sec.listener_inventory()
+    # but patrol_findings swallows it
+    out = sec.patrol_findings(FakeCfg(), store)
+    assert out == [] or isinstance(out, list)
+
+
+def test_baseline_accept_requires_explicit_call_and_roundtrips(store):
+    assert sec.baseline_get(store) is None  # nothing blessed yet
+    observed = {"auth": {"known_ips": ["1.2.3.4"], "sudo_users": ["alice"]},
+                "access": {"sudoers": {}, "authorized_keys": {}, "uid0": ["root"]},
+                "listeners": {"tcp/22": "sshd"}}
+    blessed = sec.baseline_accept(store, observed)
+    assert "accepted_at" in blessed
+    got = sec.baseline_get(store)
+    assert got["auth"]["known_ips"] == ["1.2.3.4"]
+    assert got["listeners"] == {"tcp/22": "sshd"}
+
+
+def test_scan_against_baseline_flags_new_listener(monkeypatch, store):
+    sec.baseline_accept(store, {"auth": {"known_ips": [], "sudo_users": []},
+                                "access": {"sudoers": {}, "authorized_keys": {},
+                                           "uid0": ["root"]},
+                                "listeners": {"tcp/22": "sshd"}})
+    _wire_scan_sources(monkeypatch,
+                       listeners=[_lrow("tcp/22", 22, "sshd"),
+                                  _lrow("tcp/5555", 5555, "nc")])
+    report = sec.scan(FakeCfg(), store, include_cve=False)
+    assert report["baseline_exists"] is True
+    assert any(f["title"].startswith("NEW listener tcp/5555")
+               for f in report["findings"])
+
+
+def test_patrol_findings_filters_to_actionable(monkeypatch, store):
+    fake_report = {"findings": [
+        {"severity": "info", "category": "auth", "title": "noise"},
+        {"severity": "warning", "category": "listeners", "title": "new door"},
+        {"severity": "critical", "category": "access", "title": "empty pw"}]}
+    monkeypatch.setattr(sec, "scan", lambda *a, **k: fake_report)
+    out = sec.patrol_findings(FakeCfg(), store, cadence_s=0)
+    titles = [o["text"] for o in out]
+    assert len(out) == 2
+    assert any("new door" in t for t in titles)
+    assert not any("noise" in t for t in titles)
+
+
+def test_patrol_findings_uses_cache_within_cadence(monkeypatch, store):
+    store.add_snapshot(sec.LASTSCAN_KIND, {"findings": [
+        {"severity": "critical", "category": "access", "title": "cached crit"}]})
+    monkeypatch.setattr(sec, "scan",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rescanned")))
+    out = sec.patrol_findings(FakeCfg(), store, cadence_s=3600)
+    assert any("cached crit" in o["text"] for o in out)
+
+
+def test_patrol_findings_never_raises(monkeypatch, store):
+    monkeypatch.setattr(sec, "settings_from",
+                        lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert sec.patrol_findings(FakeCfg(), store) == []
+
+
+def test_patrol_summary_line_shapes(store):
+    assert "no scan yet" in sec.patrol_summary_line(FakeCfg(), store)
+    store.add_snapshot(sec.LASTSCAN_KIND,
+                       {"counts": {"critical": 1, "warning": 2}, "baseline_exists": True})
+    line = sec.patrol_summary_line(FakeCfg(), store)
+    assert "1 critical" in line and "2 warning" in line and "baseline accepted" in line
+
+
+def test_narration_lines_pure_summary():
+    report = {"worst": "warning", "baseline_exists": True,
+              "components": {"auth": {"events": 5, "source": "auth.log"},
+                             "listeners": {"count": 3, "ownerless": 1},
+                             "cve": {"available": True, "vuln_count": 2, "checked": 100}},
+              "findings": [{"severity": "warning", "category": "auth",
+                            "title": "t", "detail": "d"}]}
+    lines = sec.narration_lines(report)
+    joined = "\n".join(lines)
+    assert "worst severity: warning" in joined
+    assert "auth: 5 events" in joined
+    assert "listeners: 3 total, 1 ownerless" in joined
+    assert "cve: 2 known vulns" in joined
