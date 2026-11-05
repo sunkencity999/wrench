@@ -558,3 +558,115 @@ def test_narration_lines_pure_summary():
     assert "auth: 5 events" in joined
     assert "listeners: 3 total, 1 ownerless" in joined
     assert "cve: 2 known vulns" in joined
+
+
+# =====================================================================
+# group 6 — CLI JSON schema, Prometheus gauges, consent gate
+# =====================================================================
+
+from typer.testing import CliRunner  # noqa: E402
+
+runner = CliRunner()
+
+
+@pytest.fixture()
+def tmp_env(tmp_path, monkeypatch):
+    """Isolate config + data dirs (config computes them at import time)."""
+    from wrench import config
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+def _wire_cli_sources(monkeypatch):
+    monkeypatch.setattr(sec, "read_auth_lines", lambda lookback_s=0: ([], "fixture"))
+    monkeypatch.setattr(sec, "collect_access_state", lambda st=None: {
+        "sudoers": {"files": {"/etc/sudoers": "h"}, "unreadable": []},
+        "authorized_keys": {}, "uid0": ["root"],
+        "empty_passwords": [], "shadow_readable": True, "world_writable": []})
+    monkeypatch.setattr(sec, "listener_inventory",
+                        lambda: [_lrow("tcp/22", 22, "sshd")])
+
+
+def test_cli_security_json_schema(tmp_env, monkeypatch):
+    _wire_cli_sources(monkeypatch)
+    from wrench.cli import app
+    res = runner.invoke(app, ["security", "--json", "--no-cve", "--no-llm",
+                              "--no-notify"])
+    assert res.exit_code in (0, 1), res.output
+    doc = json.loads(res.output)
+    assert doc["schema"] == "wrench.security.v1"
+    assert doc["host"] and doc["version"]
+    for key in ("worst", "counts", "baseline_exists", "baseline_accepted_at",
+                "findings", "components"):
+        assert key in doc, f"missing {key}"
+    assert doc["worst"] in ("info", "warning", "critical")
+    assert isinstance(doc["findings"], list)
+    assert set(doc["counts"]) == {"critical", "warning", "info"}
+
+
+def test_cli_security_json_exit_code_critical(tmp_env, monkeypatch):
+    _wire_cli_sources(monkeypatch)
+    # inject an empty-password account → critical → exit 1
+    monkeypatch.setattr(sec, "collect_access_state", lambda st=None: {
+        "sudoers": {"files": {}, "unreadable": []}, "authorized_keys": {},
+        "uid0": ["root"], "empty_passwords": ["guest"],
+        "shadow_readable": True, "world_writable": []})
+    from wrench.cli import app
+    res = runner.invoke(app, ["security", "--json", "--no-cve", "--no-llm",
+                              "--no-notify"])
+    assert res.exit_code == 1
+    doc = json.loads(res.output)
+    assert doc["worst"] == "critical"
+
+
+def test_prometheus_security_gauges(tmp_env):
+    from wrench import metrics
+    store = Store(tmp_env / "data" / "m.db")
+    try:
+        store.add_snapshot(sec.BASELINE_KIND, {"accepted_at": time.time()})
+        store.add_snapshot(sec.LASTSCAN_KIND, {
+            "counts": {"critical": 1, "warning": 2, "info": 3},
+            "baseline_exists": True,
+            "components": {"listeners": {"count": 5, "ownerless": 1},
+                           "cve": {"available": True, "vuln_count": 7}}})
+        text = metrics.render(store, tmp_env / "data")
+    finally:
+        store.close()
+    assert 'wrench_security_findings{severity="critical"} 1' in text
+    assert 'wrench_security_findings{severity="warning"} 2' in text
+    assert "wrench_security_baseline_accepted 1" in text
+    assert "wrench_security_listeners 5" in text
+    assert "wrench_security_listeners_ownerless 1" in text
+    assert "wrench_security_cves_known 7" in text
+
+
+def test_cli_security_accept_consent_gate_decline(tmp_env, monkeypatch):
+    monkeypatch.setattr(sec, "collect_observed", lambda cfg: {
+        "auth": {"known_ips": [], "sudo_users": []},
+        "access": {"sudoers": {}, "authorized_keys": {}, "uid0": ["root"]},
+        "listeners": {"tcp/22": "sshd"}})
+    accepted = {"called": False}
+    monkeypatch.setattr(sec, "baseline_accept",
+                        lambda store, observed: accepted.__setitem__("called", True))
+    from wrench.cli import app
+    # answer "n" to the confirm prompt → baseline must NOT be blessed
+    res = runner.invoke(app, ["security", "accept"], input="n\n")
+    assert res.exit_code == 0
+    assert accepted["called"] is False
+    assert "unchanged" in res.output.lower()
+
+
+def test_cli_security_accept_yes_blesses_baseline(tmp_env, monkeypatch):
+    monkeypatch.setattr(sec, "collect_observed", lambda cfg: {
+        "auth": {"known_ips": [], "sudo_users": []},
+        "access": {"sudoers": {}, "authorized_keys": {}, "uid0": ["root"]},
+        "listeners": {"tcp/22": "sshd"}})
+    accepted = {"called": False}
+    monkeypatch.setattr(sec, "baseline_accept",
+                        lambda store, observed: accepted.__setitem__("called", True))
+    from wrench.cli import app
+    res = runner.invoke(app, ["security", "accept", "--yes"])
+    assert res.exit_code == 0
+    assert accepted["called"] is True
