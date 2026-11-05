@@ -1342,6 +1342,182 @@ def certs_audit(
 app.add_typer(certs_app, name="certs")
 
 
+# ---------------- blueprint (declarative config automation) ----------------
+
+blueprint_app = typer.Typer(
+    help="\U0001f4d0 declarative config automation: the brain drafts a diff, "
+         "code validates, applies, and rolls back.",
+    no_args_is_help=False, invoke_without_command=True)
+
+
+def _render_bp_steps(steps) -> None:
+    t = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    t.add_column("step")
+    t.add_column("ok", justify="center")
+    t.add_column("detail", overflow="fold")
+    for s in steps:
+        t.add_row(s.name, "[green]\u2713[/green]" if s.ok else "[red]\u2717[/red]",
+                  s.detail[:200])
+    console.print(t)
+
+
+def _render_diff(diff_text: str) -> None:
+    from rich.syntax import Syntax
+    console.print(Panel(Syntax(diff_text, "diff", theme="ansi_dark", word_wrap=True),
+                        border_style="cyan", title="\U0001f4d0 proposed blueprint (diff)"))
+
+
+def _bp_consent_ceremony(cfg) -> bool:
+    from . import blueprint as bp
+    console.print(Panel(
+        "[bold]blueprint apply consent[/bold]\n\n"
+        "You are authorizing wrench to apply reviewed config diffs:\n"
+        "  \u2022 targets restricted to the allowlist (default /etc), never "
+        "passwd/shadow/sudoers-direct\n"
+        "  \u2022 timestamped backup of every file BEFORE any write\n"
+        "  \u2022 validation with the daemon's own checker (nginx -t, sshd -t, "
+        "visudo -c, \u2026)\n"
+        "  \u2022 service reload only via allowlisted systemctl verbs\n"
+        "  \u2022 automatic rollback from backup on any failure\n"
+        "  \u2022 every application audited + recorded as a drift snapshot",
+        border_style="yellow", title="consent ceremony"))
+    if not typer.confirm("record this consent?", default=False):
+        console.print("[dim]no consent recorded.[/dim]")
+        return False
+    p = bp.write_consent(cfg)
+    console.print(f"[green]consent recorded[/green] [dim]\u2192 {p}[/dim]")
+    return True
+
+
+@blueprint_app.callback(invoke_without_command=True)
+def blueprint_main(
+    ctx: typer.Context,
+    intent: str = typer.Argument(None, help="what to change, in plain English "
+                                            "(e.g. 'harden sshd: disable root login')"),
+    target: list[str] = typer.Option(None, "--target", "-t",
+                                     help="target file(s); omit to let the brain choose"),
+    execute: bool = typer.Option(False, "--execute",
+                                 help="apply for real (default is dry-run preview)"),
+    yes: bool = typer.Option(False, "--yes", "-y",
+                             help="skip the interactive diff confirmation (execute mode)"),
+    show_history: bool = typer.Option(False, "--history",
+                                      help="list past blueprint applications and exit"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+):
+    """Draft a config change as a reviewed diff and (with consent) apply it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import blueprint as bp
+    cfg, store = _ctx(provider, model)
+    if show_history:
+        _bp_history(cfg)
+        return
+    if not intent:
+        console.print("[yellow]tell me what to change:[/yellow] "
+                      "wrench blueprint \"harden sshd: disable password auth\"")
+        raise typer.Exit(1)
+    _notify_banner(cfg)
+
+    # 1. draft
+    try:
+        with console.status("[cyan]drafting blueprint (the brain writes a diff, "
+                            "never commands)..."):
+            plan = bp.draft(cfg, store, intent, targets=list(target) if target else None)
+    except bp.BlueprintError as e:
+        console.print(f"[red]draft failed:[/red] {e}")
+        raise typer.Exit(1)
+
+    # 2. preview
+    _render_diff(plan.diff_text)
+    checkers = bp.plan_checkers(plan)
+    for path, spec in checkers.items():
+        if spec is None:
+            console.print(f"[yellow]\u26a0 {path}: no validator known — syntax "
+                          "validation will be skipped[/yellow]")
+        else:
+            note = f" [dim]({spec.note})[/dim]" if spec.note else ""
+            console.print(f"[dim]validator for {path}: [bold]{spec.id}[/bold]{note}[/dim]")
+
+    # 3. gate + ceremony
+    if not execute:
+        res = bp.apply_plan(cfg, store, plan, execute=False)
+        _render_bp_steps(res.steps)
+        color = "green" if res.ok else "red"
+        console.print(Panel(f"[{color}]{res.message}[/{color}]",
+                            border_style=color, title="dry-run"))
+        raise typer.Exit(0 if res.ok else 1)
+
+    allowed, reason = bp.apply_permitted(cfg)
+    if not allowed:
+        console.print(f"[yellow]{reason}[/yellow]")
+        if not _bp_consent_ceremony(cfg):
+            raise typer.Exit(2)
+    if not yes and not typer.confirm(
+            f"apply this blueprint to {', '.join(plan.files)}?", default=False):
+        console.print("[dim]not applied.[/dim]")
+        raise typer.Exit(0)
+
+    res = bp.apply_plan(cfg, store, plan, execute=True)
+    _render_bp_steps(res.steps)
+    if res.ok:
+        console.print(Panel(f"[green]{res.message}[/green]",
+                            border_style="green", title="\u2713 blueprint applied"))
+    else:
+        console.print(Panel(
+            f"[red]{res.message}[/red]"
+            + (f"\n[dim]backup: {res.backup_dir}[/dim]" if res.backup_dir else ""),
+            border_style="red",
+            title="\u21a9 rolled back" if res.rolled_back else "\u2717 blueprint failed"))
+        raise typer.Exit(1)
+
+
+def _bp_history(cfg) -> None:
+    from . import blueprint as bp
+    rows = bp.history(cfg, n=30)
+    if not rows:
+        console.print("[dim]no blueprints have been applied yet.[/dim]")
+        return
+    t = Table(title="\U0001f4d0 blueprint history", show_header=True,
+              header_style="bold")
+    t.add_column("when")
+    t.add_column("intent", overflow="fold", max_width=48)
+    t.add_column("files", overflow="fold", max_width=40)
+    t.add_column("outcome")
+    for r in rows:
+        outcome = ("[green]applied[/green]" if r.get("ok")
+                   else "[yellow]rolled back[/yellow]" if r.get("rolled_back")
+                   else "[red]failed[/red]")
+        t.add_row(r.get("iso", "")[:19], r.get("intent", "")[:120],
+                  ", ".join(r.get("files", [])), outcome)
+    console.print(t)
+
+
+@blueprint_app.command("history")
+def blueprint_history():
+    """List past blueprint applications with outcomes."""
+    cfg, _store = _ctx()
+    _bp_history(cfg)
+
+
+@blueprint_app.command("consent")
+def blueprint_consent(
+    revoke: bool = typer.Option(False, "--revoke", help="revoke blueprint consent"),
+):
+    """Record (or revoke) consent for real blueprint applications."""
+    from . import blueprint as bp
+    cfg, _store = _ctx()
+    if revoke:
+        console.print("[green]blueprint consent revoked.[/green]"
+                      if bp.revoke_consent(cfg)
+                      else "[dim]no blueprint consent was recorded.[/dim]")
+        return
+    _bp_consent_ceremony(cfg)
+
+
+app.add_typer(blueprint_app, name="blueprint")
+
+
 def _key_env(provider: str) -> str:
     from .config import PROVIDER_DEFAULTS
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]
