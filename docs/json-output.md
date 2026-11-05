@@ -17,7 +17,7 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
   "schema": "wrench.status.v1",
   "generated_at": 1793909627.5,
   "host": "devbox",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "...": "command-specific fields"
 }
 ```
@@ -39,6 +39,9 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
 | `wrench certs --json` | `wrench.certs.v1` | `count`, `needing_attention`, `certs[]` — path, source, subject, common_name, issuer, days_left, expiry_severity (`info\|warning\|critical\|null`), sans[], key_type, key_bits, weak_key, is_ca, self_signed, chain_complete, fingerprint_sha256, error; `weaknesses[]` | 0 |
 | `wrench certs audit --json` | `wrench.certs.audit.v1` | `certs[]` (as above), `weaknesses[]` — kind, severity, detail, source; `probes[]` — port, protocol, cipher | 0 |
 | `wrench blueprint --history --json` | `wrench.blueprint.history.v1` | `count`, `history[]` — ts, iso, intent, files[], digest, model, ok, rolled_back, message, backup_dir, steps[] | 0 |
+| `wrench security --json` | `wrench.security.v1` | `worst`, `counts{}`, `baseline_exists`, `baseline_accepted_at`, `findings[]` — severity, category, title, detail; `components{}` — auth, access, listeners{rows[]}, cve | **1 on a critical finding** |
+| `wrench forecast --json` | `wrench.forecast.v1` | `count`, `worst`, `incidents[]` — kind (`capacity\|cert`), what, current, growth_per_day, threshold, eta_days, eta_date, severity, confidence, r2, samples | 0 |
+| `wrench backups --json` | `wrench.backups.v1` | `count`, `worst`, `no_jobs`, `severity_counts{}`, `jobs[]` — name, tool, command, origin, schedule, cadence_s, source, dest, last_run_ts, last_run_evidence, age_s, freshness (`fresh\|stale\|unknown`), integrity (`ok\|locked\|failed\|unknown\|skipped`), integrity_note, restore_test | **1 when worst is critical** |
 | `wrench notifications --json [--all]` | `wrench.notifications.v1` | `count`, `unread_count`, `notifications[]` — id, ts, severity, summary, kind, report_id, read | 0 |
 | `wrench doctor --json` | `wrench.doctor.v1` | `healthy`, `checks{}` — platform, scheduler, log_backend, provider, base_url, model, policy_tier, api_key_present, db_path, sensor_os/docker/gpu, provider_ping{ok, detail} | **1 when the provider is unreachable** |
 | `wrench version --json` | `wrench.version.v1` | envelope only | 0 |
