@@ -79,6 +79,17 @@ PROVIDER_DEFAULTS = {
         "max_tokens": 4096,
         "api_version": "2024-10-21",
     },
+    "custom": {
+        # Any OpenAI-compatible endpoint — vLLM, llama.cpp, TGI, a FastAPI
+        # shim, your own server. No sane default base_url: every endpoint is
+        # its own. Routes through the shared _openai_compat path. The API key
+        # is OPTIONAL — many internal endpoints are keyless.
+        "base_url": "",
+        "model": "",
+        "deep_model": "",
+        "key_env": "CUSTOM_API_KEY",
+        "max_tokens": 4096,
+    },
 }
 
 
