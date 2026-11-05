@@ -1,0 +1,450 @@
+{
+ "name": "cis-ubuntu-essentials",
+ "title": "Ubuntu hardening essentials (inspired by CIS L1)",
+ "description": "High-value Ubuntu 22.04/24.04 server checks inspired by CIS Level 1. Not certified CIS content - a practical essentials subset.",
+ "rules": [
+  {
+   "id": "sshd.permitrootlogin",
+   "title": "sshd denies root login",
+   "severity": "high",
+   "rationale": "Direct root SSH removes attribution and invites brute force on the one account every attacker knows exists.",
+   "check": {
+    "kind": "sshd_config",
+    "key": "PermitRootLogin",
+    "value": "no",
+    "default": "prohibit-password"
+   }
+  },
+  {
+   "id": "sshd.passwordauth",
+   "title": "sshd disables password authentication",
+   "severity": "high",
+   "rationale": "Key-only auth ends credential-stuffing and brute-force as a class.",
+   "check": {
+    "kind": "sshd_config",
+    "key": "PasswordAuthentication",
+    "value": "no",
+    "default": "yes"
+   }
+  },
+  {
+   "id": "sshd.emptypasswords",
+   "title": "sshd forbids empty passwords",
+   "severity": "critical",
+   "rationale": "PermitEmptyPasswords yes is an open door.",
+   "check": {
+    "kind": "sshd_config",
+    "key": "PermitEmptyPasswords",
+    "value": "no",
+    "default": "no"
+   }
+  },
+  {
+   "id": "sshd.x11forwarding",
+   "title": "sshd disables X11 forwarding",
+   "severity": "low",
+   "rationale": "X11 forwarding widens the attack surface of every session; servers rarely need it.",
+   "check": {
+    "kind": "sshd_config",
+    "key": "X11Forwarding",
+    "value": "no",
+    "default": "no"
+   }
+  },
+  {
+   "id": "sshd.maxauthtries",
+   "title": "sshd limits auth tries to 4 or fewer",
+   "severity": "medium",
+   "rationale": "Caps per-connection guessing.",
+   "check": {
+    "kind": "file_contains",
+    "path": "/etc/ssh/sshd_config",
+    "regex": "(?i)^MaxAuthTries\\s+[1-4]$"
+   }
+  },
+  {
+   "id": "sshd.config.mode",
+   "title": "/etc/ssh/sshd_config is 0600",
+   "severity": "medium",
+   "rationale": "World-readable sshd_config leaks policy to local users.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/ssh/sshd_config",
+    "max_mode": "0600"
+   }
+  },
+  {
+   "id": "perm.passwd",
+   "title": "/etc/passwd is 0644",
+   "severity": "high",
+   "rationale": "Writable passwd = instant privilege escalation.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/passwd",
+    "max_mode": "0644"
+   }
+  },
+  {
+   "id": "perm.passwd.owner",
+   "title": "/etc/passwd owned by root",
+   "severity": "high",
+   "rationale": "Ownership is the first line of tamper defense.",
+   "check": {
+    "kind": "file_owner",
+    "path": "/etc/passwd",
+    "owner": "root",
+    "group": "root"
+   }
+  },
+  {
+   "id": "perm.shadow",
+   "title": "/etc/shadow is 0640 or stricter",
+   "severity": "critical",
+   "rationale": "Readable shadow hands every password hash to any local user.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/shadow",
+    "max_mode": "0640"
+   }
+  },
+  {
+   "id": "perm.shadow.owner",
+   "title": "/etc/shadow owned by root",
+   "severity": "critical",
+   "rationale": "Shadow must answer to root alone (group shadow is the Debian norm).",
+   "check": {
+    "kind": "file_owner",
+    "path": "/etc/shadow",
+    "owner": "root"
+   }
+  },
+  {
+   "id": "perm.group",
+   "title": "/etc/group is 0644 or stricter",
+   "severity": "medium",
+   "rationale": "Group membership edits must be root-only.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/group",
+    "max_mode": "0644"
+   }
+  },
+  {
+   "id": "perm.gshadow",
+   "title": "/etc/gshadow is 0640 or stricter",
+   "severity": "high",
+   "rationale": "Group password hashes deserve shadow-grade protection.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/gshadow",
+    "max_mode": "0640"
+   }
+  },
+  {
+   "id": "perm.sudoers",
+   "title": "/etc/sudoers is 0440",
+   "severity": "critical",
+   "rationale": "A writable sudoers is root for whoever can write it.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/sudoers",
+    "max_mode": "0440"
+   }
+  },
+  {
+   "id": "auth.noemptypw",
+   "title": "No account has an empty password hash",
+   "severity": "critical",
+   "rationale": "An empty hash is passwordless login.",
+   "check": {
+    "kind": "no_empty_passwords"
+   }
+  },
+  {
+   "id": "auth.singleuid0",
+   "title": "root is the only UID-0 account",
+   "severity": "critical",
+   "rationale": "A second UID-0 account is a backdoor whether or not it was meant as one.",
+   "check": {
+    "kind": "single_uid0"
+   }
+  },
+  {
+   "id": "login.passmaxdays",
+   "title": "PASS_MAX_DAYS is 365 or less",
+   "severity": "low",
+   "rationale": "Unbounded password lifetime defeats rotation policy where passwords are used at all.",
+   "check": {
+    "kind": "login_defs",
+    "key": "PASS_MAX_DAYS",
+    "op": "max",
+    "value": 365
+   }
+  },
+  {
+   "id": "login.umask",
+   "title": "Default UMASK is 027 or stricter",
+   "severity": "medium",
+   "rationale": "Group/world-readable default file creation leaks data quietly. (CIS wants 027; Ubuntu default 022 fails this honestly.)",
+   "check": {
+    "kind": "login_defs",
+    "key": "UMASK",
+    "op": "min",
+    "value": "0o027"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.ip_forward",
+   "title": "IPv4 forwarding disabled",
+   "severity": "medium",
+   "rationale": "A non-router forwarding packets is a pivot waiting to happen.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.ip_forward",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.conf.all.send_redirects",
+   "title": "ICMP redirects not sent",
+   "severity": "medium",
+   "rationale": "Hosts are not routers; sending redirects aids MITM.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.send_redirects",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.conf.all.accept_redirects",
+   "title": "ICMP redirects not accepted",
+   "severity": "medium",
+   "rationale": "Accepting redirects lets an attacker reroute your traffic.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.accept_redirects",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.conf.all.secure_redirects",
+   "title": "Secure ICMP redirects not accepted",
+   "severity": "low",
+   "rationale": "Even secure redirects trust the LAN too much.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.secure_redirects",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.conf.all.accept_source_route",
+   "title": "Source-routed packets refused",
+   "severity": "medium",
+   "rationale": "Source routing bypasses your routing policy.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.accept_source_route",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.conf.all.log_martians",
+   "title": "Martian packets logged",
+   "severity": "low",
+   "rationale": "Spoofed-address packets should at least leave a trace.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.log_martians",
+    "value": "1"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.conf.all.rp_filter",
+   "title": "Reverse-path filtering on",
+   "severity": "medium",
+   "rationale": "Drops obviously spoofed source addresses.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.rp_filter",
+    "value": "1"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.icmp_echo_ignore_broadcasts",
+   "title": "Broadcast ICMP ignored",
+   "severity": "low",
+   "rationale": "Smurf-attack hygiene.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.icmp_echo_ignore_broadcasts",
+    "value": "1"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv4.tcp_syncookies",
+   "title": "TCP SYN cookies enabled",
+   "severity": "medium",
+   "rationale": "Keeps the box reachable under SYN flood.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.tcp_syncookies",
+    "value": "1"
+   }
+  },
+  {
+   "id": "sysctl.net.ipv6.conf.all.accept_ra",
+   "title": "IPv6 router advertisements refused (all)",
+   "severity": "low",
+   "rationale": "Rogue RA = instant IPv6 MITM on the LAN.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv6.conf.all.accept_ra",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.kernel.randomize_va_space",
+   "title": "Full ASLR enabled",
+   "severity": "high",
+   "rationale": "ASLR is the cheapest exploit mitigation there is.",
+   "check": {
+    "kind": "sysctl",
+    "key": "kernel.randomize_va_space",
+    "value": "2"
+   }
+  },
+  {
+   "id": "sysctl.fs.suid_dumpable",
+   "title": "SUID core dumps disabled",
+   "severity": "medium",
+   "rationale": "SUID cores can leak privileged memory to disk.",
+   "check": {
+    "kind": "sysctl",
+    "key": "fs.suid_dumpable",
+    "value": "0"
+   }
+  },
+  {
+   "id": "sysctl.kernel.sysrq",
+   "title": "Magic SysRq disabled",
+   "severity": "low",
+   "rationale": "Console-adjacent users should not get kernel debug powers. (Ubuntu ships 176 - honest fail.)",
+   "check": {
+    "kind": "sysctl",
+    "key": "kernel.sysrq",
+    "value": "0"
+   }
+  },
+  {
+   "id": "mount.tmp.nodev",
+   "title": "/tmp mounted nodev",
+   "severity": "medium",
+   "rationale": "Device nodes in /tmp are a classic escalation trick.",
+   "check": {
+    "kind": "mount_option",
+    "mountpoint": "/tmp",
+    "option": "nodev"
+   }
+  },
+  {
+   "id": "mount.tmp.nosuid",
+   "title": "/tmp mounted nosuid",
+   "severity": "medium",
+   "rationale": "SUID binaries in a world-writable directory end badly.",
+   "check": {
+    "kind": "mount_option",
+    "mountpoint": "/tmp",
+    "option": "nosuid"
+   }
+  },
+  {
+   "id": "mount.devshm.noexec",
+   "title": "/dev/shm mounted noexec",
+   "severity": "medium",
+   "rationale": "Executable shared memory is a favorite fileless-malware home.",
+   "check": {
+    "kind": "mount_option",
+    "mountpoint": "/dev/shm",
+    "option": "noexec"
+   }
+  },
+  {
+   "id": "mount.devshm.nosuid",
+   "title": "/dev/shm mounted nosuid",
+   "severity": "medium",
+   "rationale": "Same logic as /tmp - no privilege elevation from scratch space.",
+   "check": {
+    "kind": "mount_option",
+    "mountpoint": "/dev/shm",
+    "option": "nosuid"
+   }
+  },
+  {
+   "id": "pkg.telnetd.absent",
+   "title": "telnet server not installed",
+   "severity": "critical",
+   "rationale": "Plaintext remote shells belong to 1995.",
+   "check": {
+    "kind": "package",
+    "name": "telnetd",
+    "state": "absent"
+   }
+  },
+  {
+   "id": "pkg.rsh.absent",
+   "title": "rsh server not installed",
+   "severity": "critical",
+   "rationale": "rsh trusts IP addresses as identity.",
+   "check": {
+    "kind": "package",
+    "name": "rsh-server",
+    "state": "absent"
+   }
+  },
+  {
+   "id": "pkg.nis.absent",
+   "title": "NIS not installed",
+   "severity": "high",
+   "rationale": "NIS predates the concept of authentication.",
+   "check": {
+    "kind": "package",
+    "name": "nis",
+    "state": "absent"
+   }
+  },
+  {
+   "id": "pkg.tftpd.absent",
+   "title": "tftp server not installed",
+   "severity": "high",
+   "rationale": "Unauthenticated file transfer, usually forgotten.",
+   "check": {
+    "kind": "package",
+    "name": "tftpd-hpa",
+    "state": "absent"
+   }
+  },
+  {
+   "id": "pkg.auditd.present",
+   "title": "auditd installed",
+   "severity": "low",
+   "rationale": "Kernel audit trail for the serious box. (Honest fail on most home systems.)",
+   "check": {
+    "kind": "package",
+    "name": "auditd",
+    "state": "present"
+   }
+  },
+  {
+   "id": "svc.cron.active",
+   "title": "cron is running",
+   "severity": "low",
+   "rationale": "Scheduled hygiene (updates, rotation) rides on cron.",
+   "check": {
+    "kind": "service_state",
+    "name": "cron",
+    "state": "active"
+   }
+  }
+ ]
+}

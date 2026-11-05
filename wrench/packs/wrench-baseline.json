@@ -1,0 +1,170 @@
+{
+ "name": "wrench-baseline",
+ "title": "Wrench opinionated baseline",
+ "description": "The basics wrench believes every box owes itself. Small, loud, and honest.",
+ "rules": [
+  {
+   "id": "wb.unattended",
+   "title": "unattended-upgrades installed",
+   "severity": "high",
+   "rationale": "Security patches that wait for a human do not happen.",
+   "check": {
+    "kind": "package",
+    "name": "unattended-upgrades",
+    "state": "present"
+   }
+  },
+  {
+   "id": "wb.firewall.ufw",
+   "title": "a firewall package is present (ufw)",
+   "severity": "medium",
+   "rationale": "A host firewall is the cheapest blast-radius reducer.",
+   "check": {
+    "kind": "package",
+    "name": "ufw",
+    "state": "present"
+   }
+  },
+  {
+   "id": "wb.sshd.rootlogin",
+   "title": "sshd denies root login",
+   "severity": "high",
+   "rationale": "Attribution + brute-force hygiene.",
+   "check": {
+    "kind": "sshd_config",
+    "key": "PermitRootLogin",
+    "value": "no",
+    "default": "prohibit-password"
+   }
+  },
+  {
+   "id": "wb.sshd.passwords",
+   "title": "sshd is key-only",
+   "severity": "high",
+   "rationale": "Passwords on an internet-facing sshd are a time bomb.",
+   "check": {
+    "kind": "sshd_config",
+    "key": "PasswordAuthentication",
+    "value": "no",
+    "default": "yes"
+   }
+  },
+  {
+   "id": "wb.noemptypw",
+   "title": "no empty password hashes",
+   "severity": "critical",
+   "rationale": "Passwordless login is not a configuration, it is an incident.",
+   "check": {
+    "kind": "no_empty_passwords"
+   }
+  },
+  {
+   "id": "wb.singleuid0",
+   "title": "root is the only UID-0 account",
+   "severity": "critical",
+   "rationale": "Two roots means one intruder.",
+   "check": {
+    "kind": "single_uid0"
+   }
+  },
+  {
+   "id": "wb.shadow.mode",
+   "title": "/etc/shadow is 0640 or stricter",
+   "severity": "critical",
+   "rationale": "Hash material stays with root.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/shadow",
+    "max_mode": "0640"
+   }
+  },
+  {
+   "id": "wb.sudoers.mode",
+   "title": "/etc/sudoers is 0440",
+   "severity": "critical",
+   "rationale": "Writable sudoers is root-for-anyone.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/sudoers",
+    "max_mode": "0440"
+   }
+  },
+  {
+   "id": "wb.aslr",
+   "title": "full ASLR enabled",
+   "severity": "high",
+   "rationale": "Free exploit mitigation; never turn it off.",
+   "check": {
+    "kind": "sysctl",
+    "key": "kernel.randomize_va_space",
+    "value": "2"
+   }
+  },
+  {
+   "id": "wb.syncookies",
+   "title": "TCP SYN cookies on",
+   "severity": "medium",
+   "rationale": "Stay reachable under SYN flood.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.tcp_syncookies",
+    "value": "1"
+   }
+  },
+  {
+   "id": "wb.telnet.absent",
+   "title": "no telnet server",
+   "severity": "critical",
+   "rationale": "Plaintext shells are an incident with a service file.",
+   "check": {
+    "kind": "package",
+    "name": "telnetd",
+    "state": "absent"
+   }
+  },
+  {
+   "id": "wb.sshd.config.mode",
+   "title": "sshd_config not world-writable",
+   "severity": "high",
+   "rationale": "Anyone who can edit sshd_config owns the next restart.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/ssh/sshd_config",
+    "max_mode": "0644"
+   }
+  },
+  {
+   "id": "wb.tmp.nosuid",
+   "title": "/tmp mounted nosuid",
+   "severity": "medium",
+   "rationale": "No privilege elevation from scratch space.",
+   "check": {
+    "kind": "mount_option",
+    "mountpoint": "/tmp",
+    "option": "nosuid"
+   }
+  },
+  {
+   "id": "wb.logmartians",
+   "title": "martian packets logged",
+   "severity": "low",
+   "rationale": "Spoofed traffic should leave a trace.",
+   "check": {
+    "kind": "sysctl",
+    "key": "net.ipv4.conf.all.log_martians",
+    "value": "1"
+   }
+  },
+  {
+   "id": "wb.cron.active",
+   "title": "cron running",
+   "severity": "low",
+   "rationale": "The box's own housekeeping depends on it.",
+   "check": {
+    "kind": "service_state",
+    "name": "cron",
+    "state": "active"
+   }
+  }
+ ]
+}
