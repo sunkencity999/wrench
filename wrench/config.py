@@ -230,6 +230,25 @@ cadence_hours = 24
 # runs `wrench approve <token>`. Empty/missing = off.
 # approval_webhook_url = "https://hooks.example.com/wrench"
 # ttl_minutes          = 60
+
+[fleet]
+# Fleet mode — many nodes, one view. Default OFF: no [fleet] = zero behavior
+# change. A NODE pushes a compact signed snapshot to a HUB after each patrol;
+# the HUB (`wrench fleet serve`) aggregates them into a dashboard + dead-man's
+# switch. Auth is an HMAC-SHA256 shared token (generate one with
+# `wrench fleet token`). Run the hub behind a TLS reverse proxy on the internet.
+#
+# --- node side (this box reports TO a hub) ---
+# hub_url  = "http://hub.example:8788"
+# token    = "<paste a `wrench fleet token` value>"
+# node_id  = "web-01"            # optional; defaults to hostname
+#
+# --- hub side (this box RECEIVES reports) ---
+# listen_host       = "127.0.0.1"
+# listen_port       = 8788
+# authorized_tokens = ["<node token>", "<another node token>"]
+# silent_factor     = 2.0        # SILENT when last_seen > factor × cadence
+# report_retention  = 200        # per-node report history cap
 """
 
 AZURE_SECTION_TOML = """\

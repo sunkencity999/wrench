@@ -426,3 +426,200 @@ def fleet_summary(states: list[dict]) -> dict:
     for s in states:
         counts[s.get("color", "green")] = counts.get(s.get("color", "green"), 0) + 1
     return {"total": len(states), **counts}
+
+
+# ---------------- node-side push (never breaks a patrol) ----------------
+
+def _outbox_path(data_dir) -> Path:
+    return Path(data_dir) / OUTBOX_NAME
+
+
+def _save_outbox(data_dir, report: dict) -> None:
+    try:
+        _outbox_path(data_dir).write_text(json.dumps(report))
+    except OSError:
+        pass
+
+
+def _load_outbox(data_dir) -> dict | None:
+    p = _outbox_path(data_dir)
+    if not p.exists():
+        return None
+    try:
+        obj = json.loads(p.read_text())
+        return obj if isinstance(obj, dict) and obj.get("node_id") else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _clear_outbox(data_dir) -> None:
+    try:
+        _outbox_path(data_dir).unlink()
+    except OSError:
+        pass
+
+
+def push_once(settings: FleetSettings, report: dict,
+              timeout: float = PUSH_TIMEOUT_S, opener=None) -> tuple[bool, str]:
+    """Sign + POST one report to the hub. Returns (ok, detail). Never raises."""
+    if not settings.node_enabled:
+        return False, "fleet node not configured (need hub_url + token)"
+    body = report_bytes(report)
+    sig = sign_body(settings.token, body)
+    url = settings.hub_url.rstrip("/") + REPORT_PATH
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "wrench-fleet",
+                 SIG_HEADER: sig,
+                 NODE_HEADER: str(report.get("node_id", ""))[:120]})
+    open_fn = opener or urllib.request.urlopen
+    try:
+        with open_fn(req, timeout=timeout) as resp:
+            code = getattr(resp, "status", 200)
+        return (200 <= int(code) < 300), f"HTTP {code}"
+    except Exception as e:  # noqa: BLE001 — a push must never break a patrol
+        return False, f"{e.__class__.__name__}: {e}"
+
+
+def node_push(cfg, store, settings: FleetSettings | None = None,
+              now: float | None = None, opener=None) -> dict:
+    """Build the current report and push it; queue + retry on failure.
+
+    Any previously-queued report is superseded by the fresh one (the hub only
+    cares about the latest state), so the outbox holds at most the last unsent
+    report. Returns {ok, detail, queued}.
+    """
+    st = settings or settings_from(cfg)
+    if not st.node_enabled:
+        return {"ok": False, "detail": "fleet node not configured", "queued": False}
+    data_dir = cfg.data_dir
+    report = build_report(cfg, store, st, now=now)
+    ok, detail = push_once(st, report, opener=opener)
+    if ok:
+        _clear_outbox(data_dir)
+        return {"ok": True, "detail": detail, "queued": False, "report": report}
+    _save_outbox(data_dir, report)
+    return {"ok": False, "detail": detail, "queued": True, "report": report}
+
+
+def node_patrol_hook(cfg, store) -> dict | None:
+    """Called at the end of a patrol: push this node's report if configured.
+
+    Never fatal — an unreachable hub queues the report for the next patrol.
+    """
+    try:
+        st = settings_from(cfg)
+        if not st.node_enabled:
+            return None
+        return node_push(cfg, store, st)
+    except Exception:  # noqa: BLE001 — fleet reporting never breaks a patrol
+        return None
+
+
+# ---------------- hub-side registration + dead-man notifications ----------------
+
+def audit_registration(cfg, store, row: dict) -> bool:
+    """On a node's FIRST report, seal a registration event + info notification.
+
+    Returns True when this was a new registration. Never fatal.
+    """
+    try:
+        if int(row.get("report_count") or 0) != 1:
+            return False
+        node_id = row.get("node_id")
+        detail = {"node_id": node_id, "hostname": row.get("hostname"),
+                  "token_fp": (row.get("token_hash") or "")[:16],
+                  "wrench_version": row.get("wrench_version")}
+        try:
+            from . import audit
+            audit.log_event(cfg, "fleet.register", detail)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from . import notifications
+            notifications.emit_event(
+                cfg, "fleet.register", "info",
+                f"fleet: node {node_id} ({row.get('hostname')}) registered")
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def check_silent_nodes(cfg, store, settings: FleetSettings | None = None,
+                       now: float | None = None, notify: bool = True) -> list[dict]:
+    """Detect SILENT⇄live transitions, raise notifications, seal audit, persist.
+
+    A node crossing live→silent raises a CRITICAL notification through the
+    existing channel and seals ``fleet.silent``; silent→live raises an info
+    recovery event. Returns the list of transitions. Never fatal.
+    """
+    st = settings or settings_from(cfg)
+    now = now if now is not None else time.time()
+    transitions: list[dict] = []
+    try:
+        states = node_states(store, st, now=now)
+    except Exception:  # noqa: BLE001
+        return transitions
+    for s in states:
+        # node_states carries the live 'silent' computation; the persisted flag
+        # (set on the last transition) is the raw node row's 'silent' column.
+        stored = bool(store_silent_flag(store, s["node_id"]))
+        now_silent = bool(s["silent"])
+        if now_silent and not stored:
+            transitions.append({"node_id": s["node_id"], "to": "silent",
+                                "age_s": s["age_s"]})
+            _record_silent_transition(cfg, store, s, silent=True, notify=notify)
+        elif (not now_silent) and stored:
+            transitions.append({"node_id": s["node_id"], "to": "live",
+                                "age_s": s["age_s"]})
+            _record_silent_transition(cfg, store, s, silent=False, notify=notify)
+    return transitions
+
+
+def store_silent_flag(store, node_id: str) -> bool:
+    row = store.get_fleet_node(node_id)
+    return bool(row and row.get("silent"))
+
+
+def _record_silent_transition(cfg, store, state: dict, silent: bool,
+                              notify: bool) -> None:
+    node_id = state["node_id"]
+    try:
+        store.set_fleet_silent(node_id, silent)
+    except Exception:  # noqa: BLE001
+        pass
+    kind = "fleet.silent" if silent else "fleet.recovered"
+    mins = int((state.get("age_s") or 0) // 60)
+    if silent:
+        msg = (f"fleet: node {node_id} is SILENT — no report for ~{mins}m "
+               f"(cadence {int(state.get('effective_cadence_s') or 0)}s)")
+        sev = "critical"
+    else:
+        msg = f"fleet: node {node_id} is reporting again (recovered)"
+        sev = "info"
+    try:
+        from . import audit
+        audit.log_event(cfg, kind, {"node_id": node_id, "age_s": state.get("age_s"),
+                                    "hostname": state.get("hostname")})
+    except Exception:  # noqa: BLE001
+        pass
+    if notify:
+        try:
+            from . import notifications
+            notifications.emit_event(cfg, kind, sev, msg)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def hub_patrol_hook(cfg, store) -> list[dict]:
+    """Called at the end of a patrol on a HUB box: sweep for silent nodes."""
+    try:
+        st = settings_from(cfg)
+        if not st.hub_enabled:
+            return []
+        return check_silent_nodes(cfg, store, st)
+    except Exception:  # noqa: BLE001
+        return []

@@ -379,4 +379,13 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
         patrol["notification"] = notifications.dispatch(cfg, patrol, report_id=patrol_ts)
     except Exception:  # noqa: BLE001
         patrol["notification"] = None
+    # fleet: push this node's report to its hub (node mode) and sweep for silent
+    # nodes (hub mode). Both are no-ops unless [fleet] is configured, and both
+    # are strictly best-effort — fleet reporting never breaks a patrol.
+    try:
+        from . import fleet
+        patrol["fleet_push"] = fleet.node_patrol_hook(cfg, store)
+        patrol["fleet_silent"] = fleet.hub_patrol_hook(cfg, store)
+    except Exception:  # noqa: BLE001
+        pass
     return patrol
