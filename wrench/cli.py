@@ -34,6 +34,19 @@ def _ctx(provider: str | None = None, model: str | None = None):
     return cfg, store
 
 
+def _notify_banner(cfg) -> None:
+    """One-line heads-up when unread patrol notifications exist. Never fatal."""
+    try:
+        from . import notifications
+        n = len(notifications.unread(cfg.data_dir))
+        if n:
+            console.print(
+                f"[bold yellow]\U0001f514 {n} new patrol finding{'s' if n != 1 else ''} "
+                f"since you last looked[/bold yellow] [dim]\u2014 run `wrench report`[/dim]")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _confirm(command: str, label: str) -> bool:
     console.print(Panel(
         Text.assemble(("about to execute: ", "bold yellow"), (command, "bold white"),
@@ -59,6 +72,7 @@ def version():
 def status():
     """One-screen health: gauges, sparklines, anomalies."""
     cfg, store = _ctx()
+    _notify_banner(cfg)
     with console.status("[cyan]sampling sensors..."):
         data = sensors.status_snapshot(store)
         history = store.recent_samples("os", 86400)
@@ -74,6 +88,7 @@ def ask(
 ):
     """Ask the agent one question. It may run read-only diagnostics to answer."""
     cfg, store = _ctx(provider, model)
+    _notify_banner(cfg)
     q = " ".join(question)
     use_model = cfg.deep_model if deep else None
     a = agent_mod.Agent(cfg, store, confirm_fn=_confirm,
@@ -88,6 +103,7 @@ def ask(
 def chat(provider: str = PROVIDER_OPT, model: str = MODEL_OPT):
     """Interactive conversation with your sysadmin. Ctrl-D or 'exit' to leave."""
     cfg, store = _ctx(provider, model)
+    _notify_banner(cfg)
     a = agent_mod.Agent(cfg, store, confirm_fn=_confirm,
                         on_step=lambda k, d: console.print(f"  [dim cyan]⚙ {d}[/dim cyan]"))
     console.print(Panel(
@@ -155,6 +171,10 @@ def watch(
         try:
             p = agent_mod.run_patrol(cfg, store)
             report.render_patrol(console, p)
+            if p.get("notification"):
+                n = p["notification"]
+                console.print(f"[bold yellow]\U0001f514 notification "
+                              f"[{n['severity']}][/bold yellow] {n['summary']}")
             report.html_report(p, host=platform.node() or "localhost")
             store.prune(cfg.retention_days)
             time.sleep(interval)
@@ -211,8 +231,9 @@ def report_cmd(
     last: int = typer.Option(10, "--last", "-n", help="how many patrols to list"),
     open_html: bool = typer.Option(False, "--open", help="regenerate+print latest HTML path"),
 ):
-    """Show recent patrol reports."""
+    """Show recent patrol reports. Viewing them marks notifications read."""
     cfg, store = _ctx()
+    _notify_banner(cfg)
     patrols = store.recent_patrols(last)
     if not patrols:
         console.print("[dim]no patrols yet — run [bold]wrench patrol[/bold][/dim]")
@@ -235,6 +256,12 @@ def report_cmd(
         files = sorted(reports_dir.glob("patrol-*.html"))
         if files:
             console.print(f"[bold]latest html:[/bold] {files[-1]}")
+    try:
+        from . import notifications
+        if notifications.mark_read(cfg.data_dir):
+            console.print("[dim]\U0001f514 notifications marked read[/dim]")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.command()
