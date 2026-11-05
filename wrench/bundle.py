@@ -48,8 +48,12 @@ AUDIT_FILE = "audit.json"
 NOTIFICATIONS_FILE = "notifications.json"
 
 # Secret-ish config key names → redacted. Walk is recursive; value dropped.
+# Webhook/hook URLs count as secrets: a Slack/Discord/ntfy webhook URL is a
+# bearer credential (anyone holding it can post). Plain endpoints (base_url,
+# hub_url, endpoint) are NOT secrets and are kept.
 _SECRET_KEY_RE = re.compile(
-    r"(api[_-]?key|key|token|secret|password|passwd|credential)", re.IGNORECASE
+    r"(api[_-]?key|key|token|secret|password|passwd|credential|webhook|hook)",
+    re.IGNORECASE,
 )
 _REDACTED = "<redacted>"
 

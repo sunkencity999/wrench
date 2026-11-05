@@ -70,10 +70,14 @@ def test_redact_walks_nested_keys():
         "nested": {"password": "s3", "fine": "keep", "secret": "s4"},
         "list": [{"credential": "s5"}, {"ok": "keep2"}],
         "authorized_tokens": ["s6", "s7"],
+        "webhook_url": "https://hooks.slack.com/services/T/B/XXXX",
+        "hub_url": "http://10.0.0.9:8788",
     }
     out = bundle.redact(src)
     assert out["api_key"] == "<redacted>"
     assert out["base_url"] == "http://x"          # not a secret field
+    assert out["hub_url"] == "http://10.0.0.9:8788"  # endpoint, not a secret
+    assert out["webhook_url"] == "<redacted>"     # webhook URLs are bearer creds
     assert out["token"] == "<redacted>"
     assert out["nested"]["password"] == "<redacted>"
     assert out["nested"]["fine"] == "keep"
