@@ -152,3 +152,66 @@ ladder — 14d `warning`, 7d/expired `critical`), real certificate renewals
 `blueprint.rollback` at error, `blueprint.failed` at critical). All sinks are
 best-effort by contract: a dead collector is logged to
 `notifications.log` and never breaks a patrol or a ceremony.
+
+## `wrench audit` → `wrench.audit.v1`
+
+Recent sealed events plus the chain verdict. Each entry is a full chain record.
+
+```json
+{
+  "schema": "wrench.audit.v1",
+  "generated_at": 1793914272.825,
+  "host": "devbox",
+  "version": "1.8.0",
+  "count": 7,
+  "shown": 7,
+  "intact": true,
+  "entries": [
+    {"ts": 1793914200.1, "actor": "wrench", "kind": "genesis",
+     "detail": {"msg": "audit chain initialized", "version": "1.8.0"},
+     "prev_hash": "0000…0000", "hash": "4dd6…ef75"},
+    {"ts": 1793914260.4, "actor": "alice", "kind": "fixxer:disk-clean",
+     "detail": {"tier": "repair", "command": "…", "approved": true, "result": "…"},
+     "prev_hash": "4dd6…ef75", "hash": "6798…e45c"}
+  ]
+}
+```
+
+## `wrench audit verify` → `wrench.audit.verify.v1`
+
+Re-walks the on-disk chain. **Exit 0 = INTACT, exit 1 = tampered.**
+
+```json
+{
+  "schema": "wrench.audit.verify.v1",
+  "generated_at": 1793914272.9,
+  "host": "devbox",
+  "version": "1.8.0",
+  "intact": false,
+  "count": 7,
+  "broken_index": 3,
+  "reason": "record altered: stored hash does not match its contents"
+}
+```
+
+## `wrench approvals` → `wrench.approvals.v1`
+
+Approval-token states (hashes only; plaintext tokens are never stored or emitted).
+`state` is one of `pending | approved | claimed | expired`.
+
+```json
+{
+  "schema": "wrench.approvals.v1",
+  "generated_at": 1793914300.0,
+  "host": "devbox",
+  "version": "1.8.0",
+  "count": 1,
+  "approvals": [
+    {"action": "blueprint --execute", "detail": "harden sshd",
+     "created": 1793914000.0, "expires": 1793917600.0, "state": "approved"}
+  ]
+}
+```
+
+New Prometheus gauges: `wrench_audit_entries`, `wrench_audit_intact` (1/0),
+`wrench_audit_last_event_timestamp_seconds`, and `wrench_approvals{state=…}`.

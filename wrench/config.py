@@ -213,6 +213,23 @@ desktop = true
 enable = true
 cadence_hours = 24
 # distro_watchlist = ["openssl", "openssh", "sudo"]  # override the curated default
+
+[maintenance]
+# Allowed change windows for EXECUTING state-changes (fixxer apply,
+# blueprint --execute, certs renew --execute). Empty/missing = no windows =
+# current behavior. Grammar: "<day> HH:MM-HH:MM" where day is Mon..Sun, a range
+# like Mon-Fri, or * for every day; end <= start crosses midnight.
+# windows  = ["Sat 02:00-06:00", "Sun 02:00-06:00"]
+# timezone = "America/Los_Angeles"   # optional; local time if unset
+
+[approvals]
+# Async out-of-band approval for consent-gated changes (Slack/Teams-style),
+# no server required. When a webhook URL is set, a non-interactive run mints a
+# single-use token (stored HASHED in sqlite with a TTL), POSTs a pending
+# approval (action, detail, token, expiry), and exits cleanly; a second channel
+# runs `wrench approve <token>`. Empty/missing = off.
+# approval_webhook_url = "https://hooks.example.com/wrench"
+# ttl_minutes          = 60
 """
 
 AZURE_SECTION_TOML = """\

@@ -548,6 +548,82 @@ kept under the data dir. Real applications are gated exactly like `fixxer`
 and `certs renew`: policy tier `repair`/`autonomous`, or a recorded
 `wrench blueprint consent` ceremony.
 
+### `wrench audit` — prove what happened
+
+Compliance asks a brutal question: *can you prove nothing was tampered with?*
+`wrench audit` answers it. Every consequential act — consent grants and denials,
+fixxer applies, blueprint applies and rollbacks, certificate renewals, security
+baseline accepts, policy-tier changes, maintenance-window overrides — is appended
+to a **hash-chained, append-only JSONL log** in the data dir. Each record carries
+the hash of the one before it:
+
+```
+{ts, actor, kind, detail, prev_hash, hash}
+hash = sha256(prev_hash + canonical(ts, actor, kind, detail, prev_hash))
+```
+
+The first write seeds a `genesis` record (prev_hash = 64 zeros). The wiring uses
+the **narrowest choke point** — `store.add_action`, which every mutation already
+flows through — plus explicit seals for the consent/baseline/override events that
+don't.
+
+```console
+$ wrench audit                 # recent events, rich table (+ --json wrench.audit.v1)
+$ wrench audit verify          # re-walk the chain
+✔ INTACT — 7 event(s), every link verified.
+```
+
+Flip a single byte anywhere in the log and `verify` names the **exact first broken
+link** and exits non-zero:
+
+```console
+$ wrench audit verify
+✗ TAMPER DETECTED
+first broken link: record #3 of 7
+reason: record altered: stored hash does not match its contents
+# exit code 1
+```
+
+Because each hash folds in the previous one, altering record *n* invalidates *n*
+and everything after it — you cannot quietly rewrite history and re-seal it
+without the genesis-anchored chain exposing the edit.
+
+**Maintenance windows.** Enterprises don't let tools mutate production whenever
+they please. Set allowed windows and executing state-changes (fixxer apply,
+`blueprint --execute`, `certs renew --execute`) are blocked outside them:
+
+```toml
+[maintenance]
+windows  = ["Sat 02:00-06:00", "Sun 02:00-06:00", "Mon-Fri 23:00-23:59"]
+timezone = "America/Los_Angeles"   # optional; local time if unset
+```
+
+Outside a window the op exits with a clear message. `--override-window` proceeds
+anyway **but only with consent**, and the override is itself audit-logged. Empty
+or missing config means **no windows = current behavior**, so a home user sees
+zero change.
+
+**Webhook approvals.** For an async, two-channel approval (Slack/Teams-style)
+without standing up a server: wrench POSTs a pending approval
+`{action, detail, token, expiry}` to `approval_webhook_url`, and a second channel
+approves it:
+
+```toml
+[approvals]
+approval_webhook_url = "https://hooks.example.com/wrench"
+ttl_minutes          = 60
+```
+
+```console
+$ wrench approve <token>       # from the approving channel; single-use, TTL-bound
+$ wrench approvals             # list token states (hashes only, never plaintext)
+```
+
+Tokens are stored **hashed** in sqlite with a TTL and are single-use; a non-TTY
+run with a pending-but-unapproved action exits cleanly with *"pending approval"*
+instead of hanging. All three features — audit is always on; windows and
+approvals **default OFF**.
+
 ### `wrench init` / `wrench doctor` / `wrench install-service`
 
 Onboarding, self-diagnosis, and persistence. `doctor` checks config, store,

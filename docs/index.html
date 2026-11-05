@@ -290,6 +290,16 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       backs up, applies, reloads via allowlisted verbs, health-probes — and <b>auto-rolls-back</b>
       on any failure. Dry-run by default, consent-gated, denylist-protected
       (never passwd/shadow/sudoers-direct), every application a labeled drift snapshot.</p></div>
+    <div class="card"><span class="ico">🧾</span><h3>Prove what happened</h3>
+      <p><code>wrench audit</code> seals every consequential act — consent grants &amp; denials,
+      fixxer applies, blueprint applies/rollbacks, cert renewals, security baseline accepts,
+      window overrides — into a <b>hash-chained, append-only log</b> (each record carries
+      <code>sha256(prev_hash+record)</code>). <code>wrench audit verify</code> re-walks the chain and
+      reports <b>INTACT</b> or the <b>exact first broken link</b> (exit 1 on tamper). Add
+      <b>maintenance windows</b> so state-changing ops only execute inside approved hours
+      (<code>--override-window</code> needs consent and is itself audited), and <b>webhook approvals</b>
+      — a single-use token POSTed to Slack/Teams, approved out-of-band with <code>wrench approve</code>.
+      <code>--json</code> (<code>wrench.audit.v1</code>) + Prometheus gauges. All three default <b>OFF</b>.</p></div>
     <div class="card"><span class="ico">🔌</span><h3>Wire it into your stack</h3>
       <p>Every read command speaks <b><code>--json</code></b> — one stable document
       (<code>wrench.status.v1</code>…), clean exit codes, pipe straight into <code>jq</code> or CI.
