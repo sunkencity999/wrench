@@ -244,6 +244,20 @@ class Store:
             (time.time(), tier, kind, command, int(approved), result[:4000]),
         )
         self.db.commit()
+        # Seal consequential actions onto the tamper-evident audit chain. This is
+        # the narrowest choke point: fixxer applies, blueprint applies, cert
+        # renewals and backups restore-tests all route through here. Read-only
+        # diagnostics (diag:*) are skipped. Never fatal.
+        try:
+            from . import audit
+            if audit.should_audit_action(kind):
+                audit.append(
+                    self.path.parent, kind,
+                    {"tier": tier, "command": command[:300],
+                     "approved": bool(approved), "result": result[:300]},
+                )
+        except Exception:  # noqa: BLE001 — auditing must never break an action
+            pass
 
     def recent_actions(self, limit: int = 100) -> list[dict]:
         cur = self.db.execute(

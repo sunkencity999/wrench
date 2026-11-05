@@ -1960,6 +1960,95 @@ def backups_main(
 app.add_typer(backups_app, name="backups")
 
 
+# ---------------- audit (tamper-evident hash-chained log) ----------------
+
+audit_app = typer.Typer(
+    help="🧾 tamper-evident audit log: every consent, apply, rollback, "
+         "renewal and override sealed into a hash chain you can `verify`.",
+    no_args_is_help=False,
+)
+
+
+def _render_audit_table(records: list[dict]) -> Table:
+    t = Table(title="🧾 audit log — recent events", border_style="bright_blue")
+    t.add_column("time", style="dim", no_wrap=True)
+    t.add_column("actor", style="cyan")
+    t.add_column("kind", style="bold")
+    t.add_column("detail", overflow="fold")
+    t.add_column("hash", style="dim", no_wrap=True)
+    for r in records:
+        detail = r.get("detail")
+        if isinstance(detail, dict):
+            dtxt = ", ".join(f"{k}={v}" for k, v in detail.items())
+        else:
+            dtxt = str(detail)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.get("ts", 0)))
+        t.add_row(ts, str(r.get("actor", "?")), str(r.get("kind", "?")),
+                  dtxt[:80], str(r.get("hash", ""))[:12])
+    return t
+
+
+@audit_app.callback(invoke_without_command=True)
+def audit_main(
+    ctx: typer.Context,
+    limit: int = typer.Option(20, "--limit", "-n", help="how many recent events to show"),
+    json_out: bool = JSON_OPT,
+):
+    """List recent audit events. Run `wrench audit verify` to check the chain."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import audit as amod
+    cfg, _store = _ctx()
+    records = amod.recent(cfg.data_dir, limit=limit)
+    chain = amod.verify(cfg.data_dir)
+    if json_out:
+        jsonout.emit("audit", {
+            "entries": records,
+            "count": chain["count"],
+            "shown": len(records),
+            "intact": chain["intact"],
+        })
+        return
+    if not records:
+        console.print(Panel(
+            "[dim]no audit events yet.[/dim] The chain seeds itself the first time "
+            "wrench does something consequential — a consent grant, a fixxer "
+            "apply, a cert renewal, a blueprint apply.",
+            border_style="bright_blue", title="🧾 wrench audit"))
+        return
+    console.print(_render_audit_table(records))
+    status = ("[green]✔ chain INTACT[/green]" if chain["intact"]
+              else f"[bold red]✗ chain BROKEN at #{chain['broken_index']}[/bold red]")
+    console.print(f"{status} [dim]· {chain['count']} total event(s) · "
+                  f"`wrench audit verify` for the full walk[/dim]")
+
+
+@audit_app.command("verify")
+def audit_verify(json_out: bool = JSON_OPT):
+    """Re-walk the hash chain. Reports INTACT or the exact first broken link."""
+    from . import audit as amod
+    cfg, _store = _ctx()
+    chain = amod.verify(cfg.data_dir)
+    if json_out:
+        jsonout.emit("audit.verify", chain)
+        raise typer.Exit(0 if chain["intact"] else 1)
+    if chain["intact"]:
+        console.print(Panel(
+            f"[bold green]✔ INTACT[/bold green] — {chain['count']} event(s), "
+            f"every link verified.",
+            border_style="green", title="🧾 audit verify"))
+        raise typer.Exit(0)
+    console.print(Panel(
+        f"[bold red]✗ TAMPER DETECTED[/bold red]\n"
+        f"first broken link: record #{chain['broken_index']} of {chain['count']}\n"
+        f"reason: {chain['reason']}",
+        border_style="red", title="🧾 audit verify"))
+    raise typer.Exit(1)
+
+
+app.add_typer(audit_app, name="audit")
+
+
 # ---------------- forecast (capacity forecasting) ----------------
 
 _FC_SEV_STYLE = {"critical": ("bold red", "\u2191"), "warning": ("yellow", "\u2197"),

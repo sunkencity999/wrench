@@ -148,3 +148,35 @@ def test_should_audit_action_skips_diag():
 def test_default_actor_env_override(monkeypatch):
     monkeypatch.setenv("WRENCH_ACTOR", "ci-bot")
     assert audit.default_actor() == "ci-bot"
+
+
+# ---------------- store.add_action choke-point integration ----------------
+
+def test_store_add_action_seals_consequential_events(tmp_path):
+    from wrench.store import Store
+    s = Store(tmp_path / "wrench.db")
+    try:
+        s.add_action("repair", "fixxer:disk-clean", "rm -rf /x", True, "ok")
+        s.add_action("suggest", "certs:renew:exec", "certbot renew", True, "renewed")
+        s.add_action("any", "diag:journal", "journalctl -u foo", True, "read")
+    finally:
+        s.close()
+    recs = audit.read_records(tmp_path)
+    kinds = [r["kind"] for r in recs]
+    # genesis + 2 consequential; diag:* is skipped
+    assert kinds == ["genesis", "fixxer:disk-clean", "certs:renew:exec"]
+    assert audit.verify(tmp_path)["intact"]
+    # the sealed detail carries the consent decision
+    assert recs[1]["detail"]["approved"] is True
+
+
+def test_store_add_action_records_denials(tmp_path):
+    from wrench.store import Store
+    s = Store(tmp_path / "wrench.db")
+    try:
+        s.add_action("repair", "fix-denied", "rm -rf /", False, "policy denied")
+    finally:
+        s.close()
+    recs = audit.recent(tmp_path, 10)
+    assert recs[-1]["kind"] == "fix-denied"
+    assert recs[-1]["detail"]["approved"] is False
