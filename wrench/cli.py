@@ -2357,6 +2357,204 @@ def metrics_serve(
 app.add_typer(metrics_app, name="metrics")
 
 
+# ---------------- fleet (hub + node reporting + dead-man's switch) ----------------
+
+fleet_app = typer.Typer(
+    help="\U0001f527 fleet mode \u2014 many nodes, one view: run a hub, report from "
+         "nodes, watch for silent boxes. Default OFF (no [fleet] config = no-op).",
+    no_args_is_help=True,
+)
+
+_FLEET_COLOR_STYLE = {"green": "green", "yellow": "yellow", "red": "bold red",
+                     "silent": "bold magenta"}
+
+
+@fleet_app.command("token")
+def fleet_token(
+    label: str = typer.Option("", "--label", help="a human label for this node token"),
+    register: bool = typer.Option(True, "--register/--no-register",
+                                  help="record the token FINGERPRINT in this hub's db"),
+):
+    """Generate a node token. Paste it into the node config AND the hub's
+    authorized_tokens. The raw token is shown once; the hub stores only its hash."""
+    from . import fleet as fmod
+    cfg, store = _ctx()
+    tok = fmod.generate_token()
+    fp = fmod.token_fingerprint(tok)
+    if register:
+        store.add_fleet_token(fp, label, time.time())
+    store.close()
+    console.print(Panel(
+        Text.assemble(
+            ("new node token (shown once \u2014 copy it now):\n\n", "dim"),
+            (tok, "bold bright_green"),
+            (f"\n\nfingerprint: {fp[:16]}\u2026  ", "dim"),
+            (f"label: {label or '(none)'}", "dim"),
+        ),
+        border_style="bright_green", title="\U0001f527 wrench fleet token"))
+    console.print(
+        "[dim]On the NODE \u2014 add to [bold]~/.config/wrench/config.toml[/bold]:[/dim]\n"
+        "[bright_blue][fleet]\n"
+        'hub_url = "http://<this-hub>:8788"\n'
+        f'token   = "{tok}"[/bright_blue]\n')
+    console.print(
+        "[dim]On the HUB \u2014 add the same token to its [bold][fleet][/bold] "
+        "[bold]authorized_tokens[/bold] list, then run [bold]wrench fleet serve[/bold].[/dim]")
+    console.print("[dim]The token is a shared secret \u2014 it is never logged, and the "
+                  "hub persists only its hash.[/dim]")
+
+
+@fleet_app.command("report")
+def fleet_report(
+    hub: str = typer.Option(None, "--hub", help="override hub_url"),
+    token: str = typer.Option(None, "--token", help="override the node token"),
+    node_id: str = typer.Option(None, "--node-id", help="override this node's id"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="build the report, don't push"),
+    json_out: bool = JSON_OPT,
+):
+    """Build this node's compact snapshot (from cached scans) and push it to the hub."""
+    from . import fleet as fmod
+    cfg, store = _ctx()
+    st = fmod.settings_from(cfg)
+    if hub:
+        st.hub_url = hub.rstrip("/")
+    if token:
+        st.token = token
+    if node_id:
+        st.node_id = node_id
+    report = fmod.build_report(cfg, store, st)
+    if dry_run:
+        store.close()
+        if json_out:
+            jsonout.emit("fleet.report", {"pushed": False, "report": report})
+        else:
+            console.print(Panel(json.dumps(report, indent=2),
+                                border_style="bright_blue",
+                                title="\U0001f527 fleet report (dry-run)"))
+        return
+    if not st.node_enabled:
+        store.close()
+        msg = "fleet node not configured \u2014 set [fleet] hub_url + token (or pass --hub/--token)"
+        if json_out:
+            jsonout.emit("fleet.report", {"pushed": False, "error": msg})
+        else:
+            console.print(Panel(msg, border_style="yellow", title="\U0001f527 wrench fleet"))
+        raise typer.Exit(2)
+    res = fmod.node_push(cfg, store, st)
+    store.close()
+    if json_out:
+        jsonout.emit("fleet.report", {"pushed": res["ok"], "queued": res.get("queued"),
+                                      "detail": res["detail"], "report": report})
+        raise typer.Exit(0 if res["ok"] else 1)
+    if res["ok"]:
+        console.print(f"[green]\u2714 reported to {st.hub_url}[/green] "
+                      f"[dim]({res['detail']}; status={report['status']}, "
+                      f"worst={report['worst_severity']})[/dim]")
+    else:
+        console.print(Panel(
+            f"[yellow]hub unreachable \u2014 report queued for retry[/yellow]\n"
+            f"[dim]{res['detail']}[/dim]",
+            border_style="yellow", title="\U0001f527 wrench fleet"))
+        raise typer.Exit(1)
+
+
+@fleet_app.command("serve")
+def fleet_serve(
+    host: str = typer.Option(None, "--host", help="bind address (default from config)"),
+    port: int = typer.Option(None, "--port", help="port (default from config, 8788)"),
+    no_sample: bool = typer.Option(False, "--no-sample",
+                                   help="don't sample this hub box in the background"),
+):
+    """Run the fleet HUB: accept signed node reports + serve the fleet dashboard."""
+    from . import fleet as fmod
+    from .webapp import serve
+    cfg, store = _ctx()
+    st = fmod.settings_from(cfg)
+    store.close()
+    if not st.hub_enabled:
+        console.print(Panel(
+            "[yellow]no fleet hub configured.[/yellow] Add an [bold][fleet][/bold] "
+            "section with [bold]authorized_tokens[/bold] to config.toml "
+            "(generate one with [bold]wrench fleet token[/bold]).",
+            border_style="yellow", title="\U0001f527 wrench fleet serve"))
+        raise typer.Exit(2)
+    bind = host or st.listen_host
+    port = port or st.listen_port
+    httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
+                  bind=bind, sample_thread=not no_sample, cfg=cfg)
+    console.print(Panel(
+        f"fleet hub live \u2014 nodes POST to "
+        f"[bold bright_blue]http://{bind}:{port}/api/fleet/report[/bold bright_blue]\n"
+        f"dashboard: [bright_blue]http://{bind}:{port}/fleet[/bright_blue] \u00b7 "
+        f"{len(st.authorized_tokens)} authorized token(s) \u00b7 Ctrl-C to stop\n"
+        f"[dim]HMAC-authenticated \u2014 terminate TLS at a reverse proxy for public use.[/dim]",
+        border_style="bright_blue", title="\U0001f527 wrench fleet serve"))
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]fleet hub stopped[/dim]")
+
+
+@fleet_app.command("status")
+def fleet_status(json_out: bool = JSON_OPT):
+    """Hub-side: show every known node \u2014 status, last-seen age, worst finding."""
+    from . import fleet as fmod
+    cfg, store = _ctx()
+    st = fmod.settings_from(cfg)
+    states = fmod.node_states(store, st)
+    summary = fmod.fleet_summary(states)
+    store.close()
+    if json_out:
+        jsonout.emit("fleet", {
+            "summary": summary,
+            "nodes": [{
+                "node_id": n["node_id"], "hostname": n["hostname"],
+                "status": n["status"], "color": n["color"], "silent": n["silent"],
+                "last_seen": n["last_seen"], "age_s": n["age_s"],
+                "worst_severity": n["worst_severity"], "summary": n["summary"],
+                "cadence_s": n["cadence_s"], "wrench_version": n["wrench_version"],
+                "report_count": n["report_count"],
+                "findings": n["findings"], "gauges": n["gauges"],
+            } for n in states],
+        })
+        raise typer.Exit(1 if summary.get("silent") or summary.get("red") else 0)
+    if not states:
+        console.print(Panel(
+            "[dim]no nodes have reported yet.[/dim] Configure a node with "
+            "[bold][fleet][/bold] hub_url + token and run [bold]wrench fleet report[/bold].",
+            border_style="bright_blue", title="\U0001f527 wrench fleet status"))
+        return
+    t = Table(title=f"\U0001f527 fleet \u2014 {summary['total']} node(s): "
+                    f"{summary['green']} ok / {summary['yellow']} attn / "
+                    f"{summary['red']} crit / {summary['silent']} silent",
+              border_style="bright_blue")
+    t.add_column("node", style="bold")
+    t.add_column("host", style="dim", max_width=24)
+    t.add_column("status")
+    t.add_column("last seen")
+    t.add_column("worst finding", max_width=50)
+    t.add_column("ver", style="dim")
+    for n in states:
+        age = n["age_s"]
+        last = (f"{age:.0f}s ago" if age < 90 else f"{age/60:.0f}m ago"
+                if age < 5400 else f"{age/3600:.1f}h ago")
+        label = "silent" if n["silent"] else n["status"]
+        worst = ""
+        for f in n.get("findings", []):
+            if (f.get("severity") or "").lower() in ("critical", "error", "warning"):
+                worst = f.get("text", "")
+                break
+        if not worst:
+            worst = n.get("summary", "")
+        t.add_row(n["node_id"], n["hostname"] or "",
+                  Text(label, style=_FLEET_COLOR_STYLE.get(n["color"], "white")),
+                  last, worst, n.get("wrench_version") or "?")
+    console.print(t)
+
+
+app.add_typer(fleet_app, name="fleet")
+
+
 def _key_env(provider: str) -> str:
     from .config import PROVIDER_DEFAULTS
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]

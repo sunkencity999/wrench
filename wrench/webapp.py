@@ -409,6 +409,109 @@ document.addEventListener('keydown', (e) => {
 """
 
 
+FLEET_DISABLED_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>wrench fleet</title><style>body{background:#0b0e14;color:#dce3ee;
+font:15px/1.6 ui-monospace,monospace;max-width:640px;margin:4rem auto;padding:0 1rem}
+a{color:#58a6ff}code{background:#11151f;border:1px solid #1f2633;border-radius:6px;
+padding:.1rem .4rem}</style></head><body>
+<h1>🔧 wrench fleet — not enabled here</h1>
+<p>This wrench install is not configured as a fleet <b>hub</b>. Add an
+<code>[fleet]</code> section with <code>authorized_tokens</code> to
+<code>~/.config/wrench/config.toml</code>, then run <code>wrench fleet serve</code>.</p>
+<p>Generate a node token with <code>wrench fleet token</code>.</p>
+</body></html>"""
+
+FLEET_HTML = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wrench fleet</title>
+<style>
+:root { --bg:#0b0e14; --panel:#11151f; --border:#1f2633; --fg:#dce3ee; --dim:#7d8799;
+  --green:#3fb950; --yellow:#d29922; --red:#f85149; --silent:#8b949e; --accent:#58a6ff;
+  --shadow:0 10px 30px rgba(0,0,0,.45); }
+* { box-sizing:border-box; margin:0; }
+body { background:var(--bg); color:var(--fg);
+  font:14px/1.5 ui-monospace,Menlo,Consolas,monospace; padding:1.2rem; }
+header { display:flex; align-items:baseline; gap:1rem; margin-bottom:1.2rem; flex-wrap:wrap; }
+header h1 { font-size:1.4rem; } header .dim { color:var(--dim); font-size:.85rem; }
+.summary { display:flex; gap:1.4rem; margin-bottom:1.2rem; flex-wrap:wrap; }
+.sum { display:flex; align-items:center; gap:.5rem; font-size:1.1rem; }
+.dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+.dot.green{background:var(--green)} .dot.yellow{background:var(--yellow)}
+.dot.red{background:var(--red)} .dot.silent{background:var(--silent)}
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:1rem; }
+.node { background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  padding:1rem 1.1rem; border-left:5px solid var(--silent); box-shadow:var(--shadow); }
+.node.green{border-left-color:var(--green)} .node.yellow{border-left-color:var(--yellow)}
+.node.red{border-left-color:var(--red)} .node.silent{border-left-color:var(--silent)}
+.node h3 { font-size:1.05rem; display:flex; align-items:center; gap:.5rem; }
+.node .host { color:var(--dim); font-size:.8rem; font-weight:normal; margin-left:auto; }
+.node .status { text-transform:uppercase; font-size:.72rem; letter-spacing:.1em;
+  padding:.1rem .5rem; border-radius:5px; }
+.status.green{background:#12301c;color:var(--green)} .status.yellow{background:#33290f;color:var(--yellow)}
+.status.red{background:#381417;color:var(--red)} .status.silent{background:#1b2027;color:var(--silent)}
+.node .sumline { margin:.6rem 0; font-size:.88rem; }
+.node .meta { color:var(--dim); font-size:.76rem; }
+.node .finding { font-size:.8rem; padding:.15rem 0; border-top:1px solid var(--border); margin-top:.3rem; }
+.node .finding.critical,.node .finding.error{color:var(--red)} .node .finding.warning{color:var(--yellow)}
+footer { color:var(--dim); font-size:.75rem; margin-top:1.4rem; text-align:center; }
+a { color:var(--accent); }
+.empty { color:var(--dim); padding:2rem; text-align:center; }
+</style></head><body>
+<header>
+  <h1>🔧 wrench fleet</h1>
+  <span class="dim">hub: <span id="host">…</span> · refreshes every 10s ·
+    <a href="/">← box dashboard</a></span>
+  <span class="dim" id="updated"></span>
+</header>
+<div class="summary" id="summary"></div>
+<div class="grid" id="grid"></div>
+<footer>wrench fleet — many nodes, one view ·
+<a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a></footer>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ago = s => { const d = s;
+  if (d < 90) return Math.round(d)+'s ago';
+  if (d < 5400) return Math.round(d/60)+'m ago';
+  if (d < 172800) return (d/3600).toFixed(1)+'h ago';
+  return (d/86400).toFixed(1)+'d ago'; };
+async function refresh() {
+  try {
+    const r = await fetch('/api/fleet/nodes'); const d = await r.json();
+    $('host').textContent = d.host || 'localhost';
+    $('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    const s = d.summary || {};
+    $('summary').innerHTML =
+      `<span class="sum"><span class="dot green"></span>${s.green||0} healthy</span>` +
+      `<span class="sum"><span class="dot yellow"></span>${s.yellow||0} attention</span>` +
+      `<span class="sum"><span class="dot red"></span>${s.red||0} critical</span>` +
+      `<span class="sum"><span class="dot silent"></span>${s.silent||0} silent</span>` +
+      `<span class="sum dim">${s.total||0} nodes</span>`;
+    const nodes = d.nodes || [];
+    if (!nodes.length) { $('grid').innerHTML = '<div class="empty">no nodes have reported yet — run <b>wrench fleet report</b> on a node</div>'; return; }
+    $('grid').innerHTML = nodes.map(n => {
+      const g = n.gauges || {};
+      const disk = g.disk_pct ? Object.entries(g.disk_pct).map(([m,p])=>`${m} ${Math.round(p)}%`).join(' · ') : '';
+      const findings = (n.findings||[]).slice(0,3).map(f =>
+        `<div class="finding ${esc(f.severity)}">[${esc(f.severity)}] ${esc(f.text)}</div>`).join('');
+      return `<div class="node ${esc(n.color)}">
+        <h3>${esc(n.node_id)} <span class="host">${esc(n.hostname||'')}</span></h3>
+        <div style="margin:.4rem 0"><span class="status ${esc(n.color)}">${n.silent?'silent':esc(n.status)}</span>
+          <span class="meta"> · seen ${ago(n.age_s)}</span></div>
+        <div class="sumline">${esc(n.summary||'')}</div>
+        ${disk?`<div class="meta">${esc(disk)}${g.mem_pct!=null?` · mem ${Math.round(g.mem_pct)}%`:''}${g.cert_worst_days!=null?` · cert ${g.cert_worst_days}d`:''}</div>`:''}
+        ${findings}
+        <div class="meta" style="margin-top:.4rem">v${esc(n.wrench_version||'?')} · ${n.report_count||0} reports</div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.error(e); }
+}
+refresh(); setInterval(refresh, 10000);
+</script></body></html>
+"""
+
+
 def _downsample(samples: list[tuple[float, dict]], target: int = 240) -> list[dict]:
     if len(samples) <= target:
         rows = samples
@@ -493,12 +596,56 @@ def make_handler(db_path, host_label: str, cfg=None):
                     return self._json(store.cache_get("webintel_scan", float("inf")) or {})
                 if path == "/api/notifications":
                     return self._json(notifications.unread(data_dir))
+                if path in ("/fleet", "/api/fleet/nodes"):
+                    from . import fleet
+                    if cfg is None or not fleet.settings_from(cfg).hub_enabled:
+                        if path == "/fleet":
+                            return self._html(FLEET_DISABLED_HTML)
+                        return self._json({"error": "fleet hub not enabled"}, 503)
+                    if path == "/fleet":
+                        return self._html(FLEET_HTML)
+                    st = fleet.settings_from(cfg)
+                    states = fleet.node_states(store, st)
+                    return self._json({
+                        "host": host_label,
+                        "summary": fleet.fleet_summary(states),
+                        "nodes": states,
+                    })
                 self._json({"error": "not found"}, 404)
             finally:
                 store.close()
 
         def do_POST(self):  # noqa: N802
             path = urlparse(self.path).path
+            if path == "/api/fleet/report":
+                # Remote nodes POST here. Auth is HMAC of the body (NOT origin):
+                # a valid signature against an authorized token is the only gate.
+                from . import fleet
+                if cfg is None or not fleet.settings_from(cfg).hub_enabled:
+                    return self._json({"error": "fleet hub not enabled"}, 503)
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    length = 0
+                if not 0 < length <= MAX_CHAT_BODY:
+                    return self._json({"error": "bad request size"}, 413)
+                raw = self.rfile.read(length)
+                st = fleet.settings_from(cfg)
+                sig = self.headers.get(fleet.SIG_HEADER, "")
+                token = fleet.identify_token(st, raw, sig)
+                if token is None:
+                    return self._json({"error": "invalid signature"}, 401)
+                report = fleet.parse_report(raw)
+                if report is None:
+                    return self._json({"error": "malformed report"}, 400)
+                store = Store(db_path)
+                try:
+                    row = fleet.ingest(store, st, report, token)
+                    fleet.audit_registration(cfg, store, row)
+                finally:
+                    store.close()
+                return self._json({"ok": True, "node_id": row["node_id"],
+                                   "report_count": row["report_count"]})
             if path == "/api/notifications/read":
                 if not _is_local_origin(self.headers.get("Origin")):
                     return self._json({"error": "forbidden"}, 403)
