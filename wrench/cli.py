@@ -1816,6 +1816,150 @@ def security_accept(
 app.add_typer(security_app, name="security")
 
 
+# ---------------- backups (trust your backups) ----------------
+
+backups_app = typer.Typer(
+    help="\U0001f9f0 backup verification: find every backup job, prove it ran, "
+         "prove the repository is sane \u2014 read-only by default.",
+    no_args_is_help=False, invoke_without_command=True)
+
+_BK_FRESH_STYLE = {"fresh": "green", "stale": "bold red", "unknown": "yellow"}
+_BK_INTEG_STYLE = {"ok": "green", "failed": "bold red", "locked": "yellow",
+                   "unknown": "yellow", "skipped": "dim"}
+
+
+def _render_backup_table(report: dict):
+    from rich.table import Table as _T
+    t = _T(title="\U0001f9f0 backup jobs", border_style="bright_blue")
+    t.add_column("job", style="bold")
+    t.add_column("origin", style="dim", max_width=44)
+    t.add_column("schedule", style="dim", max_width=20)
+    t.add_column("last run")
+    t.add_column("freshness")
+    t.add_column("integrity")
+    t.add_column("note", style="dim", max_width=40)
+    for j in report["jobs"]:
+        age = j.get("age_s")
+        if age is None:
+            last = Text("never seen", style="yellow")
+        elif age < 3600 * 48:
+            last = Text(f"{age / 3600:.1f}h ago")
+        else:
+            last = Text(f"{age / 86400:.1f}d ago")
+        t.add_row(j["name"], j["origin"], j["schedule"] or "?", last,
+                  Text(j["freshness"], style=_BK_FRESH_STYLE.get(j["freshness"], "white")),
+                  Text(j["integrity"], style=_BK_INTEG_STYLE.get(j["integrity"], "white")),
+                  j.get("integrity_note", ""))
+    return t
+
+
+@backups_app.callback(invoke_without_command=True)
+def backups_main(
+    ctx: typer.Context,
+    restore_test: bool = typer.Option(False, "--restore-test",
+                                      help="L3: consent-gated sample restore proof "
+                                           "(borg dry-run extract / restic check)"),
+    yes: bool = typer.Option(False, "--yes", "-y",
+                             help="skip the restore-test consent prompt (CI)"),
+    no_llm: bool = typer.Option(False, "--no-llm",
+                                help="skip the brain-narrated briefing"),
+    notify: bool = typer.Option(True, "--notify/--no-notify",
+                                help="emit a notification when findings clear the ladder"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+    json_out: bool = JSON_OPT,
+):
+    """Detect every backup job and climb the verification ladder."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import backups as bmod
+    cfg, store = _ctx(provider, model)
+
+    def on_step(detail):
+        if not json_out:
+            console.print(f"  [dim cyan]\u2699 {detail}[/dim cyan]")
+
+    if not json_out:
+        console.print("[dim italic]untested backups don't exist \u2014 detecting "
+                      "and verifying...[/dim italic]")
+    report = bmod.scan(cfg, store, on_step=on_step)
+    if notify:
+        bmod.notify_scan(cfg, report)
+
+    # L3 — consent-gated restore proof
+    if restore_test and report["jobs"]:
+        jobs = bmod.detect_jobs()
+        if not yes and not json_out:
+            ok = typer.confirm(
+                f"run sample restore proofs against {len(jobs)} repositories "
+                f"(read-only: borg --dry-run extract / restic check)?")
+            if not ok:
+                console.print("[dim]restore test skipped.[/dim]")
+                jobs = []
+        for j in jobs:
+            on_step(f"restore-testing {j.name}...")
+            bmod.check_freshness(j)
+            bmod.check_integrity(j)
+            bmod.restore_test(j)
+        if jobs:
+            report = {**report, "jobs": [j.as_dict() for j in jobs]}
+            store.add_snapshot(bmod.BACKUPS_KIND, report)
+            store.add_action(cfg.policy_tier, "backups:restore-test",
+                             f"{len(jobs)} jobs", True, "completed")
+
+    if json_out:
+        jsonout.emit("backups", {
+            "count": report["count"],
+            "worst": report["worst"],
+            "no_jobs": report["no_jobs"],
+            "severity_counts": report["severity_counts"],
+            "jobs": report["jobs"],
+        })
+        raise typer.Exit(1 if report["worst"] == "critical" else 0)
+
+    if report["no_jobs"]:
+        console.print(Panel(
+            "[bold yellow]no backup jobs detected on this box.[/bold yellow]\n"
+            "Nothing in crontabs or systemd timers invokes borg/restic/rsync/"
+            "pg_dump/mysqldump \u2014 if this data matters, that's the finding.",
+            border_style="yellow", title="\U0001f9f0 wrench backups"))
+        raise typer.Exit(0)
+
+    console.print(_render_backup_table(report))
+    worst = report.get("worst", "none")
+    if worst == "none":
+        console.print("[green]every detected backup job is fresh and its "
+                      "repository answers \u2014 nice.[/green]")
+
+    if no_llm or not (cfg.api_key or cfg.provider in ("ollama", "lmstudio")):
+        raise typer.Exit(1 if worst == "critical" else 0)
+    lines = bmod.narration_lines(report)
+    client = LLMClient(cfg, store)
+    try:
+        with console.status("[cyan]briefing..."):
+            text = client.chat(
+                [{"role": "system",
+                  "content": "You are wrench, a sysadmin agent speaking in the first "
+                             "person about YOUR machine's backups. You are shown every "
+                             "detected backup job with freshness and integrity "
+                             "verdicts. In 3-6 sentences: say plainly whether this box "
+                             "could be restored today, name the weakest link, and the "
+                             "single most urgent action. Remember: an untested backup "
+                             "does not exist. You only analyze \u2014 you never execute "
+                             "anything. No markdown headers, no filler."},
+                 {"role": "user", "content": "\n".join(lines)}],
+                purpose="backups-brief")
+        from . import report as _report
+        _report.render_answer(console, text, f"{cfg.model} \u00b7 backups brief")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[dim]briefing unavailable ({e}) \u2014 the verdicts stand "
+                      f"on their own[/dim]")
+    raise typer.Exit(1 if worst == "critical" else 0)
+
+
+app.add_typer(backups_app, name="backups")
+
+
 # ---------------- forecast (capacity forecasting) ----------------
 
 _FC_SEV_STYLE = {"critical": ("bold red", "\u2191"), "warning": ("yellow", "\u2197"),

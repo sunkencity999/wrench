@@ -231,6 +231,30 @@ def render(store, data_dir: Path) -> str:
     except Exception:  # noqa: BLE001 — a scrape never dies on one family
         pass
 
+    # ---- backups (from the last verification report) ----
+    try:
+        from .backups import BACKUPS_KIND, job_severity_dict
+        bk = store.last_snapshot(BACKUPS_KIND)
+        if bk:
+            _, rep = bk
+            b.metric("wrench_backup_jobs",
+                     "Backup jobs detected at the newest verification scan.", "gauge")
+            b.sample("wrench_backup_jobs", rep.get("count", 0))
+            b.metric("wrench_backup_freshness_seconds",
+                     "Seconds since each backup job last ran.", "gauge")
+            b.metric("wrench_backup_job_severity",
+                     "Severity rank per backup job (0 none, 1 info, 2 warning, "
+                     "3 critical).", "gauge")
+            rank = {"none": 0, "info": 1, "warning": 2, "critical": 3}
+            for j in rep.get("jobs", []):
+                if j.get("age_s") is not None:
+                    b.sample("wrench_backup_freshness_seconds", round(j["age_s"]),
+                             {"job": j["name"]})
+                b.sample("wrench_backup_job_severity",
+                         rank.get(job_severity_dict(j), 0), {"job": j["name"]})
+    except Exception:  # noqa: BLE001
+        pass
+
     # ---- capacity forecast (from the last computed feed snapshot) ----
     try:
         from .forecast import FORECAST_KIND
