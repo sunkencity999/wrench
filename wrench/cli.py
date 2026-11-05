@@ -1017,6 +1017,141 @@ def fixxer(
         raise typer.Exit(1)
 
 
+# ---------------- certs (certwrench) ----------------
+
+CERT_SEV_STYLE = {"critical": "bold red", "warning": "yellow", "info": "cyan",
+                  "ok": "green"}
+
+
+def _days_cell(days) -> Text:
+    if days is None:
+        return Text("—", style="dim")
+    if days < 0:
+        return Text(f"EXPIRED {-days}d ago", style="bold red")
+    style = "bold red" if days <= 7 else "yellow" if days <= 30 else "green"
+    return Text(f"{days}d", style=style)
+
+
+def _render_cert_table(cert_list) -> Table:
+    t = Table(title="\U0001f510 certificate inventory", border_style="bright_blue")
+    t.add_column("name", style="bold", max_width=28)
+    t.add_column("expires in", justify="right")
+    t.add_column("issuer", max_width=24, style="dim")
+    t.add_column("key")
+    t.add_column("flags")
+    t.add_column("source", max_width=30, style="dim")
+    for c in cert_list:
+        if c.error:
+            t.add_row(Text(Path(c.path).name, style="dim"),
+                      Text("parse error", style="red"), "—", "—",
+                      Text(c.error[:20], style="red"), c.source or c.path)
+            continue
+        flags = []
+        if c.self_signed:
+            flags.append(Text("self-signed", style="yellow"))
+        if c.is_ca:
+            flags.append(Text("CA", style="dim"))
+        if c.weak_key:
+            flags.append(Text("weak-key", style="bold red"))
+        if c.chain_complete is False:
+            flags.append(Text("broken-chain", style="red"))
+        flag_text = Text(" ").join(flags) if flags else Text("ok", style="green")
+        issuer_cn = ""
+        import re as _re
+        m = _re.search(r"CN\s*=\s*([^,/]+)", c.issuer or "")
+        issuer_cn = m.group(1).strip() if m else (c.issuer or "")[:24]
+        key_str = f"{c.key_type}-{c.key_bits}" if c.key_bits else (c.key_type or "?")
+        t.add_row(c.common_name, _days_cell(c.days_left), issuer_cn, key_str,
+                  flag_text, (c.source or "").split(":", 1)[-1])
+    return t
+
+
+def _render_weaknesses(weaknesses) -> Panel | None:
+    if not weaknesses:
+        return None
+    from rich.console import Group
+    rows = []
+    for w in weaknesses:
+        style = CERT_SEV_STYLE.get(w.severity, "white")
+        rows.append(Text.assemble((f"[{w.severity}] ", style), (w.detail, "white")))
+    return Panel(Group(*rows), border_style="yellow",
+                title="\u26a0 weak TLS configuration")
+
+
+certs_app = typer.Typer(
+    help="\U0001f510 SSL/TLS certificate lifecycle: inventory, renew, audit.",
+    no_args_is_help=False, invoke_without_command=True)
+
+
+@certs_app.callback(invoke_without_command=True)
+def certs_main(
+    ctx: typer.Context,
+    probe: bool = typer.Option(False, "--probe",
+                               help="also live-probe local HTTPS listeners (read-only)"),
+    verify_chain: bool = typer.Option(True, "--verify-chain/--no-verify-chain",
+                                      help="run openssl chain verification per cert"),
+):
+    """Inventory certificates: scan configs + well-known stores, parse, persist, report."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import certs as cmod
+    cfg, store = _ctx()
+    _notify_banner(cfg)
+    with console.status("[cyan]scanning configs + well-known stores for certificates..."):
+        cert_list, weaknesses = cmod.inventory()
+        if verify_chain:
+            for c in cert_list:
+                if c.ok and not c.self_signed and c.chain_complete is None:
+                    complete, _note = cmod.verify_chain(c.path)
+                    c.chain_complete = complete
+        for c in cert_list:
+            store.upsert_cert(c.to_row())
+    if not cert_list:
+        console.print(Panel(
+            "[green]no certificates found[/green] in web-server configs or the "
+            "well-known stores (/etc/letsencrypt/live, /etc/ssl, /etc/pki).\n"
+            "[dim]nothing to track yet \u2014 install a TLS service and re-run.[/dim]",
+            border_style="green", title="\U0001f510 wrench certs"))
+        return
+    console.print(_render_cert_table(cert_list))
+    wp = _render_weaknesses(weaknesses)
+    if wp is not None:
+        console.print(wp)
+    if probe:
+        _probe_local_listeners(cfg, store, cmod)
+    # expiry headline
+    soon = [c for c in cert_list if c.ok and c.expiry_severity()]
+    if soon:
+        worst = min((c.days_left for c in soon if c.days_left is not None), default=None)
+        console.print(f"[dim]tracked {len(cert_list)} certs \u2014 "
+                      f"[bold yellow]{len(soon)}[/bold yellow] need attention "
+                      f"(soonest expiry: {worst}d)[/dim]")
+    else:
+        console.print(f"[dim]tracked {len(cert_list)} certs \u2014 none expiring within 30 days[/dim]")
+
+
+def _probe_local_listeners(cfg, store, cmod) -> None:
+    """Live-probe HTTPS on common local ports (read-only handshake)."""
+    from . import tools
+    rows = []
+    for port in (443, 8443):
+        res = cmod.probe_tls("127.0.0.1", port, timeout=3.0)
+        if res["ok"]:
+            weak = cmod.protocol_is_weak(res["protocol"])
+            rows.append(Text.assemble(
+                (f":{port} ", "bold"),
+                (f"{res['protocol']} ", "red" if weak else "green"),
+                (f"{res['cipher']} ", "dim"),
+                (f"(cert {res['days_left']}d)" if res["days_left"] is not None else "", "dim")))
+    if rows:
+        from rich.console import Group
+        console.print(Panel(Group(*rows), border_style="bright_blue",
+                            title="\U0001f4e1 live TLS probe (localhost)"))
+
+
+app.add_typer(certs_app, name="certs")
+
+
 def _key_env(provider: str) -> str:
     from .config import PROVIDER_DEFAULTS
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]

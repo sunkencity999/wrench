@@ -174,6 +174,7 @@ class ConfigWeakness:
 
 def _iter_config_files(root: Path):
     """Yield readable text config files under a server config root."""
+    root = Path(root)
     if not root.exists():
         return
     try:
@@ -288,6 +289,7 @@ def scan_wellknown_certs(dirs: list[Path] | None = None) -> list[str]:
     dirs = dirs if dirs is not None else WELLKNOWN_CERT_DIRS
     out: list[str] = []
     for d in dirs:
+        d = Path(d)
         if not d.exists():
             continue
         try:

@@ -264,3 +264,41 @@ def test_inventory_dedup_and_weakness(tmp_path):
     assert len(found) == 2
     # weak key surfaced as a weakness
     assert any(w.kind == "weak_key" for w in weaknesses)
+
+
+# ---------------- store persistence ----------------
+
+def test_store_upsert_and_read(tmp_path):
+    from wrench.store import Store
+    s = Store(tmp_path / "t.db")
+    c = certs.CertInfo(path="/etc/ssl/a.pem", source="nginx:/etc/nginx/a.conf",
+                       subject="CN=a.example.com", issuer="CN=R3",
+                       not_after=time.time() + 5 * 86400, days_left=5,
+                       sans=["a.example.com"], key_type="RSA", key_bits=2048,
+                       self_signed=False, chain_complete=True,
+                       fingerprint_sha256="AA:BB")
+    s.upsert_cert(c.to_row())
+    rows = s.recent_certs()
+    assert len(rows) == 1
+    assert rows[0]["path"] == "/etc/ssl/a.pem"
+    assert rows[0]["days_left"] == 5
+    assert rows[0]["sans"] == ["a.example.com"]
+    assert rows[0]["chain_complete"] is True
+    assert rows[0]["self_signed"] is False
+    # upsert same path updates in place (no duplicate)
+    c.days_left = 3
+    s.upsert_cert(c.to_row())
+    rows = s.recent_certs()
+    assert len(rows) == 1 and rows[0]["days_left"] == 3
+    s.close()
+
+
+def test_store_recent_certs_sorted_by_expiry(tmp_path):
+    from wrench.store import Store
+    s = Store(tmp_path / "t.db")
+    for path, days in [("/c.pem", 60), ("/a.pem", 2), ("/b.pem", 20), ("/d.pem", None)]:
+        s.upsert_cert(certs.CertInfo(path=path, days_left=days).to_row())
+    order = [r["path"] for r in s.recent_certs()]
+    # ascending days_left, NULLs last
+    assert order == ["/a.pem", "/b.pem", "/c.pem", "/d.pem"]
+    s.close()

@@ -73,6 +73,27 @@ CREATE TABLE IF NOT EXISTS webintel_cache (
     payload TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS certs (
+    path TEXT PRIMARY KEY,
+    ts REAL NOT NULL,
+    source TEXT,
+    subject TEXT,
+    issuer TEXT,
+    serial TEXT,
+    not_before REAL,
+    not_after REAL,
+    days_left INTEGER,
+    sans TEXT,
+    key_type TEXT,
+    key_bits INTEGER,
+    sig_algo TEXT,
+    is_ca INTEGER,
+    self_signed INTEGER,
+    chain_complete INTEGER,
+    fingerprint TEXT,
+    error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS tokens_spent (
     ts REAL NOT NULL,
     provider TEXT NOT NULL,
@@ -254,6 +275,53 @@ class Store:
             dict(provider=r[0], model=r[1], prompt=r[2], completion=r[3], total=r[4], calls=r[5])
             for r in cur.fetchall()
         ]
+
+    # ---- certs ----
+    def upsert_cert(self, row: dict, ts: float | None = None) -> None:
+        """Insert/update one cert inventory row keyed by resolved path."""
+        self.db.execute(
+            "INSERT INTO certs (path, ts, source, subject, issuer, serial, not_before, "
+            "not_after, days_left, sans, key_type, key_bits, sig_algo, is_ca, self_signed, "
+            "chain_complete, fingerprint, error) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(path) DO UPDATE SET ts=excluded.ts, source=excluded.source, "
+            "subject=excluded.subject, issuer=excluded.issuer, serial=excluded.serial, "
+            "not_before=excluded.not_before, not_after=excluded.not_after, "
+            "days_left=excluded.days_left, sans=excluded.sans, key_type=excluded.key_type, "
+            "key_bits=excluded.key_bits, sig_algo=excluded.sig_algo, is_ca=excluded.is_ca, "
+            "self_signed=excluded.self_signed, chain_complete=excluded.chain_complete, "
+            "fingerprint=excluded.fingerprint, error=excluded.error",
+            (
+                row["path"], ts or time.time(), row.get("source"), row.get("subject"),
+                row.get("issuer"), row.get("serial"), row.get("not_before"),
+                row.get("not_after"), row.get("days_left"),
+                json.dumps(row.get("sans") or []), row.get("key_type"),
+                row.get("key_bits"), row.get("sig_algo"),
+                int(bool(row.get("is_ca"))), int(bool(row.get("self_signed"))),
+                (None if row.get("chain_complete") is None else int(bool(row.get("chain_complete")))),
+                row.get("fingerprint_sha256") or row.get("fingerprint"), row.get("error"),
+            ),
+        )
+        self.db.commit()
+
+    def recent_certs(self) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT path, ts, source, subject, issuer, serial, not_before, not_after, "
+            "days_left, sans, key_type, key_bits, sig_algo, is_ca, self_signed, "
+            "chain_complete, fingerprint, error FROM certs ORDER BY "
+            "(days_left IS NULL), days_left"
+        )
+        out = []
+        for r in cur.fetchall():
+            out.append(dict(
+                path=r[0], ts=r[1], source=r[2], subject=r[3], issuer=r[4], serial=r[5],
+                not_before=r[6], not_after=r[7], days_left=r[8],
+                sans=json.loads(r[9] or "[]"), key_type=r[10], key_bits=r[11],
+                sig_algo=r[12], is_ca=bool(r[13]), self_signed=bool(r[14]),
+                chain_complete=(None if r[15] is None else bool(r[15])),
+                fingerprint=r[16], error=r[17],
+            ))
+        return out
 
     # ---- web-intel cache (TTL key-value) ----
     def cache_get(self, key: str, max_age_s: float) -> dict | list | None:
