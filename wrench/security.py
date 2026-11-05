@@ -643,12 +643,22 @@ def listener_inventory() -> list[dict]:
     return sorted(rows, key=lambda r: (r["proto"], r["port"]))
 
 
-def analyze_listeners(current: list[dict], baseline: dict | None) -> tuple[list[Finding], dict]:
-    """Pure: listener rows + baseline {key: label} → (findings, observed)."""
+def analyze_listeners(current: list[dict], baseline: dict | None,
+                      can_resolve_owners: bool | None = None) -> tuple[list[Finding], dict]:
+    """Pure: listener rows + baseline {key: label} → (findings, observed).
+
+    can_resolve_owners: True when the scan can see every socket's owner (root).
+    Then a blank owner is a real "ownerless listener" warning. Non-root scans
+    can't see other users' processes, so blanks collapse into one info notice
+    — but NEW-listener deltas still alarm either way.
+    """
+    if can_resolve_owners is None:
+        can_resolve_owners = getattr(os, "geteuid", lambda: 1)() == 0
     baseline = baseline or {}
     base_keys = set(baseline.get("listeners", {}))
     has_baseline = bool(baseline)
     findings: list[Finding] = []
+    unresolved: list[str] = []
     for row in current:
         label = row.get("process") or "?"
         if has_baseline and row["key"] not in base_keys:
@@ -660,12 +670,23 @@ def analyze_listeners(current: list[dict], baseline: dict | None) -> tuple[list[
                 + " — not in the accepted baseline",
                 {"key": row["key"], "process": label, "unit": row.get("unit", "")}))
         if row.get("ownerless"):
-            findings.append(Finding(
-                "warning", "listeners",
-                f"ownerless listener {row['key']}",
-                f"no process admits to {row.get('addr') or '*'}:{row['port']} "
-                f"(needs root to resolve, or the owner is hiding)",
-                {"key": row["key"]}))
+            if can_resolve_owners:
+                findings.append(Finding(
+                    "warning", "listeners",
+                    f"ownerless listener {row['key']}",
+                    f"no process admits to {row.get('addr') or '*'}:{row['port']} "
+                    f"even with full visibility — investigate",
+                    {"key": row["key"]}))
+            else:
+                unresolved.append(row["key"])
+    if unresolved:
+        findings.append(Finding(
+            "info", "listeners",
+            f"{len(unresolved)} listener(s) with unresolved owner",
+            "running without root — other users' sockets can't be attributed "
+            "(run as root for full ownership); e.g. "
+            + ", ".join(unresolved[:8]),
+            {"keys": unresolved}))
     observed = {"listeners": {r["key"]: (r.get("process") or "") for r in current}}
     return findings, observed
 

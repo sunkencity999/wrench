@@ -1617,6 +1617,205 @@ def blueprint_consent(
 app.add_typer(blueprint_app, name="blueprint")
 
 
+# ---------------- security (watch the doors) ----------------
+
+security_app = typer.Typer(
+    help="🛡️ security watch: auth anomalies, privilege drift, listener "
+         "ownership, CVE matching — read-only, baseline by consent.",
+    no_args_is_help=False, invoke_without_command=True)
+
+_SEC_SEV_STYLE = {"critical": ("bold red", "✖"), "warning": ("yellow", "⚠"),
+                  "info": ("dim", "·")}
+
+
+def _render_security_findings(findings: list[dict]):
+    from rich.table import Table as _T
+    t = _T(title="🛡️ security findings", border_style="bright_blue",
+           show_lines=False)
+    t.add_column("sev", width=9)
+    t.add_column("area", width=9, style="cyan")
+    t.add_column("finding")
+    t.add_column("detail", style="dim", max_width=60)
+    order = {"critical": 0, "warning": 1, "info": 2}
+    for f in sorted(findings, key=lambda x: order.get(x["severity"], 9)):
+        style, icon = _SEC_SEV_STYLE.get(f["severity"], ("white", "?"))
+        t.add_row(Text(f"{icon} {f['severity']}", style=style),
+                  f["category"], f["title"], f.get("detail", ""))
+    return t
+
+
+def _render_listener_table(rows: list[dict]):
+    from rich.table import Table as _T
+    t = _T(title="📡 listening sockets", border_style="bright_blue")
+    t.add_column("socket", style="bold")
+    t.add_column("addr", style="dim")
+    t.add_column("process")
+    t.add_column("unit", style="dim")
+    for r in rows:
+        proc = r.get("process") or "[red]— ownerless —[/red]"
+        t.add_row(r["key"], r.get("addr") or "*", proc, r.get("unit") or "")
+    return t
+
+
+def _security_json(report: dict) -> None:
+    jsonout.emit("security", {
+        "worst": report["worst"],
+        "counts": report["counts"],
+        "baseline_exists": report["baseline_exists"],
+        "baseline_accepted_at": report["baseline_accepted_at"],
+        "findings": report["findings"],
+        "components": report["components"],
+    })
+
+
+@security_app.callback(invoke_without_command=True)
+def security_main(
+    ctx: typer.Context,
+    no_cve: bool = typer.Option(False, "--no-cve",
+                                help="skip the OSV CVE scan (faster, offline-safe)"),
+    refresh_cve: bool = typer.Option(False, "--refresh-cve",
+                                     help="bypass the CVE cache TTL"),
+    no_llm: bool = typer.Option(False, "--no-llm",
+                                help="skip the brain-narrated briefing"),
+    notify: bool = typer.Option(True, "--notify/--no-notify",
+                                help="emit a notification when findings clear the ladder"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+    json_out: bool = JSON_OPT,
+):
+    """Full security scan: auth log + access drift + listeners + CVEs."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import security as sec
+    cfg, store = _ctx(provider, model)
+    if json_out:
+        report = sec.scan(cfg, store, include_cve=not no_cve, force_cve=refresh_cve)
+        if notify:
+            sec.notify_scan(cfg, report)
+        _security_json(report)
+        raise typer.Exit(1 if report["worst"] == "critical" else 0)
+    steps: list[str] = []
+
+    def on_step(kind, detail):
+        console.print(f"  [dim cyan]⚙ {detail}[/dim cyan]")
+
+    console.print("[dim italic]watching the doors — auth log, privilege drift, "
+                  "listeners" + (", CVEs" if not no_cve else "") + "...[/dim italic]")
+    report = sec.scan(cfg, store, include_cve=not no_cve, force_cve=refresh_cve,
+                      on_step=on_step)
+    if notify:
+        sec.notify_scan(cfg, report)
+    rows = report["components"].get("listeners", {}).get("rows", [])
+    if rows:
+        console.print(_render_listener_table(rows))
+    if report["findings"]:
+        console.print(_render_security_findings(report["findings"]))
+    else:
+        console.print("[green]no security findings — the doors are locked and "
+                      "accounted for.[/green]")
+    if not report["baseline_exists"]:
+        console.print(Panel(
+            "[yellow]no accepted baseline yet[/yellow] — deltas (new IPs, new "
+            "listeners, sudoers changes) only alarm once you bless the current "
+            "state:\n  [bold]wrench security accept[/bold]",
+            border_style="yellow", title="baseline"))
+    cve = report["components"].get("cve", {})
+    if cve.get("error"):
+        console.print(f"[dim]{cve['error']}[/dim]")
+
+    if no_llm or not (cfg.api_key or cfg.provider in ("ollama", "lmstudio")):
+        raise typer.Exit(1 if report["worst"] == "critical" else 0)
+    lines = sec.narration_lines(report)
+    client = LLMClient(cfg, store)
+    try:
+        with console.status("[cyan]briefing..."):
+            text = client.chat(
+                [{"role": "system",
+                  "content": "You are wrench, a sysadmin agent speaking in the first "
+                             "person about YOUR machine's security posture. You are "
+                             "shown a security scan: auth-log anomalies, privilege "
+                             "drift, listening sockets, and CVE matches. In 4-8 "
+                             "sentences: triage what actually matters, name the single "
+                             "most urgent action, and say plainly if the box looks "
+                             "clean. You only analyze — you never execute anything. "
+                             "No markdown headers, no filler."},
+                 {"role": "user", "content": "\n".join(lines)}],
+                purpose="security-brief")
+        report_mod = report  # keep name clear
+        from . import report as _report
+        _report.render_answer(console, text, f"{cfg.model} · security brief")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[dim]briefing unavailable ({e}) — the findings stand on "
+                      f"their own[/dim]")
+    raise typer.Exit(1 if report["worst"] == "critical" else 0)
+
+
+@security_app.command("baseline")
+def security_baseline(json_out: bool = JSON_OPT):
+    """Show the accepted baseline (what deltas are measured against)."""
+    from . import security as sec
+    _cfg, store = _ctx()
+    base = sec.baseline_get(store)
+    if json_out:
+        jsonout.emit("security.baseline", {"baseline": base})
+        return
+    if not base:
+        console.print("[yellow]no baseline accepted yet[/yellow] — run "
+                      "[bold]wrench security accept[/bold] to bless the current state")
+        return
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(base.get("accepted_at", 0)))
+    body = [Text(f"accepted {when}", style="dim")]
+    auth = base.get("auth", {})
+    body.append(Text(f"known source IPs: {len(auth.get('known_ips', []))} — "
+                     + ", ".join(auth.get("known_ips", [])[:8])))
+    body.append(Text(f"sudo users: {', '.join(auth.get('sudo_users', [])) or '(none)'}"))
+    acc = base.get("access", {})
+    body.append(Text(f"sudoers files tracked: {len(acc.get('sudoers', {}))}"))
+    body.append(Text(f"authorized_keys users: "
+                     f"{', '.join(sorted(acc.get('authorized_keys', {}))) or '(none)'}"))
+    body.append(Text(f"UID-0 accounts: {', '.join(acc.get('uid0', [])) or 'root'}"))
+    body.append(Text(f"listeners: {len(base.get('listeners', {}))} — "
+                     + ", ".join(sorted(base.get("listeners", {}))[:12])))
+    from rich.console import Group
+    console.print(Panel(Group(*body), border_style="bright_blue",
+                        title="🛡️ security baseline"))
+
+
+@security_app.command("accept")
+def security_accept(
+    yes: bool = typer.Option(False, "--yes", "-y",
+                             help="skip the confirmation prompt (CI use)"),
+):
+    """Bless the CURRENT observed state as the baseline (consent ceremony)."""
+    from . import security as sec
+    cfg, store = _ctx()
+    with console.status("[cyan]observing current state..."):
+        observed = sec.collect_observed(cfg)
+    auth = observed.get("auth", {})
+    acc = observed.get("access", {})
+    summary = (
+        f"known IPs: {len(auth.get('known_ips', []))} · "
+        f"sudo users: {len(auth.get('sudo_users', []))} · "
+        f"sudoers files: {len(acc.get('sudoers', {}))} · "
+        f"authorized_keys users: {len(acc.get('authorized_keys', {}))} · "
+        f"UID-0: {', '.join(acc.get('uid0', [])) or 'root'} · "
+        f"listeners: {len(observed.get('listeners', {}))}")
+    console.print(Panel(
+        Text.assemble(("about to bless the current state as the security baseline\n",
+                       "bold yellow"),
+                      (summary + "\n", "white"),
+                      ("future scans alarm on anything that DIFFERS from this.", "dim")),
+        border_style="yellow", title="consent required"))
+    if not yes and not typer.confirm("accept this baseline?", default=False):
+        console.print("[dim]baseline unchanged.[/dim]")
+        raise typer.Exit(0)
+    sec.baseline_accept(store, observed)
+    console.print("[green]baseline accepted[/green] — deltas now alarm against it.")
+
+
+app.add_typer(security_app, name="security")
+
+
 # ---------------- metrics (Prometheus exporter) ----------------
 
 metrics_app = typer.Typer(
