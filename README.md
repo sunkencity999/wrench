@@ -2,12 +2,12 @@
 
 > **"I'm the sysadmin that lives on your machine. I read the logs so you don't have to. I remember what changed. I explain problems in plain English — and with your permission, I fix them before you ever see them."**
 >
-> ⚡ **Powered by Meta muse models** — `muse-spark-1.3` drives patrols and investigations, `muse-wonder-1.0` handles deep diagnosis — with a **first-class local mode via Ollama** (private + zero cost when your hardware allows), plus OpenAI, Anthropic, LM Studio, and LiteLLM.
+> 🧠 **Bring your own mind.** wrench is a provider-agnostic sysadmin agent: run it on a **fully local brain** ([Ollama](https://ollama.com) or LM Studio — private, free, nothing leaves the box) or on **any API brain** (OpenAI, Anthropic, Meta, Azure, or anything behind LiteLLM). One agent loop, seven doors, no favorites.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-58a6ff?style=flat-square)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macos%20%7C%20windows-39c5cf?style=flat-square)](PLATFORMS.md)
-[![Providers](https://img.shields.io/badge/brain-meta%20%7C%20openai%20%7C%20anthropic%20%7C%20ollama%20%7C%20lmstudio%20%7C%20litellm-bc8cff?style=flat-square)](#the-brain-is-swappable)
+[![Providers](https://img.shields.io/badge/brain-ollama%20%7C%20lmstudio%20%7C%20openai%20%7C%20anthropic%20%7C%20meta%20%7C%20azure%20%7C%20litellm-bc8cff?style=flat-square)](#the-brain-is-swappable)
 [![Policy](https://img.shields.io/badge/default%20policy-read--only-d29922?style=flat-square)](#policy-tiers--the-leash)
 [![Site](https://img.shields.io/badge/site-sunkencity999.github.io%2Fwrench-58a6ff?style=flat-square)](https://sunkencity999.github.io/wrench/)
 
@@ -42,12 +42,12 @@ staff sysadmin on the box itself. It does four things, continuously:
 | 🔔 | **Notify** | When a patrol finds something worth your attention, wrench taps you on the shoulder: a desktop notification, an optional webhook (ntfy / Slack / Discord), a toast on the live dashboard, and a `🔔` banner on your next CLI command. Severity-thresholded, best-effort, never breaks a patrol. |
 | 🛰️ | **Watch the horizon** | `wrench cve` checks installed packages against **[OSV.dev](https://osv.dev)** and the OS/kernel/runtimes against **[endoflife.date](https://endoflife.date)** — free public APIs, no keys. Known CVEs flow into patrols, the dashboard, and `fixxer` (which can apply *targeted* security updates for exactly the affected packages). Results cache locally with a TTL; patrols never fail because the internet is down. |
 
-All of it runs locally, with **Meta's muse models as the default brain**: the
-fast agentic `muse-spark-1.3` for patrols and questions, and the deep-reasoning
-`muse-wonder-1.0` behind `--deep` for the hard cases. The telemetry never
-leaves the box unless *you* point the brain at a cloud model — and you can
-point it at [Ollama](https://ollama.com) instead and keep everything in the
-house.
+All of it runs locally, and **the brain is yours to choose**: point wrench at
+[Ollama](https://ollama.com) or LM Studio and the whole agent — telemetry,
+reasoning, everything — stays in the house, free; or plug in any API provider
+(OpenAI, Anthropic, Meta, Azure, LiteLLM) when you want a bigger mind on the
+case. Your telemetry never leaves the box unless *you* point the brain at a
+cloud model.
 
 ### `wrench status` — the one-glance answer to "are we okay?"
 
@@ -87,8 +87,9 @@ irm https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.
 Then, on any OS:
 
 ```bash
-wrench init                 # write config + record first baselines
-export META_API_KEY=...     # or OPENAI_API_KEY / ANTHROPIC_API_KEY / nothing for ollama
+wrench init                 # pick a brain (local or API), write config, record baselines
+# bringing an API mind? export its key — OPENAI_API_KEY / ANTHROPIC_API_KEY /
+# META_API_KEY / AZURE_OPENAI_API_KEY — or none at all for Ollama / LM Studio
 wrench doctor               # verify sensors, platform capabilities, provider liveness
 wrench status               # one-screen health
 wrench patrol               # send it on its rounds
@@ -341,8 +342,8 @@ I'm going through the box looking for things I can fix myself...
 apply which? [a]ll / [n]one / numbers e.g. 1,3 ▸
 ```
 
-The model (muse, by default) briefs you in plain English on what it found and
-what it would do first — then **you** pick. Each applied fix is verified
+The model briefs you in plain English on what it found and what it would do
+first — then **you** pick. Each applied fix is verified
 (re-measure, not vibes: did the journal actually shrink? are the upgrades
 actually gone?) and reported.
 
@@ -445,23 +446,24 @@ to do about it.*
 
 ## The brain is swappable
 
-`wrench init` opens a provider menu — press enter for Meta's hosted muse
-models, or pick **Ollama** for a first-class private local mode: wrench
-detects your RAM / NVIDIA VRAM / Apple Silicon unified memory, recommends a
-tool-calling-capable model that fits, offers to install Ollama and pull the
-model (always with consent, never silently), and then proves the loop with a
-real tool-calling smoke test before declaring victory. Scripting?
-`wrench init -p <provider> -m <model> --yes`.
+`wrench init` opens a provider menu with local brains first and API brains
+after — no brand is favored. When your hardware can carry a local model,
+wrench says so and recommends **Ollama**: it detects your RAM / NVIDIA VRAM /
+Apple Silicon unified memory, recommends a tool-calling-capable model that
+fits, offers to install Ollama and pull the model (always with consent, never
+silently), and then proves the loop with a real tool-calling smoke test before
+declaring victory. Prefer an API mind? Pick any of them — they're all
+first-class. Scripting? `wrench init -p <provider> -m <model> --yes`.
 
 ```bash
-wrench patrol                          # Meta Muse (default): muse-spark-1.3
-wrench patrol --deep                   # muse-wonder-1.0 for the hard cases
 wrench ask -p ollama -m qwen2.5:7b "…"  # fully local, nothing leaves the box
+wrench ask -p lmstudio "…"             # or LM Studio (also fully local)
 wrench ask -p openai "…"               # or OpenAI
 wrench ask -p anthropic "…"            # or Anthropic (native adapter)
+wrench ask -p meta "…"                 # or Meta's muse models
 wrench ask -p azure "…"                # or Azure OpenAI / AI Foundry (enterprise)
-wrench ask -p lmstudio "…"             # or LM Studio
 wrench ask -p litellm "…"              # or anything behind a LiteLLM proxy
+wrench patrol --deep                   # your provider's deep model for hard cases
 ```
 
 One agent loop, seven doors. Tool calling uses a strict JSON protocol instead of
@@ -471,7 +473,7 @@ local models — drives the same tools.
 Setup per provider:
 
 <details>
-<summary>Meta (default)</summary>
+<summary>Meta muse models</summary>
 
 ```bash
 export META_API_KEY=...        # or api_key_file in config
@@ -571,9 +573,10 @@ Base URLs and models remain overridable in `config.toml` or via
 Keys come from env (`META_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, …) or an `api_key_file`
 path in the config; they are never logged, and never stored in the database.
 
-## Which muse model should I pick?
+## Benchmarks: the muse models, measured
 
-We benchmarked both muse models on an 18-case sysadmin-reasoning gauntlet —
+If you bring Meta's muse models as your mind, which one? We benchmarked both
+on an 18-case sysadmin-reasoning gauntlet —
 log triage from real-looking journald excerpts, CVE severity calls from
 OSV-style advisories, fixxer-style "what's safe to auto-apply" judgment, and
 config-file diagnosis. The battery lives in [`evals/`](evals/) so you can
@@ -590,7 +593,7 @@ re-run it yourself ([full results + methodology](evals/results.md)).
 
 Honest read of the numbers:
 
-- **`muse-spark-1.3` (the default) is the right default.** Its two misses
+- **`muse-spark-1.3` is the right everyday pick.** Its two misses
   were both in the *cautious* direction — it omitted a detail (the attacker
   IP) once, and once refused to call even targeted security updates
   auto-applicable. For a consent-gated agent, failing cautious is fine.
@@ -752,14 +755,15 @@ with the default fast model, a patrol on the dev box runs tens of thousands of
 tokens — pennies on cloud providers, free on Ollama. The dashboard has a
 token-spend widget so the cost is never a mystery.
 
-## Built for the Meta hackathon
+## Origins
 
-wrench was built for the Meta Llama hackathon (2026) and is **Meta-powered
-end to end by default**: every patrol, ask, explain, demo transcript, and GIF
-in this repo was generated through the Meta Model API (`muse-spark-1.3` /
-`muse-wonder-1.0`). Parts of this README's humor were drafted by
-`muse-wonder-1.0`, which makes it possibly the first README that is also a
-demo artifact.
+wrench was born at the Meta Llama hackathon (2026), which is why the early
+demo transcripts, GIFs, and eval runs in this repo were generated through the
+Meta Model API (`muse-spark-1.3` / `muse-wonder-1.0`) — and why parts of this
+README's humor were drafted by a muse model. The project has since grown into
+what it always wanted to be: a **bring-your-own-mind** sysadmin agent. Every
+provider — local or API — drives the exact same agent loop, tools, and safety
+rails; none gets special treatment.
 
 ## License
 

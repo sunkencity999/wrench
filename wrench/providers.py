@@ -1,6 +1,6 @@
 """Unified LLM client for wrench.
 
-One client, seven doors: meta (default), openai, ollama, lmstudio, litellm speak
+One client, seven doors: ollama, lmstudio, openai, meta, litellm speak
 OpenAI-compatible chat completions; anthropic gets a native adapter; azure gets
 an Azure OpenAI / AI Foundry adapter (deployment URLs, api-version query,
 api-key header). Every call logs token usage to the store (if given one) so

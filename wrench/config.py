@@ -177,7 +177,7 @@ DEFAULT_CONFIG_TOML = """\
 # or set api_key_file below to point at a file containing the key.
 
 [provider]
-name = "{provider}"  # meta | openai | anthropic | azure | ollama | lmstudio | litellm
+name = "{provider}"  # ollama | lmstudio | openai | anthropic | meta | azure | litellm
 
 [{provider}]
 # base_url = "{base_url}"

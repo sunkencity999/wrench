@@ -12,13 +12,14 @@
       label: "1 · wrench init",
       cmd: "wrench init",
       out: [
-        { t: "🔧 choose your model provider", cls: "c-acc" },
-        { t: "  1  meta (default)   Meta muse models — hosted", cls: "" },
-        { t: "  2  openai           OpenAI", cls: "c-dim" },
-        { t: "  3  anthropic        Anthropic Claude", cls: "c-dim" },
-        { t: "  4  ollama           local — private + free, guided setup", cls: "" },
-        { t: "  5  lmstudio         LM Studio · 6  litellm  LiteLLM proxy", cls: "c-dim" },
-        { t: "provider [1-6 or name]: ⏎   → meta", cls: "c-cyan" },
+        { t: "🔧 bring your own mind — choose a model provider", cls: "c-acc" },
+        { t: "  1  ollama (recommended for this box)   local & private — guided, no API key", cls: "" },
+        { t: "  2  lmstudio         local — LM Studio server", cls: "c-dim" },
+        { t: "  3  openai           API · 4  anthropic  API · 5  meta  API", cls: "c-dim" },
+        { t: "  6  azure            API · 7  litellm    API proxy", cls: "c-dim" },
+        { t: "detected 64 GB RAM · 24 GB NVIDIA VRAM — a local model will run well here", cls: "c-dim" },
+        { t: "provider [1-7 or name]: ⏎   → ollama", cls: "c-cyan" },
+        { t: "recommended model: qwen3:30b (~19 GB) — pulled with consent, tool-calling smoke test ✓", cls: "c-cyan" },
         { t: "wrote ~/.config/wrench/config.toml", cls: "c-ok" },
         { t: "recording first sensor sample + drift baseline...", cls: "c-dim" },
         { t: "╭──────────────────── 🔧 wrench initialized ────────────────────╮", cls: "c-ok" },
@@ -27,11 +28,11 @@
         { t: "│ changes on this box, and with your permission I fix problems │", cls: "c-ok" },
         { t: "│ before you ever see them.                                     │", cls: "c-ok" },
         { t: "│                                                               │", cls: "c-ok" },
-        { t: "│ provider: meta · model: muse-spark-1.3 · policy: suggest      │", cls: "c-ok" },
+        { t: "│ provider: ollama · model: qwen3:30b · policy: suggest         │", cls: "c-ok" },
         { t: "│ data: ~/.local/share/wrench/wrench.db                         │", cls: "c-ok" },
         { t: "│ put me to work: doctor · patrol · fixxer · web                │", cls: "c-ok" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
-        { t: "wrench now knows what \"normal\" looks like. (Option 4 runs a guided local setup: it detects your RAM/GPU, recommends a tool-calling model, pulls it with consent, and smoke-tests the loop.)", cls: "c-dim", note: true }
+        { t: "wrench now knows what \"normal\" looks like — and nothing left the box. Any brain works through the same agent loop: fully local (Ollama, LM Studio) or any API (OpenAI, Anthropic, Meta, Azure, LiteLLM). No favorites.", cls: "c-dim", note: true }
       ]
     },
     {
@@ -80,7 +81,7 @@
       label: "4 · wrench patrol",
       cmd: "wrench patrol",
       out: [
-        { t: "I'm on patrol — sweeping sensors, drift, and logs (muse-spark-1.3, tier: suggest)...", cls: "c-dim" },
+        { t: "I'm on patrol — sweeping sensors, drift, and logs (qwen3:30b, tier: suggest)...", cls: "c-dim" },
         { t: "  ⚙ run_diag {\"command\": \"systemctl --user list-units --state=failed\"}", cls: "c-cyan" },
         { t: "  ⚙ read_logs {\"unit\": \"smartd\", \"lines\": 60}", cls: "c-cyan" },
         { t: "  ⚙ run_diag {\"command\": \"smartctl -H /dev/sda\"}", cls: "c-cyan" },
@@ -130,7 +131,7 @@
         { t: "│ 2 fixed + verified                                            │", cls: "c-ok" },
         { t: "│ every action is in the audit log: fixxer_audit.jsonl          │", cls: "c-ok" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
-        { t: "The fixes are real; the authorship is the point. Every command came from a hand-written, risk-tiered catalog — the model (muse-spark) explains and recommends, it never writes the shell. For self-healing boxes, `wrench fixxer --auto` applies safe-tier fixes unattended — after an explicit consent ceremony, with every action audited. `--dry-run` shows what it would do.", cls: "c-dim", note: true }
+        { t: "The fixes are real; the authorship is the point. Every command came from a hand-written, risk-tiered catalog — the model explains and recommends, it never writes the shell. For self-healing boxes, `wrench fixxer --auto` applies safe-tier fixes unattended — after an explicit consent ceremony, with every action audited. `--dry-run` shows what it would do.", cls: "c-dim", note: true }
       ]
     },
     {

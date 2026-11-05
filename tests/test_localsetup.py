@@ -148,20 +148,25 @@ def test_smoke_test_fails_on_provider_error():
 
 # ---------------- init menu flow (mocked TTY) ----------------
 
-def test_choose_provider_default_enter_is_meta():
+def test_choose_provider_default_enter_is_ollama():
+    """Enter = first row = ollama (local-first, no brand favoritism)."""
     from wrench import cli
     with mock.patch("typer.prompt", return_value="1"):
-        assert cli._choose_provider() == "meta"
+        assert cli._choose_provider() == "ollama"
 
 
 @pytest.mark.parametrize("entry,expected", [
-    ("5", "ollama"),
+    ("1", "ollama"),
     ("ollama", "ollama"),
-    ("4", "azure"),
-    ("azure", "azure"),
-    ("2", "openai"),
+    ("2", "lmstudio"),
+    ("3", "openai"),
     ("ANTHROPIC", "anthropic"),
-    ("garbage", "meta"),   # unknown input falls back to meta with a warning
+    ("5", "meta"),
+    ("meta", "meta"),
+    ("6", "azure"),
+    ("azure", "azure"),
+    ("7", "litellm"),
+    ("garbage", "ollama"),   # unknown input falls back to local with a warning
 ])
 def test_choose_provider_entries(entry, expected):
     from wrench import cli
@@ -170,7 +175,7 @@ def test_choose_provider_entries(entry, expected):
 
 
 def test_init_non_interactive_defaults_to_meta(tmp_path, monkeypatch, capsys):
-    """No TTY → meta default + note, no menu, no prompt."""
+    """No TTY → documented functional fallback (meta) + neutral note, no menu."""
     from typer.testing import CliRunner
     from wrench import cli
     monkeypatch.setenv("WRENCH_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -187,7 +192,7 @@ def test_init_non_interactive_defaults_to_meta(tmp_path, monkeypatch, capsys):
         result = CliRunner().invoke(cli.app, ["init"])
     assert result.exit_code == 0, result.output
     menu.assert_not_called()
-    assert "defaulting to the meta provider" in result.output
+    assert "functional" in result.output and "fallback" in result.output
     assert (cfgdir / "config.toml").exists()
     assert 'name = "meta"' in (cfgdir / "config.toml").read_text()
 

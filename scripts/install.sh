@@ -37,7 +37,7 @@ if command -v wrench >/dev/null 2>&1; then
   say "installed: $(wrench version)"
   # curl|bash pipes stdin, so talk to the real terminal when one exists
   if [ -t 1 ] && [ -r /dev/tty ] && [ -z "${CI:-}" ]; then
-    printf '\033[1;34m[wrench]\033[0m set up now? Pick a provider — Meta (default, hosted) or fully local via Ollama. [Y/n] '
+    printf '\033[1;34m[wrench]\033[0m set up now? Bring your own mind — fully local via Ollama, or any API provider. [Y/n] '
     read -r reply < /dev/tty || reply="n"
     case "$reply" in
       [Nn]*) say "later, then: wrench init && wrench doctor && wrench patrol" ;;
@@ -45,7 +45,7 @@ if command -v wrench >/dev/null 2>&1; then
     esac
   else
     say "next: wrench init && wrench doctor && wrench patrol"
-    say "(wrench init shows an interactive provider menu — Meta hosted by default, or local + private via Ollama)"
+    say "(wrench init shows an interactive provider menu — local + private via Ollama/LM Studio, or any API brain: OpenAI, Anthropic, Meta, Azure, LiteLLM)"
   fi
 else
   say "installed, but 'wrench' is not on PATH yet."

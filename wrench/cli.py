@@ -56,7 +56,7 @@ def _confirm(command: str, label: str) -> bool:
 
 
 PROVIDER_OPT = typer.Option(None, "--provider", "-p",
-                            help="meta|openai|anthropic|azure|ollama|lmstudio|litellm")
+                            help="ollama|lmstudio|openai|anthropic|meta|azure|litellm")
 MODEL_OPT = typer.Option(None, "--model", "-m", help="model override")
 
 
@@ -320,13 +320,13 @@ def explain(
 
 
 PROVIDER_MENU = [
-    ("meta", "Meta muse models — hosted, default"),
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic Claude"),
-    ("azure", "Azure OpenAI / AI Foundry — enterprise"),
-    ("ollama", "Ollama — local, private + free, guided setup"),
-    ("lmstudio", "LM Studio — local server"),
-    ("litellm", "LiteLLM — proxy to anything"),
+    ("ollama", "local & private — guided setup, no API key needed"),
+    ("lmstudio", "local — LM Studio server"),
+    ("openai", "API — OpenAI"),
+    ("anthropic", "API — Anthropic Claude"),
+    ("meta", "API — Meta muse models"),
+    ("azure", "API — Azure OpenAI / AI Foundry"),
+    ("litellm", "API — anything behind a LiteLLM proxy"),
 ]
 
 
@@ -338,16 +338,41 @@ def _isatty() -> bool:
         return False
 
 
+def _local_hardware_hint() -> str | None:
+    """Best-effort: describe the local hardware if it can comfortably run a
+    local model. Returns None when detection fails or hardware is minimal."""
+    try:
+        from . import localsetup
+        res = localsetup.detect_resources()
+        if res.ram_gb >= 8 or (res.vram_gb or 0) >= 8 or res.apple_silicon:
+            hw = f"{res.ram_gb:.0f} GB RAM"
+            if res.vram_gb:
+                hw += f" · {res.vram_gb:.0f} GB NVIDIA VRAM"
+            if res.apple_silicon:
+                hw += " · Apple Silicon"
+            return hw
+    except Exception:
+        pass
+    return None
+
+
 def _choose_provider() -> str:
-    """Interactive provider menu. Enter = meta."""
-    t = Table(title="🔧 choose your model provider", border_style="bright_blue",
-              show_header=False, pad_edge=True)
+    """Interactive provider menu — bring your own mind. Local brains first,
+    API brains after; no brand is favored. Enter = the first row (ollama),
+    flagged as recommended when the hardware can carry a local model."""
+    hw = _local_hardware_hint()
+    t = Table(title="🔧 bring your own mind — choose a model provider",
+              border_style="bright_blue", show_header=False, pad_edge=True)
     t.add_column(justify="right", style="bold cyan")
     t.add_column(style="bold")
     t.add_column(style="dim")
     for i, (name, blurb) in enumerate(PROVIDER_MENU, 1):
-        t.add_row(str(i), name + (" (default)" if name == "meta" else ""), blurb)
+        tag = " (recommended for this box)" if name == "ollama" and hw else ""
+        t.add_row(str(i), name + tag, blurb)
     console.print(t)
+    if hw:
+        console.print(f"[dim]detected {hw} — a local model will run well here; "
+                      "nothing would ever leave the box.[/dim]")
     raw = typer.prompt(f"provider [1-{len(PROVIDER_MENU)} or name]",
                        default="1", show_default=False).strip().lower()
     names = [n for n, _ in PROVIDER_MENU]
@@ -355,8 +380,8 @@ def _choose_provider() -> str:
         return names[int(raw) - 1]
     if raw in names:
         return raw
-    console.print(f"[yellow]unknown choice {raw!r} — using meta[/yellow]")
-    return "meta"
+    console.print(f"[yellow]unknown choice {raw!r} — using ollama (local)[/yellow]")
+    return "ollama"
 
 
 def _ollama_guided_setup(interactive: bool, assume_yes: bool,
@@ -529,7 +554,7 @@ def _azure_guided_setup(interactive: bool,
 @app.command()
 def init(
     provider: str = typer.Option(None, "--provider", "-p",
-                                 help="meta|openai|anthropic|azure|ollama|lmstudio|litellm "
+                                 help="ollama|lmstudio|openai|anthropic|meta|azure|litellm "
                                       "(omit for interactive menu)"),
     model: str = typer.Option(None, "--model", "-m", help="model tag override"),
     azure_endpoint: str = typer.Option(None, "--azure-endpoint",
@@ -554,9 +579,10 @@ def init(
             provider = _choose_provider()
         else:
             provider = "meta"
-            console.print("[dim]no TTY — defaulting to the meta provider. "
-                          "Re-run `wrench init --force` in a terminal for the menu, or use "
-                          "`wrench init -p <provider> --force`.[/dim]")
+            console.print("[dim]no TTY — using the hosted 'meta' provider as a functional "
+                          "fallback. Any brain works: re-run `wrench init --force` in a "
+                          "terminal for the menu, or script it with `wrench init -p "
+                          "<provider>` (e.g. `-p ollama` for fully local).[/dim]")
     provider = provider.lower()
     from .config import PROVIDER_DEFAULTS
     if provider not in PROVIDER_DEFAULTS:
