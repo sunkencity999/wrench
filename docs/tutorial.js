@@ -17,8 +17,9 @@
         { t: "  2  lmstudio         local — LM Studio server", cls: "c-dim" },
         { t: "  3  openai           API · 4  anthropic  API · 5  meta  API", cls: "c-dim" },
         { t: "  6  azure            API · 7  litellm    API proxy", cls: "c-dim" },
+        { t: "  8  custom           any OpenAI-compatible endpoint (vLLM, llama.cpp, TGI, your own server)", cls: "c-dim" },
         { t: "detected 64 GB RAM · 24 GB NVIDIA VRAM — a local model will run well here", cls: "c-dim" },
-        { t: "provider [1-7 or name]: ⏎   → ollama", cls: "c-cyan" },
+        { t: "provider [1-8 or name]: ⏎   → ollama", cls: "c-cyan" },
         { t: "recommended model: qwen3:30b (~19 GB) — pulled with consent, tool-calling smoke test ✓", cls: "c-cyan" },
         { t: "wrote ~/.config/wrench/config.toml", cls: "c-ok" },
         { t: "recording first sensor sample + drift baseline...", cls: "c-dim" },
@@ -32,7 +33,7 @@
         { t: "│ data: ~/.local/share/wrench/wrench.db                         │", cls: "c-ok" },
         { t: "│ put me to work: doctor · patrol · fixxer · web                │", cls: "c-ok" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
-        { t: "wrench now knows what \"normal\" looks like — and nothing left the box. Any brain works through the same agent loop: fully local (Ollama, LM Studio) or any API (OpenAI, Anthropic, Meta, Azure, LiteLLM). No favorites.", cls: "c-dim", note: true }
+        { t: "wrench now knows what \"normal\" looks like — and nothing left the box. Any brain works through the same agent loop: fully local (Ollama, LM Studio) or any API (OpenAI, Anthropic, Meta, Azure, LiteLLM, or any OpenAI-compatible endpoint via custom). No favorites.", cls: "c-dim", note: true }
       ]
     },
     {

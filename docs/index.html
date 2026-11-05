@@ -76,6 +76,11 @@ a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:under
 section { padding:2.8rem 0; }
 h2 { font-size:1.1rem; text-transform:uppercase; letter-spacing:.14em; color:var(--dim);
   text-align:center; margin-bottom:1.6rem; }
+.arc-head { text-align:center; font-size:.82rem; text-transform:uppercase; letter-spacing:.2em;
+  color:var(--accent); margin:2rem 0 1rem; font-weight:600; }
+.arc-head:first-of-type { margin-top:.4rem; }
+.arc-head .sub { display:block; text-transform:none; letter-spacing:0; color:var(--dim);
+  font-size:.8rem; font-weight:400; margin-top:.3rem; }
 .lead { text-align:center; color:var(--dim); max-width:680px; margin:-0.8rem auto 1.6rem; font-size:.9rem; }
 .lead b, .lead code { color:var(--fg); }
 .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
@@ -191,17 +196,19 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
 <div class="hero"><div class="gear"></div><div class="gear g2"></div><div class="wrap">
   <div class="tool">🔧</div>
   <h1>Nobody is watching your machine.<br>Now something is<span class="blink">▌</span></h1>
-  <p class="sub">Disks fill silently. Services die at 3 a.m. Configs drift. When something finally
-     breaks, you reconstruct history from scraps. <b>wrench</b> is an AI sysadmin that lives on the
-     box — in its own words: <i>"I read the logs so you don't have to. I remember what changed.
-     And with your permission, I fix problems before you ever see them."</i></p>
+  <p class="sub"><b>wrench</b> is an intentional sysadmin agent that lives on the box: <b>senses</b> +
+     <b>memory</b> + a <b>bring-your-own-mind brain</b> + <b>consent-gated hands</b>. It
+     <b>sees</b> the machine, <b>predicts</b> what's coming, <b>proves</b> what happened,
+     <b>fixes</b> what it can — with your permission — and <b>scales</b> to a fleet. In its own
+     words: <i>"I read the logs so you don't have to. I remember what changed. And with your
+     permission, I fix problems before you ever see them."</i></p>
   <div class="ctas">
     <a class="btn primary" href="#tutorial">▶ Try the 60-second tour</a>
     <a class="btn" href="https://github.com/sunkencity999/wrench">View on GitHub</a>
     <a class="btn" href="#install">Install</a>
   </div>
   <p class="platbadge">🧠 <b>bring your own mind</b> — fully local via Ollama / LM Studio,
-    or any API brain: OpenAI · Anthropic · Meta · Azure · LiteLLM<br>
+    or any API brain: OpenAI · Anthropic · Meta · Azure · LiteLLM · any OpenAI-compatible endpoint<br>
     runs on <b>Linux</b> · <b>macOS</b> · <b>Windows</b> — read-only by default ·
     MIT · local SQLite (<a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">support matrix</a>)</p>
 </div></div>
@@ -223,6 +230,7 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
 
 <section><div class="wrap">
   <h2>What wrench does instead</h2>
+    <h3 class="arc-head">SEE<span class="sub">watch the box, right now — read-only</span></h3>
   <div class="cards">
     <div class="card"><span class="ico">📡</span><h3>Sense</h3>
       <p>CPU, memory, disks, network, processes, Docker, GPU — sampled into a local SQLite
@@ -241,23 +249,6 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       <p>On a schedule, wrench reviews sensors, anomalies, and drift; investigates; and files a
       report you'll actually read: <b>ok / attention / critical</b>, findings with evidence, exact
       fixes. Terminal, styled HTML, and dashboard — same facts everywhere.</p></div>
-    <div class="card"><span class="ico">🔧</span><h3>Fix</h3>
-      <p><code>wrench fixxer</code> finds what's correctable — pending updates, orphaned packages,
-      fat logs, bloated caches, failed services — and applies the fixes <b>you pick</b>, verifying
-      each one. Every command comes from a <b>hand-written catalog</b>; the model explains and
-      recommends, it never writes the shell. Consent-gated auto mode for self-healing boxes.</p></div>
-    <div class="card"><span class="ico">🛰️</span><h3>Watch the horizon</h3>
-      <p><code>wrench cve</code> checks your installed packages against <b>OSV.dev</b> and your
-      OS/kernel/runtimes against <b>endoflife.date</b> — free public APIs, no keys. Known CVEs
-      land in patrols and the dashboard; <code>fixxer</code> can apply <b>targeted security
-      updates</b> for exactly the affected packages. Cached locally; patrols never fail offline.</p></div>
-    <div class="card"><span class="ico">🔐</span><h3>Guard the certs</h3>
-      <p><code>wrench certs</code> finds every TLS certificate — scanning
-      <b>nginx / apache / caddy / haproxy</b> configs and the well-known stores — and parses each
-      with openssl (expiry, SANs, issuer, key strength, chain). Patrols page you up an
-      <b>expiry ladder</b> (30d → 14d → 7d/expired) and flag weak TLS. <code>wrench certs renew</code>
-      rotates certs via <b>certbot/acme.sh</b>, dry-run first, chain-validated, service reloaded —
-      consent-gated, never model-authored shell.</p></div>
     <div class="card"><span class="ico">🛡️</span><h3>Watch the doors</h3>
       <p><code>wrench security</code> watches the ways in: <b>auth-log anomalies</b>
       (brute-force bursts, a success right after a burst, logins from never-seen IPs, new sudo
@@ -267,6 +258,9 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       <b>read-only</b>; a baseline is blessed only by explicit <code>security accept</code>, and the
       OSV scan <b>fails soft</b> offline. Findings land in patrols, <code>--json</code>
       (<code>wrench.security.v1</code>), and Prometheus gauges.</p></div>
+  </div>
+  <h3 class="arc-head">PREDICT<span class="sub">see the incident coming</span></h3>
+  <div class="cards">
     <div class="card"><span class="ico">🔮</span><h3>See it coming</h3>
       <p><code>wrench forecast</code> runs a <b>least-squares trend engine</b> over the sensor
       history the box already records — disk per mount, <b>inodes</b>, memory, swap,
@@ -275,21 +269,21 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       lead-time ladder (≤14d info → ≤7d warning → ≤3d critical). Confidence comes from R² and
       history depth; the trend math is code, <b>never the model's guess</b>. Feeds patrols,
       <code>--json</code> (<code>wrench.forecast.v1</code>), and Prometheus gauges.</p></div>
-    <div class="card"><span class="ico">🧰</span><h3>Trust your backups</h3>
-      <p><code>wrench backups</code> finds the backup jobs the box <b>actually has</b> — crontabs,
-      systemd timers, wrapper scripts followed to the real tool (borg, restic, rsync, pg_dump,
-      mysqldump…) — then climbs a <b>verification ladder</b>: did it run on its own cadence, does
-      the repository answer (read-only), and optionally a <b>consent-gated restore proof</b>
-      (<code>--restore-test</code>). Zero detected jobs is a <b>warning, not a shrug</b>. Untested
-      backups don't exist. <code>--json</code> (<code>wrench.backups.v1</code>) + Prometheus
-      freshness gauges included.</p></div>
-    <div class="card"><span class="ico">📐</span><h3>Blueprint the configs</h3>
-      <p><code>wrench blueprint "harden sshd"</code> — the brain drafts the change as a
-      <b>unified diff against your real files</b>; it never runs a command. Code validates with the
-      daemon's <b>own checker</b> (<code>nginx -t</code>, <code>sshd -t</code>, <code>visudo -c</code>…),
-      backs up, applies, reloads via allowlisted verbs, health-probes — and <b>auto-rolls-back</b>
-      on any failure. Dry-run by default, consent-gated, denylist-protected
-      (never passwd/shadow/sudoers-direct), every application a labeled drift snapshot.</p></div>
+    <div class="card"><span class="ico">🔐</span><h3>Guard the certs</h3>
+      <p><code>wrench certs</code> finds every TLS certificate — scanning
+      <b>nginx / apache / caddy / haproxy</b> configs and the well-known stores — and parses each
+      with openssl (expiry, SANs, issuer, key strength, chain). Patrols page you up an
+      <b>expiry ladder</b> (30d → 14d → 7d/expired) and flag weak TLS. <code>wrench certs renew</code>
+      rotates certs via <b>certbot/acme.sh</b>, dry-run first, chain-validated, service reloaded —
+      consent-gated, never model-authored shell.</p></div>
+    <div class="card"><span class="ico">🛰️</span><h3>Watch the horizon</h3>
+      <p><code>wrench cve</code> checks your installed packages against <b>OSV.dev</b> and your
+      OS/kernel/runtimes against <b>endoflife.date</b> — free public APIs, no keys. Known CVEs
+      land in patrols and the dashboard; <code>fixxer</code> can apply <b>targeted security
+      updates</b> for exactly the affected packages. Cached locally; patrols never fail offline.</p></div>
+  </div>
+  <h3 class="arc-head">PROVE<span class="sub">evidence, not vibes</span></h3>
+  <div class="cards">
     <div class="card"><span class="ico">🧾</span><h3>Prove what happened</h3>
       <p><code>wrench audit</code> seals every consequential act — consent grants &amp; denials,
       fixxer applies, blueprint applies/rollbacks, cert renewals, security baseline accepts,
@@ -300,6 +294,32 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       (<code>--override-window</code> needs consent and is itself audited), and <b>webhook approvals</b>
       — a single-use token POSTed to Slack/Teams, approved out-of-band with <code>wrench approve</code>.
       <code>--json</code> (<code>wrench.audit.v1</code>) + Prometheus gauges. All three default <b>OFF</b>.</p></div>
+    <div class="card"><span class="ico">🧰</span><h3>Trust your backups</h3>
+      <p><code>wrench backups</code> finds the backup jobs the box <b>actually has</b> — crontabs,
+      systemd timers, wrapper scripts followed to the real tool (borg, restic, rsync, pg_dump,
+      mysqldump…) — then climbs a <b>verification ladder</b>: did it run on its own cadence, does
+      the repository answer (read-only), and optionally a <b>consent-gated restore proof</b>
+      (<code>--restore-test</code>). Zero detected jobs is a <b>warning, not a shrug</b>. Untested
+      backups don't exist. <code>--json</code> (<code>wrench.backups.v1</code>) + Prometheus
+      freshness gauges included.</p></div>
+  </div>
+  <h3 class="arc-head">FIX<span class="sub">with your permission — consent-gated, auto-rollback</span></h3>
+  <div class="cards">
+    <div class="card"><span class="ico">🔧</span><h3>Fix</h3>
+      <p><code>wrench fixxer</code> finds what's correctable — pending updates, orphaned packages,
+      fat logs, bloated caches, failed services — and applies the fixes <b>you pick</b>, verifying
+      each one. Every command comes from a <b>hand-written catalog</b>; the model explains and
+      recommends, it never writes the shell. Consent-gated auto mode for self-healing boxes.</p></div>
+    <div class="card"><span class="ico">📐</span><h3>Blueprint the configs</h3>
+      <p><code>wrench blueprint "harden sshd"</code> — the brain drafts the change as a
+      <b>unified diff against your real files</b>; it never runs a command. Code validates with the
+      daemon's <b>own checker</b> (<code>nginx -t</code>, <code>sshd -t</code>, <code>visudo -c</code>…),
+      backs up, applies, reloads via allowlisted verbs, health-probes — and <b>auto-rolls-back</b>
+      on any failure. Dry-run by default, consent-gated, denylist-protected
+      (never passwd/shadow/sudoers-direct), every application a labeled drift snapshot.</p></div>
+  </div>
+  <h3 class="arc-head">SCALE<span class="sub">many machines, wired into your stack</span></h3>
+  <div class="cards">
     <div class="card"><span class="ico">🔧</span><h3>Fleet mode — many nodes, one view</h3>
       <p>The home→enterprise jump. Any wrench install run as <code>wrench fleet serve</code> is a
       <b>hub</b>; any install with a <code>[fleet]</code> token is a <b>node</b> that pushes a
@@ -461,7 +481,10 @@ wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 mi
       live tool-calling smoke test — private + free. Or pick any API brain as an equal citizen:
       OpenAI, Anthropic, Meta muse models, LiteLLM — and for enterprise shops,
       <strong>Azure OpenAI / AI Foundry</strong> (classic deployment endpoints and Foundry
-      serverless, native <code>api-key</code> auth: <code>wrench init -p azure</code>).</p>
+      serverless, native <code>api-key</code> auth: <code>wrench init -p azure</code>). Running
+      your own server? The <strong><code>custom</code></strong> provider points wrench at any
+      <strong>OpenAI-compatible endpoint</strong> (vLLM, llama.cpp, TGI, a FastAPI shim) — API key
+      optional for keyless internal gateways.</p>
     <p class="tabnote">Linux is tested end-to-end on real hardware; macOS/Windows branches are
       implemented + unit-tested, pending native smoke tests —
       <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">full support matrix</a>.
