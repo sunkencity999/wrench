@@ -9,6 +9,8 @@ Endpoints:
   /api/actions      action log
   /api/tokens       token spend by model
   /api/webintel     cached CVE/EOL scan
+  /api/notifications          unread patrol notifications (toast funnel)
+  POST /api/notifications/read  mark notifications read ({"ids": [...] } or all)
   POST /api/chat    talk to the agent (same loop as `wrench chat`)
 
 Security posture: binds 127.0.0.1 by default; /api/chat additionally enforces
@@ -21,8 +23,10 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
+from . import notifications
 from .store import Store
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -78,6 +82,18 @@ svg text { font:10px ui-monospace,monospace; fill:var(--dim); }
 .tokens-row:last-child { border:none; }
 .big { font-size:1.6rem; font-weight:bold; color:var(--mag); }
 details summary { cursor:pointer; color:var(--accent); font-size:.8rem; }
+
+/* ---- notification toasts ---- */
+#toasts { position:fixed; top:1rem; right:1rem; z-index:70; display:flex;
+  flex-direction:column; gap:.6rem; max-width:340px; }
+.toast { background:var(--panel); border:1px solid var(--border);
+  border-left:4px solid var(--warn); border-radius:10px; padding:.7rem .9rem;
+  font-size:.85rem; box-shadow:var(--shadow); cursor:pointer;
+  animation:toast-in .25s ease-out; transition:opacity .5s; }
+.toast.critical, .toast.error { border-left-color:var(--crit); }
+.toast .when { color:var(--dim); font-size:.72rem; margin-top:.3rem; }
+.toast.fade { opacity:0; }
+@keyframes toast-in { from { opacity:0; transform:translateX(24px); } to { opacity:1; } }
 details pre { white-space:pre-wrap; font-size:.75rem; color:var(--dim);
   margin-top:.5rem; max-height:260px; overflow-y:auto; }
 footer { color:var(--dim); font-size:.75rem; margin-top:1.4rem; text-align:center; }
@@ -160,6 +176,7 @@ a { color:var(--accent); }
 <footer>wrench — an intentional local sysadmin agent ·
 <a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a></footer>
 
+<div id="toasts" aria-live="polite"></div>
 <button id="chat-fab" title="chat with wrench (c)">🔧</button>
 <div id="chat-panel" role="dialog" aria-label="chat with wrench">
   <div id="chat-head"><span>🔧</span><div><div class="t">wrench</div>
@@ -237,7 +254,7 @@ async function refresh() {
       chart('load 1m', tl.map(s=>[s.ts, s.load_1m||0]), 'var(--warn)', '');
 
     $('patrols').innerHTML = patrols.length ? patrols.map(p => `
-      <div class="feed-item"><span class="badge ${esc(p.status)}">${esc(p.status)}</span>${esc(p.summary)}
+      <div class="feed-item" data-ts="${p.ts}"><span class="badge ${esc(p.status)}">${esc(p.status)}</span>${esc(p.summary)}
       <div class="when">${ago(p.ts)} · ${esc(p.model||'')} · ${p.tokens} tok</div>
       <details><summary>full report</summary><pre>${esc(p.report_md)}</pre></details></div>`).join('')
       : '<div class="feed-item dim">no patrols yet — run <b>wrench patrol</b></div>';
@@ -275,8 +292,46 @@ async function refresh() {
       + tokens.map(t => `<div class="tokens-row"><span>${esc(t.provider)}/${esc(t.model)}</span>
         <span>${t.total.toLocaleString()} <span class="dim">(${t.calls} calls)</span></span></div>`).join('');
   } catch (e) { console.error(e); }
+  pollNotifs();
 }
 refresh(); setInterval(refresh, 15000);
+
+/* ---- notification toasts ("wrench taps you on the shoulder") ---- */
+const seenNotif = new Set();
+async function pollNotifs() {
+  try {
+    const list = await j('/api/notifications');
+    for (const n of list) {
+      if (seenNotif.has(n.id)) continue;
+      seenNotif.add(n.id);
+      showToast(n);
+    }
+  } catch (e) { /* inbox unavailable — stay quiet */ }
+}
+function showToast(n) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + esc(n.severity);
+  t.innerHTML = `<b>\u{1F514} patrol: ${esc(n.severity)}</b><div>${esc(n.summary)}</div>` +
+    `<div class="when">${ago(n.ts)} · click to open the report</div>`;
+  t.onclick = async () => {
+    try {
+      await fetch('/api/notifications/read', { method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ids: [n.id] }) });
+    } catch (e) { /* best effort */ }
+    t.remove();
+    openPatrol(n.report_id);
+  };
+  $('toasts').appendChild(t);
+  setTimeout(() => { t.classList.add('fade'); setTimeout(() => t.remove(), 600); }, 25000);
+}
+function openPatrol(ts) {
+  const el = document.querySelector(`#patrols .feed-item[data-ts="${ts}"]`);
+  if (!el) return;
+  const d = el.querySelector('details');
+  if (d) d.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 /* ---- theme ---- */
 function setTheme(t) { document.documentElement.dataset.theme = t;
@@ -379,6 +434,7 @@ def _is_local_origin(value: str | None) -> bool:
 def make_handler(db_path, host_label: str, cfg=None):
     chat_lock = threading.Lock()
     chat_history: list[dict] = []   # session-scoped conversation memory
+    data_dir = Path(db_path).parent  # notifications inbox lives next to the db
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, obj, code=200):
@@ -425,12 +481,32 @@ def make_handler(db_path, host_label: str, cfg=None):
                     return self._json(store.token_totals())
                 if path == "/api/webintel":
                     return self._json(store.cache_get("webintel_scan", float("inf")) or {})
+                if path == "/api/notifications":
+                    return self._json(notifications.unread(data_dir))
                 self._json({"error": "not found"}, 404)
             finally:
                 store.close()
 
         def do_POST(self):  # noqa: N802
             path = urlparse(self.path).path
+            if path == "/api/notifications/read":
+                if not _is_local_origin(self.headers.get("Origin")):
+                    return self._json({"error": "forbidden"}, 403)
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    length = 0
+                ids = None
+                if 0 < length <= MAX_CHAT_BODY:
+                    try:
+                        payload = json.loads(self.rfile.read(length).decode())
+                        raw_ids = payload.get("ids")
+                        if isinstance(raw_ids, list):
+                            ids = [str(i) for i in raw_ids]
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        return self._json({"error": "invalid JSON"}, 400)
+                marked = notifications.mark_read(data_dir, ids)
+                return self._json({"marked": marked})
             if path != "/api/chat":
                 return self._json({"error": "not found"}, 404)
             if cfg is None:
