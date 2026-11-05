@@ -17,7 +17,7 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
   "schema": "wrench.status.v1",
   "generated_at": 1793909627.5,
   "host": "devbox",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "...": "command-specific fields"
 }
 ```
