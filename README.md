@@ -99,6 +99,7 @@ main today — click through to its section.
 | [`wrench audit`](#wrench-audit--prove-what-happened) | append-only hash-chained log of every ceremony/consent/apply; `audit verify` |
 | [`wrench backups`](#wrench-backups--untested-backups-dont-exist) | detect borg/restic/rsync/pg_dump jobs, confirm they actually ran |
 | [`wrench drift`](#wrench-drift) baselines | labeled drift snapshots are the before/after proof for every change |
+| [`wrench comply`](#wrench-comply--prove-the-box-meets-the-baseline) | deterministic hardening packs (CIS-inspired + wrench baseline), scored, offline |
 
 **🔧 FIX — with your permission** *(consent-gated, policy-tiered, auto-rollback)*
 
@@ -626,6 +627,44 @@ run with a pending-but-unapproved action exits cleanly with *"pending approval"*
 instead of hanging. All three features — audit is always on; windows and
 approvals **default OFF**.
 
+
+### `wrench comply` — prove the box meets the baseline
+
+"Are we hardened?" shouldn't be a feeling. `wrench comply` audits the box
+against **declarative compliance packs** and answers with a score.
+
+```console
+$ wrench comply
+📋 Ubuntu hardening essentials (inspired by CIS L1) — score 56.8%
+   ✖ fail   high     sshd.passwordauth   sshd disables password authentication
+   ✖ fail   medium   login.umask         Default UMASK is 027 or stricter
+   ✔ pass   critical perm.sudoers        /etc/sudoers is 0440
+   · skip   critical auth.noemptypw      (needs root to read /etc/shadow)
+```
+
+Two packs ship today: **`cis-ubuntu-essentials`** (~40 high-value Ubuntu
+22.04/24.04 checks inspired by CIS Level 1 — honestly named, not certified CIS
+content) and **`wrench-baseline`** (15 opinionated basics every box owes
+itself). Rules cover sshd hardening (with real first-wins + `Match`-aware
+config parsing, drop-ins included), auth-file permissions and ownership,
+empty-password and extra-UID-0 detection, live-kernel sysctl posture, mount
+options, legacy-service absence, and `login.defs` policy.
+
+The engine is the point: packs are **data, not code** — every rule names one
+of eleven read-only check primitives that map to safe internal functions.
+Nothing in a pack is ever executed as a shell string, checks are
+**deterministic code** (the model is never asked whether you're compliant),
+and everything runs **fully offline**. A file that needs root is a counted
+`skip` — never a fake pass, never noise. Skips don't dilute the score.
+
+`wrench comply accept` blesses the current failures as **known debt** through
+the same consent ceremony as everything else (and seals the accept into the
+audit chain); from then on patrols alarm only on **new** failures. `comply
+show <rule>` explains any rule: what it checks, why it matters, and what the
+box says right now. Feeds `--json` (`wrench.comply.v1`, exit 1 on a critical
+fail), Prometheus (`wrench_comply_score`, `…_fails`, `…_baseline_accepted`),
+and an optional brain briefing that separates what matters from checkbox
+noise — analysis only.
 
 ## FIX — with your permission, I fix it
 
