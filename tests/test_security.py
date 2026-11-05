@@ -154,3 +154,126 @@ def test_analyze_auth_local_ip_never_flagged_as_new():
     ev = sec.parse_auth_events(lines, NOW)
     findings, observed = sec.analyze_auth(ev, {"known_ips": []}, SecuritySettings(), NOW)
     assert not [f for f in findings if "new source IP" in f.title]
+
+
+# =====================================================================
+# group 2 — access drift: sudoers / authorized_keys / uid0 / shadow / ww
+# =====================================================================
+
+def test_sudoers_state_hashes_and_normalizes(tmp_path):
+    main = tmp_path / "sudoers"
+    main.write_text("# comment\n\nroot ALL=(ALL) ALL\n")
+    dropin = tmp_path / "sudoers.d"
+    dropin.mkdir()
+    (dropin / "90-cloud").write_text("ubuntu ALL=(ALL) NOPASSWD:ALL\n")
+    (dropin / "README~").write_text("ignore me\n")  # backup file skipped
+    state = sec.sudoers_state(str(main), str(dropin))
+    assert str(main) in state["files"]
+    assert str(dropin / "90-cloud") in state["files"]
+    assert not any("README~" in p for p in state["files"])
+    # comments/blank lines don't change the hash
+    main.write_text("root ALL=(ALL) ALL\n# a brand new comment\n\n")
+    state2 = sec.sudoers_state(str(main), str(dropin))
+    assert state2["files"][str(main)] == state["files"][str(main)]
+
+
+def test_authorized_keys_state(tmp_path):
+    home = tmp_path / "home" / "alice"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "authorized_keys").write_text(
+        "ssh-ed25519 AAAA alice@laptop\n# a comment\n\nssh-rsa BBBB backup\n")
+    passwd = tmp_path / "passwd"
+    passwd.write_text(f"alice:x:1000:1000:Alice:{home}:/bin/bash\n")
+    state = sec.authorized_keys_state(str(passwd))
+    assert state["alice"]["count"] == 2
+    assert len(state["alice"]["hash"]) == 64
+
+
+def test_uid0_accounts(tmp_path):
+    passwd = tmp_path / "passwd"
+    passwd.write_text("root:x:0:0:root:/root:/bin/bash\n"
+                      "toor:x:0:0:backdoor:/root:/bin/bash\n"
+                      "alice:x:1000:1000:Alice:/home/alice:/bin/bash\n")
+    assert sec.uid0_accounts(str(passwd)) == ["root", "toor"]
+
+
+def test_empty_password_accounts_readable_and_not(tmp_path):
+    shadow = tmp_path / "shadow"
+    shadow.write_text("root:$6$hash:19000:0:99999:7:::\n"
+                      "guest::19000:0:99999:7:::\n")
+    empties, readable = sec.empty_password_accounts(str(shadow))
+    assert readable is True
+    assert empties == ["guest"]
+    # unreadable → (None, False), degrade politely
+    empties2, readable2 = sec.empty_password_accounts(str(tmp_path / "nope"))
+    assert empties2 is None and readable2 is False
+
+
+def test_world_writable_files(tmp_path):
+    (tmp_path / "ok.txt").write_text("fine")
+    bad = tmp_path / "bad.sh"
+    bad.write_text("danger")
+    import os as _os
+    _os.chmod(bad, 0o666)
+    hits = sec.world_writable_files((str(tmp_path),))
+    assert str(bad) in hits
+    assert str(tmp_path / "ok.txt") not in hits
+
+
+def test_analyze_access_new_and_changed_sudoers():
+    baseline = {"sudoers": {"/etc/sudoers": "aaa"},
+                "authorized_keys": {}, "uid0": ["root"]}
+    current = {"sudoers": {"files": {"/etc/sudoers": "bbb",
+                                     "/etc/sudoers.d/99-new": "ccc"},
+                           "unreadable": []},
+               "authorized_keys": {}, "uid0": ["root"],
+               "empty_passwords": [], "shadow_readable": True,
+               "world_writable": []}
+    findings, observed = sec.analyze_access(current, baseline)
+    assert any(f.title == "sudoers changed: /etc/sudoers" for f in findings)
+    assert any(f.title == "new sudoers file: /etc/sudoers.d/99-new" for f in findings)
+
+
+def test_analyze_access_authorized_keys_delta():
+    baseline = {"authorized_keys": {"alice": {"hash": "old", "count": 1}},
+                "sudoers": {}, "uid0": ["root"]}
+    current = {"sudoers": {"files": {}, "unreadable": []},
+               "authorized_keys": {"alice": {"hash": "new", "count": 2},
+                                   "bob": {"hash": "x", "count": 1}},
+               "uid0": ["root"], "empty_passwords": [],
+               "shadow_readable": True, "world_writable": []}
+    findings, _ = sec.analyze_access(current, baseline)
+    assert any(f.title == "authorized_keys changed for alice" for f in findings)
+    assert any(f.title == "new authorized_keys for bob" and f.severity == "warning"
+               for f in findings)
+
+
+def test_analyze_access_uid0_and_empty_password_are_critical():
+    current = {"sudoers": {"files": {}, "unreadable": []},
+               "authorized_keys": {}, "uid0": ["root", "toor"],
+               "empty_passwords": ["guest"], "shadow_readable": True,
+               "world_writable": []}
+    findings, _ = sec.analyze_access(current, None)
+    sevs = {f.title: f.severity for f in findings}
+    assert sevs.get("UID-0 account besides root: toor") == "critical"
+    assert sevs.get("account with EMPTY password: guest") == "critical"
+
+
+def test_analyze_access_shadow_unreadable_degrades_to_info():
+    current = {"sudoers": {"files": {}, "unreadable": []},
+               "authorized_keys": {}, "uid0": ["root"],
+               "empty_passwords": None, "shadow_readable": False,
+               "world_writable": []}
+    findings, _ = sec.analyze_access(current, None)
+    info = [f for f in findings if "shadow file unreadable" in f.title]
+    assert info and info[0].severity == "info"
+
+
+def test_analyze_access_world_writable_warns():
+    current = {"sudoers": {"files": {}, "unreadable": []},
+               "authorized_keys": {}, "uid0": ["root"],
+               "empty_passwords": [], "shadow_readable": True,
+               "world_writable": ["/etc/cron.d/evil"]}
+    findings, _ = sec.analyze_access(current, None)
+    assert any(f.title.startswith("world-writable file") and f.severity == "warning"
+               for f in findings)
