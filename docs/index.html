@@ -251,6 +251,13 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       OS/kernel/runtimes against <b>endoflife.date</b> — free public APIs, no keys. Known CVEs
       land in patrols and the dashboard; <code>fixxer</code> can apply <b>targeted security
       updates</b> for exactly the affected packages. Cached locally; patrols never fail offline.</p></div>
+    <div class="card"><span class="ico">🔐</span><h3>Guard the certs</h3>
+      <p><code>wrench certs</code> finds every TLS certificate — scanning
+      <b>nginx / apache / caddy / haproxy</b> configs and the well-known stores — and parses each
+      with openssl (expiry, SANs, issuer, key strength, chain). Patrols page you up an
+      <b>expiry ladder</b> (30d → 14d → 7d/expired) and flag weak TLS. <code>wrench certs renew</code>
+      rotates certs via <b>certbot/acme.sh</b>, dry-run first, chain-validated, service reloaded —
+      consent-gated, never model-authored shell.</p></div>
     <div class="card"><span class="ico">🔔</span><h3>Notify</h3>
       <p>When a patrol finds trouble, wrench <b>taps you on the shoulder</b>: a desktop
       notification, an optional webhook (ntfy / Slack / Discord), a toast on the live dashboard,

@@ -305,6 +305,64 @@ Everything caches in the same SQLite store (24h TTL, `[webintel]` knobs in
 config: `enable`, `cadence_hours`). Offline? I serve the cached scan and say
 so. Exit code 1 when vulns are found, so you can wire it into CI or cron.
 
+### `wrench certs` — SSL/TLS lifecycle, from inventory to renewal
+
+Certificates are the quiet way production breaks: a leaf expires on a Sunday
+and the whole site goes dark. `wrench certs` keeps the whole lifecycle in view.
+
+```console
+$ wrench certs
+🔐 certificate inventory
+ name            expires in   issuer        key        flags         source
+ shop.example.com      12d   R3            RSA-2048    ok            nginx:/etc/nginx/sites/shop
+ api.example.com       64d   R3            RSA-2048    ok            nginx:/etc/nginx/sites/api
+ legacy.internal   EXPIRED    legacy.int    RSA-1024    self-signed weak-key   wellknown:/etc/ssl
+```
+
+**Inventory.** I discover certs two ways: by scanning your web-server configs
+(`nginx` / `apache` / `caddy` / `haproxy` — `ssl_certificate`,
+`SSLCertificateFile`, `tls`, `bind ... ssl crt`) and by walking the well-known
+stores (`/etc/letsencrypt/live`, `/etc/ssl`, `/etc/pki`). Each one is parsed
+with `openssl` — expiry, subject, SANs, issuer, key type/strength, self-signed
+detection, and a chain-completeness check — and persisted in the same SQLite
+store everything else uses. `--probe` adds a read-only TLS handshake against
+local listeners to see what's *actually* negotiated.
+
+**Patrol integration.** Every patrol folds in a deterministic expiry ladder —
+**≤30d info · ≤14d warning · ≤7d or expired critical** — plus weak-config flags
+(TLS below 1.2, weak keys `<2048`-bit RSA, incomplete chains). Those ride the
+existing notification channel (desktop / webhook / dashboard toast / CLI
+banner). The model never computes an expiry date — that math is code.
+
+**Audit.** `wrench certs audit` is the posture review: protocols, ciphers,
+HSTS, and OCSP-stapling hints pulled from your configs plus a live probe of
+local listeners, then narrated in plain English through whatever brain you've
+configured (provider-agnostic — same `--no-llm` opt-out as everywhere else).
+
+**Renewal — consent-gated, dry-run first.** `wrench certs renew <name|--all>`
+orchestrates `certbot` or `acme.sh` under the same discipline as `fixxer`:
+
+```text
+🔁 renewal — shop.example.com
+ ✓ dry_run         certbot renew --dry-run succeeded
+ ✓ renew           new certificate issued
+ ✓ validate_chain  chain verified against system trust store
+ ✓ reload_test     nginx -t: syntax ok
+ ✓ reload          systemctl reload nginx
+ ✓ probe           TLSv1.3 cert 89d
+ renewal complete, chain validated, nginx reloaded
+```
+
+It **dry-runs first** (and stays dry-run unless you pass `--execute`), only ever
+invokes an allowlisted ACME client (no model-authored shell, no shell-meta
+characters), validates the new chain with `openssl` **before** trusting it,
+tests the service config (`nginx -t`) **before** reloading, and never reloads a
+service against an unvalidated certificate. Any failed step stops the pipeline
+with a rollback message — the old cert stays in place, the service keeps
+running on its known-good config. Real renewals require policy tier
+`repair`/`autonomous` or a one-time `wrench certs renew --setup-consent`
+ceremony; every attempt is logged to the actions table.
+
 ### `wrench init` / `wrench doctor` / `wrench install-service`
 
 Onboarding, self-diagnosis, and persistence. `doctor` checks config, store,
