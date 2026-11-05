@@ -2917,6 +2917,43 @@ def notifications_cmd(
             console.print(f"[dim]marked {n} read[/dim]")
 
 
+@app.command("bundle")
+def bundle_cmd(
+    out: str = typer.Option(None, "--out", "-o",
+                            help="output path (default ./wrench-bundle-<host>-<date>.tar.gz)"),
+    json_out: bool = JSON_OPT,
+):
+    """Package everything wrench knows into one portable tar.gz for sneakernet.
+
+    The air-gap answer to "email me the state of the box": latest patrol, status,
+    drift, security, comply, backups, forecast, audit chain (+verify),
+    notifications tail, versions — as JSON + a human-readable SUMMARY.md. No
+    secrets (config key material is redacted).
+    """
+    from . import bundle as bmod
+    cfg, store = _ctx()
+    out_path, sections = bmod.build(cfg, store, out_path=out)
+    size = out_path.stat().st_size
+    if json_out:
+        jsonout.emit("bundle", {
+            "path": str(out_path),
+            "bytes": size,
+            "files": sorted(list(sections.keys()) + ["SUMMARY.md"]),
+            "offline": sections.get("offline.json", {}).get("offline", False),
+        })
+        return
+    files = ", ".join(sorted(sections.keys()))
+    console.print(Panel(
+        Text.assemble(
+            ("wrote ", ""), (str(out_path), "bold white"),
+            (f"\n{size // 1024 or 1} KB · {len(sections) + 1} files · no secrets "
+             "(config redacted)", "dim"),
+            ("\n\ncarry it on a USB stick; unpack with: ", "dim"),
+            (f"tar xzf {out_path.name}", "bold cyan"),
+        ),
+        border_style="green", title="📦 wrench bundle"))
+
+
 @app.command()
 def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
            json_out: bool = JSON_OPT):
@@ -2938,6 +2975,9 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
                                     or cfg.provider in ("ollama", "lmstudio")),
             "db_path": str(cfg.db_path),
         }
+        from . import offline as _offline
+        checks["offline"] = _offline.status_summary(cfg)
+        checks["offline"]["brain_is_local"] = _offline.url_is_private(cfg.base_url)
         try:
             s = sensors.sample_os()
             checks["sensor_os"] = {"ok": True, "cpu_pct": s["cpu_pct"],
@@ -2975,6 +3015,20 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
                                   else "yellow"))
     t.add_row("api key", ok if cfg.api_key or cfg.provider in ("ollama", "lmstudio")
               else Text(f"✖ missing (set {_key_env(cfg.provider)})", style="red"))
+    # offline-awareness: on an air-gapped box, show what's disabled and verify
+    # the brain endpoint is local/private (so doctor can still pass clean).
+    from . import offline as _offline
+    if _offline.is_offline(cfg):
+        brain_local = _offline.url_is_private(cfg.base_url)
+        t.add_row("offline mode", Text("✔ ON — zero egress enforced", style="green"))
+        t.add_row("  disabled", Text("CVE/OSV · endoflife.date · webintel · "
+                                     "update checks · public provider calls", style="dim"))
+        t.add_row("  brain endpoint",
+                  Text(f"✔ local/private ({cfg.base_url})", style="green") if brain_local
+                  else Text(f"✖ {cfg.base_url} is NOT local/private — the brain is "
+                            "unreachable in offline mode", style="red"))
+    else:
+        t.add_row("offline mode", Text("off (normal egress)", style="dim"))
     t.add_row("data store", Text(f"{cfg.db_path} "
                                  f"({cfg.db_path.stat().st_size // 1024} KB)"
                                  if cfg.db_path.exists() else "(will be created)", style="dim"))
