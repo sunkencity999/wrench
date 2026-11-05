@@ -56,6 +56,25 @@ def _confirm(command: str, label: str) -> bool:
     return typer.confirm("run it?", default=False)
 
 
+def _enforce_window(cfg, operation: str, override_window: bool, has_consent: bool) -> None:
+    """Block an executing state-change outside the maintenance window.
+
+    No windows configured → no-op (home-user default). Outside a window,
+    --override-window WITH consent proceeds and is audit-logged; without consent
+    (or without the flag) it exits cleanly with a clear message.
+    """
+    from . import windows as _win, audit as _amod
+    dec = _win.gate(cfg, operation, override=override_window, has_consent=has_consent)
+    if not dec.allowed:
+        console.print(Panel(dec.reason, border_style="yellow",
+                            title="⏳ maintenance window"))
+        raise typer.Exit(2)
+    if dec.overridden:
+        _amod.log_event(cfg, "window.override",
+                        {"operation": operation, "reason": dec.reason})
+        console.print(f"[yellow]⏳ {dec.reason}[/yellow]")
+
+
 PROVIDER_OPT = typer.Option(None, "--provider", "-p",
                             help="ollama|lmstudio|openai|anthropic|meta|azure|litellm")
 MODEL_OPT = typer.Option(None, "--model", "-m", help="model override")
@@ -901,6 +920,9 @@ def fixxer(
     revoke_auto: bool = typer.Option(False, "--revoke-auto", help="revoke auto-mode consent"),
     no_llm: bool = typer.Option(False, "--no-llm", help="skip the model briefing (findings only)"),
     audit: bool = typer.Option(False, "--audit", help="show the last 20 audit-log entries and exit"),
+    override_window: bool = typer.Option(False, "--override-window",
+                                         help="execute outside the maintenance window "
+                                              "(requires recorded auto consent; audit-logged)"),
     provider: str = PROVIDER_OPT,
     model: str = MODEL_OPT,
 ):
@@ -1029,6 +1051,8 @@ def fixxer(
         for f in [f for f in chosen if f.risk == "risky"]:
             if not typer.confirm(f"'{f.title}' is RISKY \u2014 really apply?", default=False):
                 chosen.remove(f)
+
+    _enforce_window(cfg, "fixxer apply", override_window, bool(fx.load_consent(cfg)))
 
     mode = "auto" if auto else "interactive"
     results = []
@@ -1265,6 +1289,9 @@ def certs_renew(
                                        help="record consent for real (non-dry-run) renewals"),
     revoke_consent: bool = typer.Option(False, "--revoke-consent",
                                         help="revoke renewal consent"),
+    override_window: bool = typer.Option(False, "--override-window",
+                                         help="renew outside the maintenance window "
+                                              "(requires consent; audit-logged)"),
 ):
     """Renew certificates: dry-run first, validate the chain, reload the service."""
     from . import certs as cmod
@@ -1305,6 +1332,7 @@ def certs_renew(
             console.print(f"[yellow]{reason}[/yellow]")
             if not _renew_consent_ceremony(cfg):
                 raise typer.Exit(2)
+        _enforce_window(cfg, "certs renew --execute", override_window, True)
 
     console.print(f"[dim]tool: [bold]{tool}[/bold] \u00b7 mode: "
                   f"[bold]{'dry-run' if dry_run else 'EXECUTE'}[/bold] \u00b7 "
@@ -1484,6 +1512,9 @@ def blueprint_main(
                                  help="apply for real (default is dry-run preview)"),
     yes: bool = typer.Option(False, "--yes", "-y",
                              help="skip the interactive diff confirmation (execute mode)"),
+    override_window: bool = typer.Option(False, "--override-window",
+                                         help="apply outside the maintenance window "
+                                              "(requires consent; audit-logged)"),
     show_history: bool = typer.Option(False, "--history",
                                       help="list past blueprint applications and exit"),
     provider: str = PROVIDER_OPT,
@@ -1543,6 +1574,7 @@ def blueprint_main(
         console.print(f"[yellow]{reason}[/yellow]")
         if not _bp_consent_ceremony(cfg):
             raise typer.Exit(2)
+    _enforce_window(cfg, "blueprint --execute", override_window, True)
     if not yes and not typer.confirm(
             f"apply this blueprint to {', '.join(plan.files)}?", default=False):
         console.print("[dim]not applied.[/dim]")
