@@ -197,6 +197,15 @@ patrol_interval_min = {interval}
 retention_days = 30
 web_port = 8787
 
+[notify]
+# After each patrol, wrench taps you on the shoulder when findings meet the
+# threshold: a JSONL inbox entry (CLI banner + dashboard toast), a desktop
+# notification, and an optional generic JSON webhook (ntfy / Slack / Discord).
+enabled = true
+min_severity = "attention"   # attention | error | critical
+desktop = true
+# webhook_url = "https://ntfy.sh/your-topic"
+
 [webintel]
 # Built-in web intelligence: OSV.dev CVE lookups for installed packages and
 # endoflife.date EOL checks. Free APIs, no keys. Results cache in sqlite;

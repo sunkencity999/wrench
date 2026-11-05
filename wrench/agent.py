@@ -270,8 +270,9 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
     status, summary, findings = parse_patrol_answer(result["answer"])
     if result.get("error"):
         status, summary = "error", f"patrol failed: {result['error'][:200]}"
-    store.add_patrol(model, status, summary, findings, result["answer"], result["tokens"])
-    return {
+    patrol_ts = store.add_patrol(model, status, summary, findings, result["answer"],
+                                 result["tokens"])
+    patrol = {
         "status": status,
         "summary": summary,
         "findings": findings,
@@ -282,4 +283,12 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
         "raw_data": raw_data,
         "duration_s": round(time.time() - t0, 1),
         "model": model,
+        "ts": patrol_ts,
     }
+    # tap the human on the shoulder — best-effort, never breaks a patrol
+    try:
+        from . import notifications
+        patrol["notification"] = notifications.dispatch(cfg, patrol, report_id=patrol_ts)
+    except Exception:  # noqa: BLE001
+        patrol["notification"] = None
+    return patrol

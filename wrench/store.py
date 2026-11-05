@@ -193,12 +193,15 @@ class Store:
     # ---- patrols ----
     def add_patrol(
         self, model: str, status: str, summary: str, findings: list, report_md: str, tokens: int
-    ) -> None:
+    ) -> float:
+        """Insert a patrol row; returns its timestamp (the patrol's report id)."""
+        ts = time.time()
         self.db.execute(
             "INSERT INTO patrols (ts, model, status, summary, findings, report_md, tokens) VALUES (?,?,?,?,?,?,?)",
-            (time.time(), model, status, summary, json.dumps(findings), report_md, tokens),
+            (ts, model, status, summary, json.dumps(findings), report_md, tokens),
         )
         self.db.commit()
+        return ts
 
     def recent_patrols(self, limit: int = 50) -> list[dict]:
         cur = self.db.execute(
