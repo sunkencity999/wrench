@@ -105,7 +105,7 @@ def _approval_gate(cfg, store, action: str, detail: str) -> None:
 
 
 PROVIDER_OPT = typer.Option(None, "--provider", "-p",
-                            help="ollama|lmstudio|openai|anthropic|meta|azure|litellm")
+                            help="ollama|lmstudio|openai|anthropic|meta|azure|litellm|custom")
 MODEL_OPT = typer.Option(None, "--model", "-m", help="model override")
 JSON_OPT = typer.Option(False, "--json",
                         help="machine-readable JSON to stdout (no rich formatting)")
@@ -420,6 +420,7 @@ PROVIDER_MENU = [
     ("meta", "API — Meta muse models"),
     ("azure", "API — Azure OpenAI / AI Foundry"),
     ("litellm", "API — anything behind a LiteLLM proxy"),
+    ("custom", "any OpenAI-compatible endpoint (vLLM, llama.cpp, TGI, your own server)"),
 ]
 
 
@@ -607,6 +608,73 @@ def _openai_local_guided_setup(provider: str, interactive: bool,
     return base_url, model, True
 
 
+def _custom_guided_setup(interactive: bool,
+                         model: str | None) -> tuple[str | None, str | None, bool]:
+    """Guided setup for the `custom` provider: any OpenAI-compatible endpoint
+    (vLLM, llama.cpp, TGI, a FastAPI shim, your own server).
+
+    There is NO default base_url — the user must give one. When reachable, we
+    probe GET <base>/models and let them pick a live model, same as the
+    LM Studio / LiteLLM path. Returns (base_url, model, complete). complete=False
+    means the caller must NOT print the success greeting. In non-TTY mode with
+    no URL supplied, returns (None, model, False) — never hangs."""
+    import os
+    from . import localsetup
+    base_url = (os.environ.get("WRENCH_BASE_URL") or "").strip().rstrip("/")
+    if interactive and not base_url:
+        console.print(Panel(
+            "Point wrench at any server that speaks the OpenAI chat-completions\n"
+            "API: a local [bold]vLLM[/bold] / [bold]llama.cpp[/bold] / [bold]TGI[/bold] server, a\n"
+            "FastAPI shim, or your own endpoint. Example: http://127.0.0.1:8000/v1\n"
+            "[dim]An API key is optional — set CUSTOM_API_KEY only if your server needs one.[/dim]",
+            border_style="cyan", title="🔌 custom — OpenAI-compatible endpoint"))
+        base_url = typer.prompt("base URL (e.g. http://127.0.0.1:8000/v1)").strip().rstrip("/")
+    if not base_url:
+        console.print(Panel(
+            "[yellow]no base URL given — the custom provider needs one.[/yellow]\n"
+            "Re-run with a URL:  [bold]WRENCH_BASE_URL=http://host:port/v1 "
+            "wrench init -p custom --force[/bold]\n"
+            "[dim]or run `wrench init -p custom --force` in a terminal for the prompt.[/dim]",
+            border_style="yellow", title="⚠ custom: no endpoint"))
+        return None, model, False
+    if not localsetup.openai_server_alive(base_url):
+        console.print(Panel(
+            f"[yellow]nothing answering at {base_url}.[/yellow]\n"
+            "Start your server (vLLM / llama.cpp / TGI / …) so it serves\n"
+            f"GET {base_url}/models, then re-run:  "
+            f"[bold]wrench init -p custom --force[/bold]",
+            border_style="yellow", title="⚠ custom: endpoint unreachable"))
+        return base_url, model, False
+    models = localsetup.openai_models(base_url)
+    if not models:
+        console.print(Panel(
+            f"[yellow]the server at {base_url} is up but lists no models.[/yellow]\n"
+            "Load/serve a model, then re-run:  "
+            "[bold]wrench init -p custom --force[/bold]",
+            border_style="yellow", title="⚠ custom: no models available"))
+        return base_url, model, False
+    if model and model not in models:
+        console.print(f"[yellow]{model!r} isn't served — pick from what the "
+                      "endpoint offers:[/yellow]")
+        model = None
+    if not model:
+        if interactive and len(models) > 1:
+            t = Table(show_header=False, box=box.ROUNDED, border_style="cyan")
+            for i, mid in enumerate(models, 1):
+                t.add_row(f"[bold]{i}[/bold]", mid)
+            console.print(t)
+            idx = typer.prompt(f"model [1-{len(models)}]", default="1").strip()
+            try:
+                model = models[max(1, min(len(models), int(idx))) - 1]
+            except ValueError:
+                model = next((m for m in models if m == idx), models[0])
+        else:
+            model = models[0]
+    console.print(f"[green]✔ custom endpoint answering at {base_url}[/green] — "
+                  f"model: [bold]{model}[/bold]")
+    return base_url, model, True
+
+
 def _azure_guided_setup(interactive: bool,
                         endpoint: str | None,
                         api_version: str | None,
@@ -647,7 +715,7 @@ def _azure_guided_setup(interactive: bool,
 @app.command()
 def init(
     provider: str = typer.Option(None, "--provider", "-p",
-                                 help="ollama|lmstudio|openai|anthropic|meta|azure|litellm "
+                                 help="ollama|lmstudio|openai|anthropic|meta|azure|litellm|custom "
                                       "(omit for interactive menu)"),
     model: str = typer.Option(None, "--model", "-m", help="model tag override"),
     azure_endpoint: str = typer.Option(None, "--azure-endpoint",
@@ -697,6 +765,14 @@ def init(
             if not setup_complete:
                 incomplete_reason = ("no model verified — start the server, "
                                      f"then re-run `wrench init -p {provider} --force`")
+        elif provider == "custom":
+            local_base_url, model, setup_complete = _custom_guided_setup(
+                interactive, model)
+            if not setup_complete:
+                incomplete_reason = (
+                    "no live OpenAI-compatible endpoint verified — give a base URL "
+                    "(WRENCH_BASE_URL=http://host:port/v1) and make sure it serves "
+                    "GET /models, then re-run `wrench init -p custom --force`")
         if provider == "azure":
             azure_endpoint, azure_api_version, api_key, model = _azure_guided_setup(
                 interactive, azure_endpoint, azure_api_version, api_key, model)
@@ -734,7 +810,8 @@ def init(
                 smoke_note = "\nlocal smoke test: ✖ FAILED — fix before relying on patrols"
         else:
             smoke_note = "\nlocal smoke test: skipped (ollama server not running)"
-    elif cfg.provider in ("lmstudio", "litellm") and localsetup.openai_server_alive(cfg.base_url):
+    elif cfg.provider in ("lmstudio", "litellm", "custom") and cfg.base_url \
+            and localsetup.openai_server_alive(cfg.base_url):
         with console.status(f"[cyan]smoke test: one tool-calling round-trip on {cfg.model}..."):
             ok, detail = localsetup.smoke_test(cfg, store)
         if ok:
@@ -754,6 +831,8 @@ def init(
         + ("api key: none needed — it's your hardware\n"
            if cfg.provider in ("ollama", "lmstudio", "litellm")
            else "api key: configured ✔\n" if cfg.api_key
+           else "api key: none (optional for a custom endpoint — set "
+                "CUSTOM_API_KEY if yours needs one)\n" if cfg.provider == "custom"
            else f"api key: [yellow]missing[/yellow] — "
                 f"export {_key_env(cfg.provider)}=... (or set api_key_file in config)\n")
         +
