@@ -162,13 +162,13 @@ Recent sealed events plus the chain verdict. Each entry is a full chain record.
   "schema": "wrench.audit.v1",
   "generated_at": 1793914272.825,
   "host": "devbox",
-  "version": "1.8.0",
+  "version": "2.0.0",
   "count": 7,
   "shown": 7,
   "intact": true,
   "entries": [
     {"ts": 1793914200.1, "actor": "wrench", "kind": "genesis",
-     "detail": {"msg": "audit chain initialized", "version": "1.8.0"},
+     "detail": {"msg": "audit chain initialized", "version": "2.0.0"},
      "prev_hash": "0000…0000", "hash": "4dd6…ef75"},
     {"ts": 1793914260.4, "actor": "alice", "kind": "fixxer:disk-clean",
      "detail": {"tier": "repair", "command": "…", "approved": true, "result": "…"},
@@ -186,7 +186,7 @@ Re-walks the on-disk chain. **Exit 0 = INTACT, exit 1 = tampered.**
   "schema": "wrench.audit.verify.v1",
   "generated_at": 1793914272.9,
   "host": "devbox",
-  "version": "1.8.0",
+  "version": "2.0.0",
   "intact": false,
   "count": 7,
   "broken_index": 3,
@@ -204,7 +204,7 @@ Approval-token states (hashes only; plaintext tokens are never stored or emitted
   "schema": "wrench.approvals.v1",
   "generated_at": 1793914300.0,
   "host": "devbox",
-  "version": "1.8.0",
+  "version": "2.0.0",
   "count": 1,
   "approvals": [
     {"action": "blueprint --execute", "detail": "harden sshd",
@@ -215,3 +215,64 @@ Approval-token states (hashes only; plaintext tokens are never stored or emitted
 
 New Prometheus gauges: `wrench_audit_entries`, `wrench_audit_intact` (1/0),
 `wrench_audit_last_event_timestamp_seconds`, and `wrench_approvals{state=…}`.
+
+## `wrench fleet status` → `wrench.fleet.v1`
+
+Hub-side: every known node with its live status, last-seen age, and the dead-man
+verdict. **Exit 1 when any node is `silent` or `red`, else 0.** `color` is one of
+`green | yellow | red | silent`; `silent` is true when `age_s > silent_factor ×
+cadence_s`.
+
+```json
+{
+  "schema": "wrench.fleet.v1",
+  "generated_at": 1793914400.0,
+  "host": "hub",
+  "version": "2.0.0",
+  "summary": {"total": 3, "green": 1, "yellow": 1, "red": 0, "silent": 1},
+  "nodes": [
+    {"node_id": "web-01", "hostname": "web-01", "status": "attention",
+     "color": "yellow", "silent": false, "last_seen": 1793914380.0,
+     "age_s": 20.0, "worst_severity": "warning", "summary": "/mnt at 94%",
+     "cadence_s": 600, "wrench_version": "2.0.0", "report_count": 42,
+     "findings": [{"severity": "warning", "text": "/mnt at 94%"}],
+     "gauges": {"disk_pct": {"/": 61.0, "/mnt": 94.0}, "mem_pct": 23.4}},
+    {"node_id": "db-02", "hostname": "db-02", "status": "ok",
+     "color": "silent", "silent": true, "last_seen": 1793912000.0,
+     "age_s": 2400.0, "worst_severity": "ok", "summary": "all quiet",
+     "cadence_s": 600, "wrench_version": "2.0.0", "report_count": 7,
+     "findings": [], "gauges": {}}
+  ]
+}
+```
+
+## `wrench fleet report` → `wrench.fleet.report.v1`
+
+Node-side: the compact snapshot that was built (from cached scans) and whether it
+was pushed. `--dry-run` builds without pushing; a queued report means the hub was
+unreachable and the report will retry next patrol.
+
+```json
+{
+  "schema": "wrench.fleet.report.v1",
+  "generated_at": 1793914400.0,
+  "host": "web-01",
+  "version": "2.0.0",
+  "pushed": true,
+  "queued": false,
+  "detail": "HTTP 200",
+  "report": {
+    "node_id": "web-01", "hostname": "web-01", "wrench_version": "2.0.0",
+    "ts": 1793914399.2, "status": "attention", "worst_severity": "warning",
+    "cadence_s": 600, "summary": "/mnt at 94%",
+    "findings": [{"severity": "warning", "text": "/mnt at 94%"}],
+    "gauges": {"disk_pct": {"/": 61.0, "/mnt": 94.0}, "mem_pct": 23.4,
+               "cert_worst_days": 9}
+  }
+}
+```
+
+New Prometheus gauges (hub side): `wrench_fleet_nodes`,
+`wrench_fleet_nodes_silent`, `wrench_fleet_nodes_by_color{color=…}`, and per-node
+`wrench_fleet_node_status` (0 ok, 1 attention, 2 critical, 3 silent),
+`wrench_fleet_node_last_seen_timestamp_seconds`, `wrench_fleet_node_reports_total`.

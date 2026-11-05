@@ -300,6 +300,16 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       (<code>--override-window</code> needs consent and is itself audited), and <b>webhook approvals</b>
       — a single-use token POSTed to Slack/Teams, approved out-of-band with <code>wrench approve</code>.
       <code>--json</code> (<code>wrench.audit.v1</code>) + Prometheus gauges. All three default <b>OFF</b>.</p></div>
+    <div class="card"><span class="ico">🔧</span><h3>Fleet mode — many nodes, one view</h3>
+      <p>The home→enterprise jump. Any wrench install run as <code>wrench fleet serve</code> is a
+      <b>hub</b>; any install with a <code>[fleet]</code> token is a <b>node</b> that pushes a
+      <b>compact signed snapshot</b> (built from <b>cached</b> scans — never a rerun) after each
+      patrol. <b>HMAC-SHA256</b> shared-token auth (constant-time verify; the hub stores only the
+      token's hash). A <b>dead-man's switch</b> marks a node <b>SILENT</b> when it goes quiet past
+      <code>2×</code> its cadence and raises a <b>critical</b> notification — silence made loud.
+      Fleet dashboard grid (green/yellow/red/silent), <code>wrench_fleet_*</code> Prometheus gauges,
+      registrations &amp; silent transitions sealed into the audit chain. <code>--json</code>
+      (<code>wrench.fleet.v1</code>). Default <b>OFF</b> — no <code>[fleet]</code> config, zero change.</p></div>
     <div class="card"><span class="ico">🔌</span><h3>Wire it into your stack</h3>
       <p>Every read command speaks <b><code>--json</code></b> — one stable document
       (<code>wrench.status.v1</code>…), clean exit codes, pipe straight into <code>jq</code> or CI.

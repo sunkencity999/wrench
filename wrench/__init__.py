@@ -1,3 +1,3 @@
 """wrench — an intentional local sysadmin agent."""
 
-__version__ = "1.8.0"
+__version__ = "2.0.0"

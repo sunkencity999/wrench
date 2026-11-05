@@ -548,6 +548,77 @@ kept under the data dir. Real applications are gated exactly like `fixxer`
 and `certs renew`: policy tier `repair`/`autonomous`, or a recorded
 `wrench blueprint consent` ceremony.
 
+### `wrench fleet` — many nodes, one view
+
+One box watching itself is a home lab. A hundred boxes reporting to one pane of
+glass is operations. `wrench fleet` is the single biggest home→enterprise jump:
+a lightweight, **stdlib-only, push-based** reporting fabric with a built-in
+dead-man's switch. It is **default OFF** — no `[fleet]` config means zero change.
+
+- A **node** is any wrench install with a `[fleet]` section (`hub_url` + a shared
+  `token`). After each patrol it pushes a *compact* snapshot — status, worst
+  severity, top findings, key gauges (disk/mem/swap, cert/backup/security/forecast
+  worsts, version) — built entirely from **already-cached** scan results. It never
+  reruns an expensive scan, and an unreachable hub never breaks a patrol (the last
+  report is queued and retried next patrol).
+- A **hub** is any wrench install run with `wrench fleet serve`. It accepts signed
+  reports over HTTP, stores them in sqlite, and renders a fleet dashboard, a
+  Prometheus rollup, and a dead-man's switch.
+
+**Auth is an HMAC-SHA256 shared token.** The node signs the exact request body;
+the hub verifies against its `authorized_tokens` with a constant-time compare.
+The token is a shared secret — it is **never logged**, and the hub persists only
+its SHA-256 fingerprint in sqlite, never the raw value. TLS is out of scope by
+design: run the hub behind an nginx/caddy reverse proxy for the public internet.
+
+**Run the fleet in 2 minutes.** On the hub:
+
+```console
+$ wrench fleet token --label web-01     # generates a token, prints it ONCE
+🔧 new node token (shown once): 9bbe…0d7b
+```
+
+Paste that token into the hub's config and into the node's config:
+
+```toml
+# hub   ~/.config/wrench/config.toml
+[fleet]
+listen_host       = "127.0.0.1"
+listen_port       = 8788
+authorized_tokens = ["9bbe…0d7b"]
+
+# node  ~/.config/wrench/config.toml
+[fleet]
+hub_url = "http://hub.example:8788"
+token   = "9bbe…0d7b"
+node_id = "web-01"          # optional; defaults to hostname
+```
+
+```console
+# hub
+$ wrench fleet serve        # nodes POST to /api/fleet/report; dashboard at /fleet
+
+# node
+$ wrench fleet report       # build from cached scans + push (also runs each patrol)
+✔ reported to http://hub.example:8788  (HTTP 200; status=attention, worst=warning)
+
+# hub
+$ wrench fleet status        # table of every node (+ --json wrench.fleet.v1)
+🔧 fleet — 1 node(s): 0 ok / 1 attn / 0 crit / 0 silent
+```
+
+**The dead-man's switch.** The hub knows each node's natural cadence (the node
+declares its patrol interval). When a node's last report is older than
+`silent_factor × cadence` (default 2×), `wrench fleet status` and the dashboard
+mark it **SILENT**, and the hub's own patrol raises a **critical** notification
+through the existing channel (desktop/webhook/syslog/SIEM). A silent box is the
+one you most need to hear about — so wrench makes silence loud. Node
+registrations and every SILENT⇄live transition are sealed into the tamper-evident
+audit chain, and the hub exports `wrench_fleet_nodes`, `wrench_fleet_nodes_silent`,
+and per-node `wrench_fleet_node_status` / `_last_seen_timestamp_seconds` gauges
+for Grafana. The fleet dashboard (`/fleet`) is a green/yellow/red/silent grid in
+the same dark, dependency-free style as the box dashboard.
+
 ### `wrench audit` — prove what happened
 
 Compliance asks a brutal question: *can you prove nothing was tampered with?*
