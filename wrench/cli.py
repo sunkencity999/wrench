@@ -931,6 +931,8 @@ def _consent_ceremony(cfg) -> bool:
     if not tiers:
         tiers = ["safe"]
     p = fx.write_consent(cfg, tiers)
+    from . import audit as _amod
+    _amod.log_event(cfg, "consent.grant", {"subsystem": "fixxer", "tiers": tiers})
     console.print(f"[green]consent recorded[/green] for tiers: [bold]{', '.join(tiers)}[/bold]\n"
                   f"[dim]{p}[/dim]")
     if "moderate" in tiers:
@@ -962,6 +964,8 @@ def fixxer(
 
     if revoke_auto:
         if fx.revoke_consent(cfg):
+            from . import audit as _amod
+            _amod.log_event(cfg, "consent.revoke", {"subsystem": "fixxer"})
             console.print("[green]auto-mode consent revoked.[/green] I'm back to always asking first.")
         else:
             console.print("[dim]no consent was recorded \u2014 nothing to revoke[/dim]")
@@ -1303,6 +1307,8 @@ def _renew_consent_ceremony(cfg) -> bool:
         console.print("[dim]no consent \u2014 renewal stays dry-run only.[/dim]")
         return False
     p = cmod.write_renew_consent(cfg)
+    from . import audit as _amod
+    _amod.log_event(cfg, "consent.grant", {"subsystem": "certs"})
     console.print(f"[green]renewal consent recorded[/green] [dim]{p}[/dim]")
     return True
 
@@ -1331,7 +1337,11 @@ def certs_renew(
     cfg, store = _ctx()
 
     if revoke_consent:
-        console.print("[green]renewal consent revoked.[/green]" if cmod.revoke_renew_consent(cfg)
+        _revoked = cmod.revoke_renew_consent(cfg)
+        if _revoked:
+            from . import audit as _amod
+            _amod.log_event(cfg, "consent.revoke", {"subsystem": "certs"})
+        console.print("[green]renewal consent revoked.[/green]" if _revoked
                       else "[dim]no renewal consent was recorded.[/dim]")
         return
     if setup_consent:
@@ -1532,6 +1542,8 @@ def _bp_consent_ceremony(cfg) -> bool:
         console.print("[dim]no consent recorded.[/dim]")
         return False
     p = bp.write_consent(cfg)
+    from . import audit as _amod
+    _amod.log_event(cfg, "consent.grant", {"subsystem": "blueprint"})
     console.print(f"[green]consent recorded[/green] [dim]\u2192 {p}[/dim]")
     return True
 
@@ -1675,8 +1687,12 @@ def blueprint_consent(
     from . import blueprint as bp
     cfg, _store = _ctx()
     if revoke:
+        _revoked = bp.revoke_consent(cfg)
+        if _revoked:
+            from . import audit as _amod
+            _amod.log_event(cfg, "consent.revoke", {"subsystem": "blueprint"})
         console.print("[green]blueprint consent revoked.[/green]"
-                      if bp.revoke_consent(cfg)
+                      if _revoked
                       else "[dim]no blueprint consent was recorded.[/dim]")
         return
     _bp_consent_ceremony(cfg)
@@ -1878,6 +1894,11 @@ def security_accept(
         console.print("[dim]baseline unchanged.[/dim]")
         raise typer.Exit(0)
     sec.baseline_accept(store, observed)
+    from . import audit as _amod
+    _amod.log_event(cfg, "security.baseline.accept", {
+        "known_ips": len(auth.get("known_ips", [])),
+        "sudo_users": len(auth.get("sudo_users", [])),
+        "listeners": len(observed.get("listeners", {}))})
     console.print("[green]baseline accepted[/green] — deltas now alarm against it.")
 
 

@@ -289,6 +289,47 @@ def render(store, data_dir: Path) -> str:
     except Exception:  # noqa: BLE001 — a scrape never dies on one family
         pass
 
+    # ---- audit log (hash-chained, tamper-evident) ----
+    try:
+        from . import audit
+        chain = audit.verify(data_dir)
+        b.metric("wrench_audit_entries",
+                 "Sealed records in the audit chain (incl. genesis).", "gauge")
+        b.sample("wrench_audit_entries", chain.get("count", 0))
+        b.metric("wrench_audit_intact",
+                 "1 when the audit hash chain verifies end-to-end, 0 when broken.",
+                 "gauge")
+        b.sample("wrench_audit_intact", 1 if chain.get("intact") else 0)
+        recs = audit.recent(data_dir, limit=1)
+        b.metric("wrench_audit_last_event_timestamp_seconds",
+                 "Unix time of the newest audit event.", "gauge")
+        if recs:
+            b.sample("wrench_audit_last_event_timestamp_seconds", recs[-1].get("ts"))
+    except Exception:  # noqa: BLE001 — a scrape never dies on one family
+        pass
+
+    # ---- approvals (async webhook approval tokens) ----
+    try:
+        rows = store.recent_approvals(1000)
+        now = time.time()
+        states = {"pending": 0, "approved": 0, "claimed": 0, "expired": 0}
+        for r in rows:
+            if r["claimed"]:
+                states["claimed"] += 1
+            elif r["approved"]:
+                states["approved"] += 1
+            elif now > r["expires"]:
+                states["expired"] += 1
+            else:
+                states["pending"] += 1
+        b.metric("wrench_approvals",
+                 "Approval tokens by state (pending/approved/claimed/expired).",
+                 "gauge")
+        for stt, n in sorted(states.items()):
+            b.sample("wrench_approvals", n, {"state": stt})
+    except Exception:  # noqa: BLE001
+        pass
+
     b.metric("wrench_scrape_timestamp_seconds", "Unix time of this scrape.", "gauge")
     b.sample("wrench_scrape_timestamp_seconds", time.time())
     return b.text()

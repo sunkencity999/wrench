@@ -191,3 +191,32 @@ def test_bare_exporter_server(tmp_path):
 
 
 import urllib.error  # noqa: E402  (used in the test above)
+
+
+def test_audit_and_approval_gauges(store, tmp_path):
+    from wrench import audit, approvals
+    # seal a couple of audit events + create/approve one approval token
+    store.add_action("repair", "fixxer:disk-clean", "rm -rf /x", True, "ok")
+    audit.append(tmp_path, "consent.grant", {"subsystem": "fixxer"})
+    token, _ = approvals.create_pending(store, "fixxer apply", "d")
+    approvals.approve(store, token)
+    text = metrics.render(store, tmp_path)
+    assert _value(text, "wrench_audit_intact") == 1.0
+    assert _value(text, "wrench_audit_entries") >= 3.0
+    assert _value(text, "wrench_approvals", '{state="approved"}') == 1.0
+    for line in text.strip().splitlines():
+        assert EXPO_LINE.match(line), f"bad exposition line: {line!r}"
+
+
+def test_audit_intact_gauge_flips_on_tamper(store, tmp_path):
+    from wrench import audit
+    for i in range(3):
+        audit.append(tmp_path, f"e{i}", {"n": i})
+    p = audit.audit_path(tmp_path)
+    lines = p.read_text().splitlines()
+    import json as _j
+    victim = _j.loads(lines[1]); victim["detail"] = {"n": 999}
+    lines[1] = _j.dumps(victim)
+    p.write_text("\n".join(lines) + "\n")
+    text = metrics.render(store, tmp_path)
+    assert _value(text, "wrench_audit_intact") == 0.0
