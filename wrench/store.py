@@ -105,6 +105,39 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_action ON approvals (action);
 
+CREATE TABLE IF NOT EXISTS fleet_nodes (
+    node_id TEXT PRIMARY KEY,
+    hostname TEXT,
+    token_hash TEXT,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    status TEXT,
+    worst_severity TEXT,
+    summary TEXT,
+    cadence_s REAL,
+    wrench_version TEXT,
+    findings TEXT,
+    gauges TEXT,
+    report_count INTEGER NOT NULL DEFAULT 0,
+    silent INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS fleet_reports (
+    node_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    status TEXT,
+    worst_severity TEXT,
+    summary TEXT,
+    payload TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_reports ON fleet_reports (node_id, ts);
+
+CREATE TABLE IF NOT EXISTS fleet_tokens (
+    token_hash TEXT PRIMARY KEY,
+    label TEXT,
+    created REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tokens_spent (
     ts REAL NOT NULL,
     provider TEXT NOT NULL,
@@ -424,6 +457,111 @@ class Store:
             (key, time.time(), json.dumps(payload)),
         )
         self.db.commit()
+
+    # ---- fleet (hub side) ----
+    def upsert_fleet_node(self, node_id: str, hostname: str, token_hash: str,
+                          status: str, worst_severity: str, summary: str,
+                          cadence_s: float | None, wrench_version: str,
+                          findings: list | None, gauges: dict | None,
+                          now: float, silent: int = 0) -> dict:
+        """Insert/update a node row from an ingested report. Returns the row.
+
+        ``first_seen`` and ``report_count`` accumulate across reports; ``silent``
+        is preserved on update (the dead-man transition logic owns that flag).
+        """
+        cur = self.db.execute(
+            "SELECT first_seen, report_count, silent FROM fleet_nodes WHERE node_id=?",
+            (node_id,))
+        row = cur.fetchone()
+        first_seen = row[0] if row else now
+        count = (row[1] if row else 0) + 1
+        keep_silent = silent if row is None else row[2]
+        self.db.execute(
+            "INSERT INTO fleet_nodes (node_id, hostname, token_hash, first_seen, "
+            "last_seen, status, worst_severity, summary, cadence_s, wrench_version, "
+            "findings, gauges, report_count, silent) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(node_id) DO UPDATE SET hostname=excluded.hostname, "
+            "token_hash=excluded.token_hash, last_seen=excluded.last_seen, "
+            "status=excluded.status, worst_severity=excluded.worst_severity, "
+            "summary=excluded.summary, cadence_s=excluded.cadence_s, "
+            "wrench_version=excluded.wrench_version, findings=excluded.findings, "
+            "gauges=excluded.gauges, report_count=excluded.report_count",
+            (node_id, hostname, token_hash, first_seen, now, status, worst_severity,
+             summary, cadence_s, wrench_version, json.dumps(findings or []),
+             json.dumps(gauges or {}), count, keep_silent),
+        )
+        self.db.execute(
+            "INSERT INTO fleet_reports (node_id, ts, status, worst_severity, summary, payload) "
+            "VALUES (?,?,?,?,?,?)",
+            (node_id, now, status, worst_severity, summary,
+             json.dumps({"findings": findings or [], "gauges": gauges or {}})),
+        )
+        self.db.commit()
+        return self.get_fleet_node(node_id)
+
+    def prune_fleet_reports(self, node_id: str, keep: int = 200) -> int:
+        """Cap a node's report history to the newest ``keep`` rows. Returns deleted."""
+        cur = self.db.execute(
+            "SELECT COUNT(*) FROM fleet_reports WHERE node_id=?", (node_id,))
+        total = cur.fetchone()[0]
+        if total <= keep:
+            return 0
+        self.db.execute(
+            "DELETE FROM fleet_reports WHERE node_id=? AND ts NOT IN "
+            "(SELECT ts FROM fleet_reports WHERE node_id=? ORDER BY ts DESC LIMIT ?)",
+            (node_id, node_id, keep),
+        )
+        self.db.commit()
+        return total - keep
+
+    def _fleet_row(self, r) -> dict:
+        return dict(
+            node_id=r[0], hostname=r[1], token_hash=r[2], first_seen=r[3],
+            last_seen=r[4], status=r[5], worst_severity=r[6], summary=r[7],
+            cadence_s=r[8], wrench_version=r[9],
+            findings=json.loads(r[10] or "[]"), gauges=json.loads(r[11] or "{}"),
+            report_count=r[12], silent=bool(r[13]),
+        )
+
+    _FLEET_COLS = ("node_id, hostname, token_hash, first_seen, last_seen, status, "
+                   "worst_severity, summary, cadence_s, wrench_version, findings, "
+                   "gauges, report_count, silent")
+
+    def get_fleet_node(self, node_id: str) -> dict | None:
+        cur = self.db.execute(
+            f"SELECT {self._FLEET_COLS} FROM fleet_nodes WHERE node_id=?", (node_id,))
+        r = cur.fetchone()
+        return self._fleet_row(r) if r else None
+
+    def fleet_nodes(self) -> list[dict]:
+        cur = self.db.execute(
+            f"SELECT {self._FLEET_COLS} FROM fleet_nodes ORDER BY last_seen DESC")
+        return [self._fleet_row(r) for r in cur.fetchall()]
+
+    def set_fleet_silent(self, node_id: str, silent: bool) -> None:
+        self.db.execute("UPDATE fleet_nodes SET silent=? WHERE node_id=?",
+                        (int(silent), node_id))
+        self.db.commit()
+
+    def fleet_report_history(self, node_id: str, limit: int = 50) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT ts, status, worst_severity, summary FROM fleet_reports "
+            "WHERE node_id=? ORDER BY ts DESC LIMIT ?", (node_id, limit))
+        return [dict(ts=r[0], status=r[1], worst_severity=r[2], summary=r[3])
+                for r in cur.fetchall()]
+
+    def add_fleet_token(self, token_hash: str, label: str, created: float) -> None:
+        self.db.execute(
+            "INSERT INTO fleet_tokens (token_hash, label, created) VALUES (?,?,?) "
+            "ON CONFLICT(token_hash) DO UPDATE SET label=excluded.label",
+            (token_hash, label, created))
+        self.db.commit()
+
+    def fleet_tokens(self) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT token_hash, label, created FROM fleet_tokens ORDER BY created DESC")
+        return [dict(token_hash=r[0], label=r[1], created=r[2]) for r in cur.fetchall()]
 
     # ---- housekeeping ----
     def prune(self, retention_days: int = 30) -> None:
