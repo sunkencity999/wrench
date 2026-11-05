@@ -1276,6 +1276,69 @@ def _select_renew_targets(rows: list[dict], name: str | None, all_: bool) -> lis
     return out
 
 
+@certs_app.command("audit")
+def certs_audit(
+    no_probe: bool = typer.Option(False, "--no-probe",
+                                  help="skip the live localhost TLS handshake probes"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="skip the brain-narrated summary"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+):
+    """Weak-TLS audit: protocols/ciphers/HSTS/OCSP from configs + live probe, narrated."""
+    from . import certs as cmod
+    cfg, store = _ctx(provider, model)
+    with console.status("[cyan]auditing TLS posture (configs + live probe)..."):
+        rep = cmod.audit_report(do_probe=not no_probe)
+        for c in rep["certs"]:
+            store.upsert_cert(c.to_row())
+    cert_list = rep["certs"]
+    if cert_list:
+        console.print(_render_cert_table(cert_list))
+    wp = _render_weaknesses(rep["weaknesses"])
+    if wp is not None:
+        console.print(wp)
+    else:
+        console.print("[green]no weak TLS configuration detected in scanned configs.[/green]")
+    if rep["probes"]:
+        from rich.console import Group
+        rows = []
+        for p in rep["probes"]:
+            weak = p.get("weak_protocol")
+            rows.append(Text.assemble(
+                (f":{p['port']} ", "bold"),
+                (f"{p.get('protocol','?')} ", "red" if weak else "green"),
+                (f"{p.get('cipher','?')} ", "dim"),
+                ("\u26a0 below TLS 1.2" if weak else "ok",
+                 "bold red" if weak else "green")))
+        console.print(Panel(Group(*rows), border_style="bright_blue",
+                            title="\U0001f4e1 live TLS probe (localhost)"))
+
+    if no_llm or not (cfg.api_key or cfg.provider in ("ollama", "lmstudio")):
+        return
+    lines = cmod.audit_lines(rep)
+    if not lines:
+        return
+    from .providers import LLMClient
+    client = LLMClient(cfg, store)
+    try:
+        with console.status("[cyan]narrating the audit..."):
+            text = client.chat(
+                [{"role": "system",
+                  "content": "You are wrench, a sysadmin agent speaking in the first person "
+                             "about YOUR machine's TLS posture. You are shown an inventory of "
+                             "certificates, weak-configuration findings, and live-probe "
+                             "results. In 4-8 sentences: triage what actually matters "
+                             "(expiring certs, weak keys, protocols below TLS 1.2, missing "
+                             "HSTS/OCSP stapling), name the single most urgent action, and "
+                             "note that `wrench certs renew` can rotate a cert under the "
+                             "consent ceremony. No markdown headers, no filler."},
+                 {"role": "user", "content": "\n".join(lines)}],
+                purpose="certs-audit")
+        report.render_answer(console, text, f"{cfg.model} \u00b7 TLS audit")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[dim]narration unavailable ({e}) \u2014 the findings stand on their own[/dim]")
+
+
 app.add_typer(certs_app, name="certs")
 
 

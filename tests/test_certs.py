@@ -543,3 +543,36 @@ def test_renewal_permitted_tiers(tmp_path, monkeypatch):
     assert certs.revoke_renew_consent(cfg_suggest)
     ok, _ = certs.renewal_permitted(cfg_suggest)
     assert not ok
+
+
+# ---------------- audit ----------------
+
+def test_config_weakness_ocsp_and_hsts(tmp_path):
+    root = tmp_path / "nginx"
+    root.mkdir()
+    (root / "a.conf").write_text(
+        "server {\n listen 443 ssl;\n ssl_certificate /e/a.pem;\n"
+        " ssl_protocols TLSv1.2 TLSv1.3;\n}\n")
+    _refs, weak = certs.scan_config_certs([("nginx", root)])
+    kinds = {w.kind for w in weak}
+    assert "hsts_missing" in kinds
+    assert "ocsp_stapling_missing" in kinds
+
+
+def test_audit_report_and_lines(tmp_path, monkeypatch):
+    certdir = tmp_path / "store"
+    certdir.mkdir()
+    good, _ = _gen_cert(certdir, "a.example.com", 90, name="a") if HAVE_OPENSSL else (None, None)
+    nginx = tmp_path / "nginx"
+    nginx.mkdir()
+    cert_ref = str(good) if good else "/etc/ssl/x.pem"
+    (nginx / "a.conf").write_text(
+        f"server {{\n listen 443 ssl;\n ssl_certificate {cert_ref};\n"
+        " ssl_protocols TLSv1 TLSv1.2;\n}\n")
+    # no live probe (deterministic)
+    rep = certs.audit_report(config_roots=[("nginx", nginx)],
+                             wellknown_dirs=[certdir], do_probe=False)
+    assert any(w.kind == "tls_version" for w in rep["weaknesses"])
+    lines = certs.audit_lines(rep)
+    assert any("TLS < 1.2" in ln or "tls" in ln.lower() for ln in lines)
+    assert rep["probes"] == []

@@ -236,6 +236,7 @@ def _config_weaknesses(family: str, cf: Path, text: str) -> list[ConfigWeakness]
     out: list[ConfigWeakness] = []
     enables_tls = False
     has_hsts = False
+    has_stapling = False
     for line in text.splitlines():
         low = line.strip()
         if low.startswith("#"):
@@ -254,11 +255,19 @@ def _config_weaknesses(family: str, cf: Path, text: str) -> list[ConfigWeakness]
             enables_tls = True
         if re.search(r"Strict-Transport-Security", line, re.I):
             has_hsts = True
+        if re.search(r"ssl_stapling\s+on|SSLUseStapling\s+on", line, re.I):
+            has_stapling = True
     if enables_tls and not has_hsts and family in ("nginx", "apache"):
         out.append(ConfigWeakness(
             "hsts_missing", "info",
             f"{family}: TLS is served but no Strict-Transport-Security (HSTS) header "
             f"was found in this config",
+            str(cf)))
+    if enables_tls and not has_stapling and family in ("nginx", "apache"):
+        out.append(ConfigWeakness(
+            "ocsp_stapling_missing", "info",
+            f"{family}: OCSP stapling not enabled (no ssl_stapling/SSLUseStapling) "
+            f"in this config",
             str(cf)))
     return out
 
@@ -854,3 +863,51 @@ def renewal_permitted(cfg) -> tuple[bool, str]:
         return True, "renewal consent on record"
     return False, (f"policy tier '{tier}' is suggest-only and no renewal consent is "
                    "recorded — run `wrench certs renew --setup-consent` first")
+
+
+# ---------------- weak-TLS audit ----------------
+
+def audit_report(config_roots=None, wellknown_dirs=None,
+                 probe_host: str = "127.0.0.1", probe_ports=(443, 8443),
+                 do_probe: bool = True, now: float | None = None) -> dict:
+    """Aggregate a weak-TLS audit: certs, config weaknesses, live-probe findings.
+
+    Fully read-only. ``do_probe`` opens short TLS handshakes to local listeners
+    to observe the negotiated protocol/cipher; skip it with do_probe=False.
+    """
+    cert_list, weaknesses = inventory(config_roots, wellknown_dirs, now=now)
+    probes: list[dict] = []
+    if do_probe:
+        for port in probe_ports:
+            pr = probe_tls(probe_host, port, timeout=3.0)
+            if pr.get("ok") or pr.get("error", "").startswith(("ConnectionRefused",
+                                                               "TimeoutError")):
+                if pr.get("ok"):
+                    pr["weak_protocol"] = protocol_is_weak(pr.get("protocol", ""))
+                    probes.append(pr)
+    return {"certs": cert_list, "weaknesses": weaknesses, "probes": probes}
+
+
+def audit_lines(report: dict) -> list[str]:
+    """Flatten an audit report into briefing lines for the brain narration."""
+    lines: list[str] = []
+    for c in report.get("certs", []):
+        if not c.ok:
+            lines.append(f"- cert {c.path}: parse error ({c.error})")
+            continue
+        parts = [f"expires in {c.days_left}d" if c.days_left is not None else "no expiry"]
+        parts.append(f"{c.key_type}-{c.key_bits}" if c.key_bits else c.key_type)
+        if c.self_signed:
+            parts.append("self-signed")
+        if c.weak_key:
+            parts.append("WEAK KEY")
+        if c.chain_complete is False:
+            parts.append("incomplete chain")
+        lines.append(f"- cert {c.common_name}: " + ", ".join(p for p in parts if p))
+    for w in report.get("weaknesses", []):
+        lines.append(f"- [{w.severity}] {w.detail}")
+    for p in report.get("probes", []):
+        tag = " (WEAK <TLS1.2)" if p.get("weak_protocol") else ""
+        lines.append(f"- live :{p['port']} negotiated {p.get('protocol','?')}"
+                     f"/{p.get('cipher','?')}{tag}")
+    return lines
