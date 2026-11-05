@@ -302,3 +302,97 @@ def test_store_recent_certs_sorted_by_expiry(tmp_path):
     # ascending days_left, NULLs last
     assert order == ["/a.pem", "/b.pem", "/c.pem", "/d.pem"]
     s.close()
+
+
+# ---------------- patrol integration (cached, ladder, merge) ----------------
+
+class _CacheStore:
+    """Minimal store exposing the cache + upsert surface certs uses."""
+    def __init__(self):
+        self._cache = {}
+        self.certs = []
+
+    def cache_get(self, key, max_age_s):
+        v = self._cache.get(key)
+        if not v:
+            return None
+        ts, payload = v
+        if (time.time() - ts) > max_age_s:
+            return None
+        return payload
+
+    def cache_put(self, key, payload):
+        self._cache[key] = (time.time(), payload)
+
+    def upsert_cert(self, row, ts=None):
+        self.certs.append(row)
+
+
+def test_cached_inventory_caches(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_inventory(*a, **k):
+        calls["n"] += 1
+        c = certs.CertInfo(path="/x.pem", subject="CN=x", not_after=time.time() + 10 * 86400,
+                           days_left=10, key_type="RSA", key_bits=2048)
+        return [c], []
+
+    monkeypatch.setattr(certs, "inventory", fake_inventory)
+    store = _CacheStore()
+    certs.cached_inventory(None, store, cadence_s=3600)
+    certs.cached_inventory(None, store, cadence_s=3600)  # served from cache
+    assert calls["n"] == 1
+    assert store.certs  # persisted on the first (fresh) run
+
+
+def test_patrol_findings_expiry_ladder(monkeypatch):
+    def fake_inventory(*a, **k):
+        now = time.time()
+        certlist = [
+            certs.CertInfo(path="/exp.pem", subject="CN=exp", not_after=now - 86400,
+                           days_left=-1, key_type="RSA", key_bits=2048),
+            certs.CertInfo(path="/soon.pem", subject="CN=soon", not_after=now + 5 * 86400,
+                           days_left=5, key_type="RSA", key_bits=2048),
+            certs.CertInfo(path="/warn.pem", subject="CN=warn", not_after=now + 12 * 86400,
+                           days_left=12, key_type="RSA", key_bits=2048),
+            certs.CertInfo(path="/info.pem", subject="CN=info", not_after=now + 25 * 86400,
+                           days_left=25, key_type="RSA", key_bits=2048),
+            certs.CertInfo(path="/fine.pem", subject="CN=fine", not_after=now + 200 * 86400,
+                           days_left=200, key_type="RSA", key_bits=2048),
+        ]
+        weak = [certs.ConfigWeakness("tls_version", "warning", "TLS<1.2", "/etc/nginx/x.conf")]
+        return certlist, weak
+
+    monkeypatch.setattr(certs, "inventory", fake_inventory)
+    store = _CacheStore()
+    out = certs.patrol_findings(None, store)
+    sevs = {f["text"].split()[1]: f["severity"] for f in out if f["text"].startswith("certificate")}
+    assert sevs["exp"] == "critical"
+    assert sevs["soon"] == "critical"
+    assert sevs["warn"] == "warning"
+    assert sevs["info"] == "info"
+    assert "fine" not in sevs  # >30d: no finding
+    assert any(f["severity"] == "warning" and "TLS<1.2" in f["text"] for f in out)
+
+
+def test_merge_cert_findings_escalates_status():
+    from wrench.agent import _merge_cert_findings
+    # info never escalates
+    s, f = _merge_cert_findings("ok", [], [{"severity": "info", "text": "30d"}])
+    assert s == "ok" and len(f) == 1
+    # warning -> attention
+    s, f = _merge_cert_findings("ok", [], [{"severity": "warning", "text": "12d"}])
+    assert s == "attention"
+    # critical -> critical, even from attention
+    s, f = _merge_cert_findings("attention", [], [{"severity": "critical", "text": "expired"}])
+    assert s == "critical"
+    # never downgrades
+    s, f = _merge_cert_findings("critical", [], [{"severity": "info", "text": "x"}])
+    assert s == "critical"
+
+
+def test_patrol_severity_sees_cert_criticals():
+    from wrench import notifications as notif
+    p = {"status": "critical", "findings": [{"severity": "critical", "text": "cert expired"}]}
+    assert notif.patrol_severity(p) == "critical"
+    assert notif.should_notify(notif.patrol_severity(p), "attention")

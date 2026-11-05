@@ -205,8 +205,17 @@ class Agent:
                 lines.append(webintel.summary_line(webintel_res))
         except Exception:  # noqa: BLE001 — patrol never fails because the internet did
             pass
+        # TLS certificate lifecycle — cached, read-only, never fatal
+        cert_findings: list[dict] = []
+        try:
+            from . import certs
+            lines.append(certs.patrol_summary_line(self.cfg, self.store))
+            cert_findings = certs.patrol_findings(self.cfg, self.store)
+        except Exception:  # noqa: BLE001 — patrol never fails because a cert scan did
+            pass
         return "\n".join(lines), {"sensor": data, "drift": drift_changes,
-                                   "anomalies": anomalies, "webintel": webintel_res}
+                                   "anomalies": anomalies, "webintel": webintel_res,
+                                   "cert_findings": cert_findings}
 
 
 PATROL_GOAL = """\
@@ -259,6 +268,32 @@ def parse_patrol_answer(answer: str) -> tuple[str, str, list[dict]]:
     return status, summary, findings
 
 
+# Cert-finding severities map onto the patrol status ladder.
+_CERT_SEV_TO_STATUS = {"critical": "critical", "warning": "attention",
+                       "info": "ok"}
+_STATUS_RANK = {"ok": 0, "attention": 1, "critical": 2, "error": 2}
+
+
+def _merge_cert_findings(status: str, findings: list[dict],
+                         cert_findings: list[dict]) -> tuple[str, list[dict]]:
+    """Fold deterministic cert findings into the patrol and escalate status.
+
+    info-level cert findings are informational (shown, never page); warning
+    escalates ok→attention; critical escalates to critical. Returns the new
+    (status, findings).
+    """
+    if not cert_findings:
+        return status, findings
+    merged = list(findings)
+    for cf in cert_findings:
+        sev = (cf.get("severity") or "info").lower()
+        merged.append({"severity": sev, "text": cf.get("text", "")})
+        want = _CERT_SEV_TO_STATUS.get(sev, "ok")
+        if _STATUS_RANK.get(want, 0) > _STATUS_RANK.get(status, 0):
+            status = want
+    return status, merged
+
+
 def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None,
                deep: bool = False) -> dict:
     """Full patrol: observe, let the agent investigate, store + return the report."""
@@ -270,6 +305,18 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
     status, summary, findings = parse_patrol_answer(result["answer"])
     if result.get("error"):
         status, summary = "error", f"patrol failed: {result['error'][:200]}"
+    # Merge deterministic cert-lifecycle findings (the LLM is never trusted to
+    # compute expiry) and escalate overall status via the notification ladder.
+    prev_status = status
+    status, findings = _merge_cert_findings(
+        status, findings, raw_data.get("cert_findings") or [])
+    # If certs drove the escalation, make sure the human-visible summary says so.
+    if status != prev_status and _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(prev_status, 0):
+        paging = [cf for cf in (raw_data.get("cert_findings") or [])
+                  if (cf.get("severity") or "").lower() in ("warning", "critical")]
+        if paging:
+            note = paging[0]["text"]
+            summary = note if (not summary or prev_status == "ok") else f"{summary}; {note}"
     patrol_ts = store.add_patrol(model, status, summary, findings, result["answer"],
                                  result["tokens"])
     patrol = {

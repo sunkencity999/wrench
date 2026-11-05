@@ -505,3 +505,109 @@ def _resolve(path: str) -> str:
         return str(Path(path).resolve())
     except (OSError, RuntimeError):
         return path
+
+
+# ---------------- patrol integration (cached, offline-safe) ----------------
+
+CACHE_KEY = "cert_inventory"
+DEFAULT_CADENCE_S = 6 * 3600
+
+
+def cached_inventory(cfg, store, cadence_s: int = DEFAULT_CADENCE_S,
+                     force: bool = False) -> tuple[list[CertInfo], list[ConfigWeakness]]:
+    """Run inventory at most once per cadence; persist rows + cache the snapshot.
+
+    Reuses the store's TTL cache table. Never raises — a patrol must not die
+    because a cert scan hiccuped. On cache hit returns the cached snapshot
+    (days_left recomputed against now so the ladder stays accurate).
+    """
+    if not force:
+        cached = store.cache_get(CACHE_KEY, cadence_s)
+        if cached:
+            certs_out = [_cert_from_cache(d) for d in cached.get("certs", [])]
+            weak_out = [ConfigWeakness(**w) for w in cached.get("weaknesses", [])]
+            return certs_out, weak_out
+    cert_list, weaknesses = inventory()
+    for c in cert_list:
+        try:
+            store.upsert_cert(c.to_row())
+        except Exception:  # noqa: BLE001
+            pass
+    store.cache_put(CACHE_KEY, {
+        "certs": [c.to_row() for c in cert_list],
+        "weaknesses": [vars(w) for w in weaknesses],
+    })
+    return cert_list, weaknesses
+
+
+def _cert_from_cache(d: dict) -> CertInfo:
+    c = CertInfo(
+        path=d.get("path", ""), source=d.get("source", ""),
+        subject=d.get("subject", ""), issuer=d.get("issuer", ""),
+        serial=d.get("serial", ""), not_before=d.get("not_before", 0.0) or 0.0,
+        not_after=d.get("not_after", 0.0) or 0.0, sans=list(d.get("sans") or []),
+        key_type=d.get("key_type", ""), key_bits=d.get("key_bits"),
+        sig_algo=d.get("sig_algo", ""), is_ca=bool(d.get("is_ca")),
+        self_signed=bool(d.get("self_signed")),
+        chain_complete=d.get("chain_complete"),
+        fingerprint_sha256=d.get("fingerprint_sha256", "") or d.get("fingerprint", ""),
+        error=d.get("error", "") or "",
+    )
+    # recompute days_left against current time so the ladder stays fresh
+    if c.not_after:
+        c.days_left = int((c.not_after - time.time()) // 86400)
+    else:
+        c.days_left = d.get("days_left")
+    return c
+
+
+def patrol_findings(cfg, store, cadence_s: int = DEFAULT_CADENCE_S) -> list[dict]:
+    """Deterministic cert findings for a patrol — expiry ladder + weak config.
+
+    Returns a list of {severity, text} dicts using the same severity vocabulary
+    the notification ladder understands (critical/warning/info). Never raises.
+    """
+    try:
+        cert_list, weaknesses = cached_inventory(cfg, store, cadence_s)
+    except Exception:  # noqa: BLE001 — patrol never dies on a cert scan
+        return []
+    out: list[dict] = []
+    for c in cert_list:
+        if not c.ok:
+            continue
+        sev = c.expiry_severity()
+        if sev:
+            if c.days_left is not None and c.days_left < 0:
+                msg = f"certificate {c.common_name} EXPIRED {-c.days_left}d ago ({c.path})"
+            else:
+                msg = f"certificate {c.common_name} expires in {c.days_left}d ({c.path})"
+            out.append({"severity": sev, "text": msg})
+        if c.chain_complete is False:
+            out.append({"severity": "warning",
+                        "text": f"certificate {c.common_name} has an incomplete chain ({c.path})"})
+    for w in weaknesses:
+        out.append({"severity": w.severity, "text": w.detail})
+    return out
+
+
+def patrol_summary_line(cfg, store, cadence_s: int = DEFAULT_CADENCE_S) -> str:
+    """One context line for the patrol / dashboards."""
+    try:
+        cert_list, weaknesses = cached_inventory(cfg, store, cadence_s)
+    except Exception:  # noqa: BLE001
+        return "certs: scan unavailable"
+    if not cert_list:
+        return "certs: none found in configs or well-known stores"
+    soon = [c for c in cert_list if c.ok and c.expiry_severity()]
+    expired = [c for c in cert_list if c.ok and c.days_left is not None and c.days_left < 0]
+    bits = [f"{len(cert_list)} tracked"]
+    if expired:
+        bits.append(f"{len(expired)} EXPIRED")
+    if soon:
+        worst = min((c.days_left for c in soon if c.days_left is not None), default=None)
+        bits.append(f"{len(soon)} expiring ≤30d (soonest {worst}d)")
+    else:
+        bits.append("none expiring ≤30d")
+    if weaknesses:
+        bits.append(f"{len(weaknesses)} weak-TLS config finding(s)")
+    return "certs: " + ", ".join(bits)
