@@ -60,13 +60,15 @@ CONFIG_ROOTS: list[tuple[str, Path]] = [
     ("haproxy", Path("/etc/haproxy")),
 ]
 
-# Well-known cert stores scanned directly (leaf certs, not CA bundles).
+# Well-known cert stores scanned directly for SERVER leaf certs.
+# Deliberately excludes /etc/ssl/certs — on Debian/Ubuntu that is the system CA
+# trust store (a symlink farm of hundreds of root CAs), not server certs. CA
+# certs discovered anywhere under these dirs are filtered out of the inventory.
 WELLKNOWN_CERT_DIRS: list[Path] = [
     Path("/etc/letsencrypt/live"),
-    Path("/etc/ssl/certs"),
     Path("/etc/ssl/private"),
+    Path("/etc/ssl/localcerts"),
     Path("/etc/pki/tls/certs"),
-    Path("/etc/pki/tls"),
 ]
 
 CERT_SUFFIXES = (".pem", ".crt", ".cer", ".cert")
