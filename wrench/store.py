@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS certs (
     error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS approvals (
+    token_hash TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    detail TEXT,
+    created REAL NOT NULL,
+    expires REAL NOT NULL,
+    approved INTEGER NOT NULL DEFAULT 0,
+    claimed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_action ON approvals (action);
+
 CREATE TABLE IF NOT EXISTS tokens_spent (
     ts REAL NOT NULL,
     provider TEXT NOT NULL,
@@ -268,6 +279,64 @@ class Store:
             dict(ts=r[0], tier=r[1], kind=r[2], command=r[3], approved=bool(r[4]), result=r[5])
             for r in cur.fetchall()
         ]
+
+    # ---- approvals (webhook approval tokens) ----
+    def add_approval(self, token_hash: str, action: str, detail: str,
+                     created: float, expires: float) -> None:
+        self.db.execute(
+            "INSERT INTO approvals (token_hash, action, detail, created, expires, "
+            "approved, claimed) VALUES (?,?,?,?,?,0,0) "
+            "ON CONFLICT(token_hash) DO UPDATE SET action=excluded.action, "
+            "detail=excluded.detail, created=excluded.created, expires=excluded.expires, "
+            "approved=0, claimed=0",
+            (token_hash, action, detail, created, expires),
+        )
+        self.db.commit()
+
+    def get_approval(self, token_hash: str) -> dict | None:
+        cur = self.db.execute(
+            "SELECT token_hash, action, detail, created, expires, approved, claimed "
+            "FROM approvals WHERE token_hash=?", (token_hash,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return dict(token_hash=r[0], action=r[1], detail=r[2], created=r[3],
+                    expires=r[4], approved=bool(r[5]), claimed=bool(r[6]))
+
+    def set_approval_flags(self, token_hash: str, approved: bool | None = None,
+                           claimed: bool | None = None) -> None:
+        sets, args = [], []
+        if approved is not None:
+            sets.append("approved=?")
+            args.append(int(approved))
+        if claimed is not None:
+            sets.append("claimed=?")
+            args.append(int(claimed))
+        if not sets:
+            return
+        args.append(token_hash)
+        self.db.execute(f"UPDATE approvals SET {', '.join(sets)} WHERE token_hash=?", args)
+        self.db.commit()
+
+    def approved_unclaimed_for(self, action: str, now: float) -> dict | None:
+        """Oldest approved, unclaimed, unexpired approval for an action, if any."""
+        cur = self.db.execute(
+            "SELECT token_hash, action, detail, created, expires, approved, claimed "
+            "FROM approvals WHERE action=? AND approved=1 AND claimed=0 AND expires>? "
+            "ORDER BY created LIMIT 1", (action, now))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return dict(token_hash=r[0], action=r[1], detail=r[2], created=r[3],
+                    expires=r[4], approved=bool(r[5]), claimed=bool(r[6]))
+
+    def recent_approvals(self, limit: int = 50) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT token_hash, action, detail, created, expires, approved, claimed "
+            "FROM approvals ORDER BY created DESC LIMIT ?", (limit,))
+        return [dict(token_hash=r[0], action=r[1], detail=r[2], created=r[3],
+                     expires=r[4], approved=bool(r[5]), claimed=bool(r[6]))
+                for r in cur.fetchall()]
 
     # ---- tokens ----
     def add_tokens(

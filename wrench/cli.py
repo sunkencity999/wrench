@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import platform
+import sys
 import time
 from pathlib import Path
 
@@ -73,6 +74,34 @@ def _enforce_window(cfg, operation: str, override_window: bool, has_consent: boo
         _amod.log_event(cfg, "window.override",
                         {"operation": operation, "reason": dec.reason})
         console.print(f"[yellow]⏳ {dec.reason}[/yellow]")
+
+
+def _approval_gate(cfg, store, action: str, detail: str) -> None:
+    """Out-of-band approval for a consent-gated action in a non-TTY context.
+
+    - approvals not configured → no-op (default; behavior unchanged);
+    - interactive TTY → no-op (the normal consent ceremony runs);
+    - an approval already granted out-of-band → claim it and proceed;
+    - otherwise → mint a single-use token, POST it to the approval webhook,
+      tell the operator how to approve, and EXIT CLEANLY (never hang).
+    """
+    from . import approvals, audit as _amod
+    st = approvals.settings_from(cfg)
+    if not st.enabled or sys.stdin.isatty():
+        return
+    if approvals.claim_approval(store, action):
+        _amod.log_event(cfg, "approval.claimed", {"action": action})
+        console.print("[green]✔ approved out-of-band — proceeding[/green]")
+        return
+    token, posted = approvals.create_and_notify(cfg, store, action, detail)
+    _amod.log_event(cfg, "approval.requested", {"action": action, "posted": posted})
+    console.print(Panel(
+        "[yellow]pending approval[/yellow] — this action needs out-of-band "
+        "approval before it runs.\n"
+        f"a second channel must run: [bold]wrench approve {token}[/bold]\n"
+        f"webhook POST: {'sent' if posted else 'not sent (check approval_webhook_url)'}",
+        border_style="yellow", title="⏸ pending approval"))
+    raise typer.Exit(0)
 
 
 PROVIDER_OPT = typer.Option(None, "--provider", "-p",
@@ -1015,6 +1044,10 @@ def fixxer(
         console.print(Panel("\n".join(lines), border_style="cyan", title="\U0001f527 fixxer --dry-run"))
         return
 
+    if not auto:
+        _approval_gate(cfg, store, "fixxer apply",
+                       f"{len(findings)} finding(s) pending")
+
     # ---- auto: consented tiers, no questions ----
     if auto:
         consent = fx.load_consent(cfg)
@@ -1332,6 +1365,8 @@ def certs_renew(
             console.print(f"[yellow]{reason}[/yellow]")
             if not _renew_consent_ceremony(cfg):
                 raise typer.Exit(2)
+        _approval_gate(cfg, store, "certs renew --execute",
+                       f"{len(targets)} cert(s) via {tool}")
         _enforce_window(cfg, "certs renew --execute", override_window, True)
 
     console.print(f"[dim]tool: [bold]{tool}[/bold] \u00b7 mode: "
@@ -1574,6 +1609,7 @@ def blueprint_main(
         console.print(f"[yellow]{reason}[/yellow]")
         if not _bp_consent_ceremony(cfg):
             raise typer.Exit(2)
+    _approval_gate(cfg, store, "blueprint --execute", plan.intent[:120])
     _enforce_window(cfg, "blueprint --execute", override_window, True)
     if not yes and not typer.confirm(
             f"apply this blueprint to {', '.join(plan.files)}?", default=False):
@@ -2079,6 +2115,74 @@ def audit_verify(json_out: bool = JSON_OPT):
 
 
 app.add_typer(audit_app, name="audit")
+
+
+@app.command("approve")
+def approve_cmd(token: str = typer.Argument(..., help="approval token from the pending-approval webhook")):
+    """Approve a pending action (the second channel in an async approval flow)."""
+    from . import approvals, audit as _amod
+    cfg, store = _ctx()
+    res = approvals.approve(store, token)
+    status = res["status"]
+    if status == "approved":
+        _amod.log_event(cfg, "approval.granted", {"action": res["action"]})
+        console.print(Panel(
+            f"[green]✔ approved[/green] — action [bold]{res['action']}[/bold] "
+            "may now proceed on its next run.",
+            border_style="green", title="✅ wrench approve"))
+        return
+    msgs = {
+        "not_found": "[red]unknown token[/red] — no pending approval matches it.",
+        "expired": "[yellow]token expired[/yellow] — request a fresh approval.",
+        "already_used": "[yellow]already used[/yellow] — this token was already approved (single-use).",
+    }
+    console.print(Panel(msgs.get(status, f"[red]{status}[/red]"),
+                        border_style="red", title="✅ wrench approve"))
+    raise typer.Exit(1)
+
+
+@app.command("approvals")
+def approvals_cmd(json_out: bool = JSON_OPT):
+    """List recent approval tokens and their state (hashes only; never plaintext)."""
+    from . import approvals as _ap
+    cfg, store = _ctx()
+    rows = store.recent_approvals(50)
+    now = time.time()
+    def _state(r):
+        if r["claimed"]:
+            return "claimed"
+        if r["approved"]:
+            return "approved"
+        if now > r["expires"]:
+            return "expired"
+        return "pending"
+    if json_out:
+        jsonout.emit("approvals", {
+            "count": len(rows),
+            "approvals": [{"action": r["action"], "detail": r["detail"],
+                           "created": r["created"], "expires": r["expires"],
+                           "state": _state(r)} for r in rows],
+        })
+        return
+    if not rows:
+        console.print(Panel(
+            "[dim]no approval tokens yet.[/dim] Configure [bold]approval_webhook_url[/bold] "
+            "under [approvals] to require out-of-band approval for consent-gated changes.",
+            border_style="bright_blue", title="✅ wrench approvals"))
+        return
+    t = Table(title="✅ approval tokens", border_style="bright_blue")
+    t.add_column("when", style="dim", no_wrap=True)
+    t.add_column("action", style="bold")
+    t.add_column("detail", overflow="fold")
+    t.add_column("state")
+    _style = {"pending": "yellow", "approved": "green", "claimed": "cyan",
+              "expired": "dim"}
+    for r in rows:
+        stt = _state(r)
+        t.add_row(time.strftime("%Y-%m-%d %H:%M", time.localtime(r["created"])),
+                  r["action"], str(r["detail"])[:60],
+                  Text(stt, style=_style.get(stt, "white")))
+    console.print(t)
 
 
 # ---------------- forecast (capacity forecasting) ----------------
