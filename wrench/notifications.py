@@ -13,6 +13,14 @@ Config (``[notify]`` in config.toml):
     min_severity = "attention"   # ok|info < attention < error < critical
     desktop      = true          # notify-send / osascript / powershell toast
     webhook_url  = ""            # generic JSON POST (ntfy, Slack, Discord, ...)
+
+    # syslog / SIEM sink (RFC 5424)
+    syslog_address      = ""     # "/dev/log", "udp://host:514", "tcp://host:514"
+    syslog_min_severity = ""     # per-sink threshold (defaults to min_severity)
+
+    # JSON-lines-over-HTTP sink (Splunk HEC-style / ELK http input / vector)
+    http_jsonl_url          = ""  # POST one JSON object per line (ndjson)
+    http_jsonl_min_severity = ""  # per-sink threshold (defaults to min_severity)
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ import json
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import time
 import urllib.request
@@ -51,6 +60,10 @@ class NotifySettings:
     min_severity: str = "attention"
     desktop: bool = True
     webhook_url: str = ""
+    syslog_address: str = ""
+    syslog_min_severity: str = ""
+    http_jsonl_url: str = ""
+    http_jsonl_min_severity: str = ""
 
 
 def settings_from(cfg) -> NotifySettings:
@@ -63,6 +76,10 @@ def settings_from(cfg) -> NotifySettings:
         min_severity=str(sec.get("min_severity", "attention")).lower(),
         desktop=bool(sec.get("desktop", True)),
         webhook_url=str(sec.get("webhook_url", "") or ""),
+        syslog_address=str(sec.get("syslog_address", "") or ""),
+        syslog_min_severity=str(sec.get("syslog_min_severity", "") or "").lower(),
+        http_jsonl_url=str(sec.get("http_jsonl_url", "") or ""),
+        http_jsonl_min_severity=str(sec.get("http_jsonl_min_severity", "") or "").lower(),
     )
 
 
@@ -238,6 +255,191 @@ def send_webhook(url: str, rec: dict, data_dir: Path,
         return False
 
 
+# ---------------- syslog sink (RFC 5424) ----------------
+
+# wrench severity ladder → syslog severity numbers (RFC 5424 §6.2.1)
+_SYSLOG_SEVERITY = {"ok": 6, "info": 6, "recommendation": 6,
+                    "attention": 4, "warning": 4,
+                    "error": 3, "critical": 2}
+_SYSLOG_FACILITY = 1  # user-level messages
+SYSLOG_TIMEOUT_S = 5
+
+
+def parse_syslog_address(address: str) -> tuple[str, str, int]:
+    """Parse a syslog_address config value.
+
+    Returns (scheme, host_or_path, port). Schemes: unix | udp | tcp.
+    Accepted forms: "/dev/log", "udp://host:514", "tcp://host:601",
+    bare "host:514" (treated as udp).
+    """
+    a = (address or "").strip()
+    if not a:
+        raise ValueError("empty syslog address")
+    if a.startswith("/"):
+        return ("unix", a, 0)
+    scheme = "udp"
+    rest = a
+    if "://" in a:
+        scheme, rest = a.split("://", 1)
+        scheme = scheme.lower()
+    if scheme not in ("udp", "tcp"):
+        raise ValueError(f"unsupported syslog scheme {scheme!r}")
+    host, _, port_s = rest.rpartition(":")
+    if not host:
+        host, port_s = rest, ""
+    try:
+        port = int(port_s) if port_s else 514
+    except ValueError:
+        raise ValueError(f"bad syslog port {port_s!r}") from None
+    return (scheme, host, port)
+
+
+def _sd_escape(v: str) -> str:
+    """Escape a value for an RFC 5424 SD-PARAM."""
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]")
+
+
+def format_rfc5424(rec: dict, hostname: str | None = None,
+                   app: str = "wrench") -> str:
+    """Render one notification record as an RFC 5424 syslog message.
+
+    PRI = facility*8 + severity; structured data carries the machine fields.
+    """
+    sev_name = (rec.get("severity") or "attention").lower()
+    pri = _SYSLOG_FACILITY * 8 + _SYSLOG_SEVERITY.get(sev_name, 5)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(rec.get("ts") or time.time()))
+    ts = ts[:-2] + ":" + ts[-2:] if len(ts) >= 5 else ts  # +0000 → +00:00
+    host = hostname or platform.node() or "-"
+    msgid = (rec.get("kind") or "patrol").replace(" ", "_")[:32]
+    sd = (f'[wrench@32473 severity="{_sd_escape(sev_name)}"'
+          f' kind="{_sd_escape(rec.get("kind") or "patrol")}"'
+          f' id="{_sd_escape(rec.get("id") or "-")}"]')
+    msg = (rec.get("summary") or "").replace("\n", " ")[:800]
+    return f"<{pri}>1 {ts} {host} {app} {os.getpid()} {msgid} {sd} {msg}"
+
+
+def send_syslog(address: str, rec: dict, data_dir: Path,
+                timeout: float = SYSLOG_TIMEOUT_S, sock_factory=None) -> bool:
+    """Send one RFC 5424 message. Failures are logged, never raised."""
+    if not address:
+        return False
+    try:
+        scheme, host, port = parse_syslog_address(address)
+        line = format_rfc5424(rec)
+        data = line.encode("utf-8", "replace")
+        if sock_factory is not None:
+            sock = sock_factory(scheme)
+        elif scheme == "unix":
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        elif scheme == "udp":
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(timeout)
+            if scheme == "unix":
+                sock.connect(host)
+                sock.send(data)
+            elif scheme == "udp":
+                sock.sendto(data, (host, port))
+            else:  # tcp — RFC 6587 octet-counted framing
+                sock.connect((host, port))
+                sock.sendall(f"{len(data)} ".encode() + data)
+        finally:
+            sock.close()
+        return True
+    except Exception as e:  # noqa: BLE001 — best-effort by contract
+        _log(data_dir, f"syslog sink failed: {e.__class__.__name__}: {e}")
+        return False
+
+
+# ---------------- JSON-lines-over-HTTP sink (Splunk/ELK style) ----------------
+
+def jsonl_payload(rec: dict) -> dict:
+    """Flat event shape for log collectors (one object per line)."""
+    return {
+        "time": rec.get("ts"),
+        "host": platform.node() or "localhost",
+        "source": "wrench",
+        "sourcetype": "wrench:notification",
+        "event": {
+            "id": rec.get("id"),
+            "kind": rec.get("kind", "patrol"),
+            "severity": rec.get("severity"),
+            "summary": rec.get("summary"),
+            "report_id": rec.get("report_id"),
+        },
+    }
+
+
+def send_http_jsonl(url: str, rec: dict, data_dir: Path,
+                    timeout: float = WEBHOOK_TIMEOUT_S, opener=None) -> bool:
+    """POST the record as one ndjson line. Failures are logged, never raised."""
+    if not url:
+        return False
+    body = (json.dumps(jsonl_payload(rec)) + "\n").encode()
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/x-ndjson", "User-Agent": "wrench-notify"})
+    open_fn = opener or urllib.request.urlopen
+    try:
+        with open_fn(req, timeout=timeout) as resp:
+            getattr(resp, "status", 200)
+        return True
+    except Exception as e:  # noqa: BLE001 — best-effort by contract
+        _log(data_dir, f"http_jsonl sink failed: {e.__class__.__name__}: {e}")
+        return False
+
+
+# ---------------- fan-out ----------------
+
+def fan_out(st: NotifySettings, rec: dict, data_dir: Path, title: str | None = None) -> dict:
+    """Deliver one record to every configured sink that meets its threshold.
+
+    Returns {sink: bool} for sinks that were attempted. Never raises."""
+    sev = rec.get("severity", "attention")
+    out: dict = {}
+    title = title or f"🔧 wrench [{rec.get('kind', 'patrol')}]: {sev}"
+    if st.desktop and should_notify(sev, st.min_severity):
+        out["desktop"] = send_desktop(title, rec.get("summary", ""), data_dir)
+    if st.webhook_url and should_notify(sev, st.min_severity):
+        out["webhook"] = send_webhook(st.webhook_url, rec, data_dir)
+    if st.syslog_address and should_notify(sev, st.syslog_min_severity or st.min_severity):
+        out["syslog"] = send_syslog(st.syslog_address, rec, data_dir)
+    if st.http_jsonl_url and should_notify(
+            sev, st.http_jsonl_min_severity or st.min_severity):
+        out["http_jsonl"] = send_http_jsonl(st.http_jsonl_url, rec, data_dir)
+    return out
+
+
+def emit_event(cfg, kind: str, severity: str, summary: str,
+               report_id: float | None = None,
+               data_dir: Path | None = None) -> dict | None:
+    """Record + fan out one subsystem event (blueprint apply, cert renewal, ...).
+
+    The inbox record always lands when any sink threshold passes; per-sink
+    thresholds are honored by fan_out. Returns the record or None. Never raises.
+    """
+    try:
+        st = settings_from(cfg)
+        if not st.enabled:
+            return None
+        thresholds = [st.min_severity]
+        if st.syslog_address:
+            thresholds.append(st.syslog_min_severity or st.min_severity)
+        if st.http_jsonl_url:
+            thresholds.append(st.http_jsonl_min_severity or st.min_severity)
+        if not any(should_notify(severity, t) for t in thresholds):
+            return None
+        dd = Path(data_dir) if data_dir is not None else cfg.data_dir
+        rec = record(dd, severity, summary, report_id=report_id)
+        rec["kind"] = kind
+        fan_out(st, rec, dd)
+        return rec
+    except Exception:  # noqa: BLE001 — a notification must never break the caller
+        return None
+
+
 # ---------------- dispatch (hooked into patrol completion) ----------------
 
 def dispatch(cfg, patrol: dict, report_id: float | None = None,
@@ -249,16 +451,18 @@ def dispatch(cfg, patrol: dict, report_id: float | None = None,
         if not st.enabled:
             return None
         sev = patrol_severity(patrol)
-        if not should_notify(sev, st.min_severity):
+        thresholds = [st.min_severity]
+        if st.syslog_address:
+            thresholds.append(st.syslog_min_severity or st.min_severity)
+        if st.http_jsonl_url:
+            thresholds.append(st.http_jsonl_min_severity or st.min_severity)
+        if not any(should_notify(sev, t) for t in thresholds):
             return None
         dd = Path(data_dir) if data_dir is not None else cfg.data_dir
         summary = patrol.get("summary") or "(no summary)"
         rec = record(dd, sev, summary, report_id=report_id)
-        title = f"🔧 wrench patrol: {sev}"
-        if st.desktop:
-            send_desktop(title, summary, dd)
-        if st.webhook_url:
-            send_webhook(st.webhook_url, rec, dd)
+        rec["kind"] = "patrol"
+        fan_out(st, rec, dd, title=f"🔧 wrench patrol: {sev}")
         return rec
     except Exception:  # noqa: BLE001 — a notification must never break a patrol
         return None
