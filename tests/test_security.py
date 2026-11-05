@@ -277,3 +277,56 @@ def test_analyze_access_world_writable_warns():
     findings, _ = sec.analyze_access(current, None)
     assert any(f.title.startswith("world-writable file") and f.severity == "warning"
                for f in findings)
+
+
+# =====================================================================
+# group 3 — listener ownership baselines
+# =====================================================================
+
+def _lrow(key, port, proc="", unit="", addr="0.0.0.0", proto="tcp"):
+    return {"key": key, "proto": proto, "port": port, "addr": addr,
+            "process": proc, "pid": 1 if proc else 0, "unit": unit,
+            "ownerless": not proc}
+
+
+def test_analyze_listeners_new_listener_warns_against_baseline():
+    baseline = {"listeners": {"tcp/22": "sshd"}}
+    current = [_lrow("tcp/22", 22, "sshd"),
+               _lrow("tcp/4444", 4444, "nc", unit="")]
+    findings, observed = sec.analyze_listeners(current, baseline, can_resolve_owners=True)
+    new = [f for f in findings if f.title.startswith("NEW listener tcp/4444")]
+    assert new and new[0].severity == "warning"
+    assert observed["listeners"] == {"tcp/22": "sshd", "tcp/4444": "nc"}
+
+
+def test_analyze_listeners_first_run_no_baseline_quiet():
+    current = [_lrow("tcp/22", 22, "sshd")]
+    findings, _ = sec.analyze_listeners(current, None, can_resolve_owners=True)
+    assert not [f for f in findings if "NEW listener" in f.title]
+
+
+def test_analyze_listeners_ownerless_root_warns():
+    current = [_lrow("tcp/9999", 9999, proc="")]  # no owning process
+    findings, _ = sec.analyze_listeners(current, {"listeners": {"tcp/9999": ""}},
+                                        can_resolve_owners=True)
+    owner = [f for f in findings if f.title.startswith("ownerless listener")]
+    assert owner and owner[0].severity == "warning"
+
+
+def test_analyze_listeners_ownerless_nonroot_collapses_to_one_info():
+    # non-root scan can't attribute other users' sockets → one info, not N warnings
+    current = [_lrow(f"tcp/{p}", p, proc="") for p in (8001, 8002, 8003)]
+    base = {"listeners": {f"tcp/{p}": "" for p in (8001, 8002, 8003)}}
+    findings, _ = sec.analyze_listeners(current, base, can_resolve_owners=False)
+    infos = [f for f in findings if "unresolved owner" in f.title]
+    assert len(infos) == 1 and infos[0].severity == "info"
+    assert "3 listener(s)" in infos[0].title
+    # and no per-socket ownerless warnings in the non-root case
+    assert not [f for f in findings if f.title.startswith("ownerless listener")]
+
+
+def test_analyze_listeners_new_listener_alarms_even_without_root():
+    base = {"listeners": {"tcp/22": "sshd"}}
+    current = [_lrow("tcp/22", 22, proc=""), _lrow("tcp/1337", 1337, proc="")]
+    findings, _ = sec.analyze_listeners(current, base, can_resolve_owners=False)
+    assert any(f.title.startswith("NEW listener tcp/1337") for f in findings)
