@@ -107,6 +107,7 @@ class Config:
     patrol_interval_min: int = 15
     retention_days: int = 30
     web_port: int = 8787
+    offline: bool = False  # declared zero-egress mode (see wrench/offline.py)
     raw: dict = field(default_factory=dict)
 
     @property
@@ -160,6 +161,13 @@ def load_config(provider_override: str | None = None, model_override: str | None
 
     gen = raw.get("general", {})
     pol = raw.get("policy", {})
+    # offline mode: [general] offline, or a top-level offline, or WRENCH_OFFLINE
+    _off_env = os.environ.get("WRENCH_OFFLINE")
+    offline = (
+        (_off_env.strip().lower() in ("1", "true", "yes", "on"))
+        if _off_env is not None
+        else bool(gen.get("offline", raw.get("offline", False)))
+    )
     return Config(
         provider=provider,
         base_url=base_url.rstrip("/"),
@@ -177,6 +185,7 @@ def load_config(provider_override: str | None = None, model_override: str | None
         patrol_interval_min=int(gen.get("patrol_interval_min", 15)),
         retention_days=int(gen.get("retention_days", 30)),
         web_port=int(os.environ.get("WRENCH_WEB_PORT") or gen.get("web_port", 8787)),
+        offline=offline,
         raw=raw,
     )
 
@@ -207,6 +216,12 @@ tier = "suggest"
 patrol_interval_min = {interval}
 retention_days = 30
 web_port = 8787
+# Air-gap / offline-first: when true, wrench NEVER reaches a public host.
+# OSV/CVE, endoflife.date, webintel, update checks, and provider calls to
+# non-private base_urls are refused with a clear message; the local brain
+# (loopback/LAN), fleet push to a private hub, and every local check still
+# work. Default false = zero behavior change. (env: WRENCH_OFFLINE=1)
+# offline = false
 
 [notify]
 # After each patrol, wrench taps you on the shoulder when findings meet the
