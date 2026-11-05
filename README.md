@@ -363,6 +363,54 @@ running on its known-good config. Real renewals require policy tier
 `repair`/`autonomous` or a one-time `wrench certs renew --setup-consent`
 ceremony; every attempt is logged to the actions table.
 
+### `wrench blueprint` — declarative config automation
+
+You describe the change; the brain drafts it **as a unified diff against your
+real current files**; code does everything else. The model never executes a
+command — its entire output is diff text, and that text has to survive a
+gauntlet before it touches disk.
+
+```text
+$ wrench blueprint "harden sshd: disable root login and password auth"
+📐 proposed blueprint (diff)
+--- a/etc/ssh/sshd_config.d/50-wrench-hardening.conf
++++ b/etc/ssh/sshd_config.d/50-wrench-hardening.conf
+@@ -0,0 +1,4 @@
++# managed by wrench blueprint — sshd hardening
++PermitRootLogin no
++PasswordAuthentication no
++MaxAuthTries 3
+validator for /etc/ssh/sshd_config.d/50-wrench-hardening.conf: sshd
+ ✓ revalidate    1 file(s) apply cleanly
+ ✓ check_staged  sshd -t -f /tmp/… → exit 0
+ dry-run complete — diff validated, staged checks passed.
+```
+
+**The ceremony** (dry-run is the default; `--execute` applies for real):
+diff preview → consent → **timestamped backup** of every target → apply →
+validate with the **daemon's own checker** (`nginx -t`, `sshd -t -f`,
+`visudo -c`, `named-checkconf`, `logrotate -d`, `fail2ban-client -t`; files
+with no known validator are applied with an explicit warning) → service
+reload (allowlisted `systemctl` verbs only, active units only) → health
+probe → **automatic rollback from the backup on any failure**, including
+re-reloading the daemon on its restored known-good config.
+
+**Safety rails.** Targets are confined to an allowlist (default `/etc`,
+configurable via `[blueprint] allowed_roots`) minus a hard denylist —
+`/etc/passwd`, `shadow`, `fstab`, private keys, and `/etc/sudoers` directly
+(sudoers changes only via `visudo -c`-checked `/etc/sudoers.d/` files).
+Diffs are size-capped, limited to 8 files, and binary patches and file
+deletions are refused outright. If a target file changed between drafting
+and applying, the apply aborts with "nothing touched".
+
+**Audit trail.** Every application is appended to `blueprint_audit.jsonl`,
+recorded in the actions table, and stamped as a **labeled drift snapshot** so
+`wrench drift` knows the change was intentional. `wrench blueprint --history`
+lists past applications with outcomes; the backup directory for each run is
+kept under the data dir. Real applications are gated exactly like `fixxer`
+and `certs renew`: policy tier `repair`/`autonomous`, or a recorded
+`wrench blueprint consent` ceremony.
+
 ### `wrench init` / `wrench doctor` / `wrench install-service`
 
 Onboarding, self-diagnosis, and persistence. `doctor` checks config, store,

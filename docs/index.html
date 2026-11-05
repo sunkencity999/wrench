@@ -258,6 +258,13 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       <b>expiry ladder</b> (30d → 14d → 7d/expired) and flag weak TLS. <code>wrench certs renew</code>
       rotates certs via <b>certbot/acme.sh</b>, dry-run first, chain-validated, service reloaded —
       consent-gated, never model-authored shell.</p></div>
+    <div class="card"><span class="ico">📐</span><h3>Blueprint the configs</h3>
+      <p><code>wrench blueprint "harden sshd"</code> — the brain drafts the change as a
+      <b>unified diff against your real files</b>; it never runs a command. Code validates with the
+      daemon's <b>own checker</b> (<code>nginx -t</code>, <code>sshd -t</code>, <code>visudo -c</code>…),
+      backs up, applies, reloads via allowlisted verbs, health-probes — and <b>auto-rolls-back</b>
+      on any failure. Dry-run by default, consent-gated, denylist-protected
+      (never passwd/shadow/sudoers-direct), every application a labeled drift snapshot.</p></div>
     <div class="card"><span class="ico">🔔</span><h3>Notify</h3>
       <p>When a patrol finds trouble, wrench <b>taps you on the shoulder</b>: a desktop
       notification, an optional webhook (ntfy / Slack / Discord), a toast on the live dashboard,
