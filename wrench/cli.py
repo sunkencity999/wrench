@@ -1816,6 +1816,118 @@ def security_accept(
 app.add_typer(security_app, name="security")
 
 
+# ---------------- forecast (capacity forecasting) ----------------
+
+_FC_SEV_STYLE = {"critical": ("bold red", "\u2191"), "warning": ("yellow", "\u2197"),
+                 "info": ("cyan", "\u2192"), "none": ("dim", "\u00b7")}
+_FC_KIND_ICON = {"disk": "\U0001f4be", "inode": "\U0001f5c3", "memory": "\U0001f9e0",
+                 "swap": "\U0001f501", "log": "\U0001f4dc", "cert": "\U0001f510"}
+
+
+def _render_forecast_table(incidents: list[dict]) -> Table:
+    t = Table(title="\U0001f52e future incidents \u2014 capacity forecast",
+              border_style="bright_blue")
+    t.add_column("sev", width=9)
+    t.add_column("resource", style="bold", max_width=26)
+    t.add_column("ETA", justify="right")
+    t.add_column("date", style="dim")
+    t.add_column("current", justify="right")
+    t.add_column("rate/day", justify="right")
+    t.add_column("confidence", style="dim")
+    order = {"critical": 0, "warning": 1, "info": 2, "none": 3}
+    for i in sorted(incidents, key=lambda x: (order.get(x["severity"], 9),
+                                              x.get("eta_days") if x.get("eta_days")
+                                              is not None else 1e9)):
+        style, arrow = _FC_SEV_STYLE.get(i["severity"], ("white", "?"))
+        icon = _FC_KIND_ICON.get(i["kind"], "\u2022")
+        eta = i.get("eta_days")
+        eta_txt = Text("\u2014", style="dim") if eta is None else Text(
+            f"{eta:.1f}d", style=style)
+        if i["unit"] == "%":
+            cur = f"{i['current']:.1f}%"
+            rate = f"+{i['growth_per_day']:.2f}%"
+        elif i["unit"] == "bytes":
+            cur = f"{i['current'] / 2**30:.2f}G"
+            rate = f"+{i['growth_per_day'] / 2**20:.1f}M"
+        else:  # days (cert)
+            cur = f"{int(i['current'])}d left"
+            rate = "\u2014"
+        t.add_row(Text(f"{arrow} {i['severity']}", style=style),
+                  f"{icon} {i['resource']}", eta_txt, i.get("eta_date") or "\u2014",
+                  cur, rate, i.get("confidence", ""))
+    return t
+
+
+@app.command()
+def forecast(
+    window: int = typer.Option(30, "--window", help="days of sensor history to fit"),
+    no_certs: bool = typer.Option(False, "--no-certs",
+                                  help="capacity only; omit TLS expiry from the feed"),
+    no_llm: bool = typer.Option(False, "--no-llm",
+                                help="skip the brain-narrated briefing"),
+    notify: bool = typer.Option(False, "--notify/--no-notify",
+                                help="emit a notification for the soonest projection"),
+    provider: str = PROVIDER_OPT,
+    model: str = MODEL_OPT,
+    json_out: bool = JSON_OPT,
+):
+    """See it coming: project disk/inode/memory/swap/log growth + cert expiry
+    into a future-incidents feed with ETAs and confidence."""
+    from . import forecast as fc
+    cfg, store = _ctx(provider, model)
+    report = fc.feed_report(cfg, store, include_certs=not no_certs,
+                            now=None, persist=True)
+    report["window_days"] = window
+    if notify:
+        fc.notify_feed(cfg, report)
+    if json_out:
+        jsonout.emit("forecast", {
+            "worst": report["worst"],
+            "counts": report["counts"],
+            "soonest": report["soonest"],
+            "thresholds": report["thresholds"],
+            "window_days": window,
+            "incidents": report["incidents"],
+        })
+        raise typer.Exit(1 if report["worst"] == "critical" else 0)
+    incidents = report["incidents"]
+    if not incidents:
+        console.print("[dim]no sensor history to forecast yet \u2014 let patrols run "
+                      "for a few hours and try again.[/dim]")
+        raise typer.Exit(0)
+    actionable = [i for i in incidents
+                  if i["severity"] in ("critical", "warning", "info")]
+    console.print(_render_forecast_table(incidents))
+    if not actionable:
+        console.print("[green]nothing is trending toward exhaustion within the "
+                      "lead-time window \u2014 you're flying level.[/green]")
+    if no_llm or not (cfg.api_key or cfg.provider in ("ollama", "lmstudio")):
+        raise typer.Exit(1 if report["worst"] == "critical" else 0)
+    lines = fc.narration_lines(report)
+    client = LLMClient(cfg, store)
+    try:
+        with console.status("[cyan]reading the trend lines..."):
+            text = client.chat(
+                [{"role": "system",
+                  "content": "You are wrench, a sysadmin agent speaking in the first "
+                             "person about YOUR machine's capacity outlook. You are "
+                             "shown a future-incidents feed: projected disk/inode/"
+                             "memory/swap exhaustion and certificate expiry, each with "
+                             "an ETA and confidence. In 3-6 sentences: say what will "
+                             "break first and roughly when, call out anything low-"
+                             "confidence as a watch-not-panic, and name the one thing "
+                             "to do now. You only analyze \u2014 never execute. No "
+                             "markdown headers, no filler."},
+                 {"role": "user", "content": "\n".join(lines)}],
+                purpose="forecast-brief")
+        from . import report as _report
+        _report.render_answer(console, text, f"{cfg.model} \u00b7 capacity outlook")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[dim]briefing unavailable ({e}) \u2014 the projections stand "
+                      f"on their own[/dim]")
+    raise typer.Exit(1 if report["worst"] == "critical" else 0)
+
+
 # ---------------- metrics (Prometheus exporter) ----------------
 
 metrics_app = typer.Typer(

@@ -231,6 +231,40 @@ def render(store, data_dir: Path) -> str:
     except Exception:  # noqa: BLE001 — a scrape never dies on one family
         pass
 
+    # ---- capacity forecast (from the last computed feed snapshot) ----
+    try:
+        from .forecast import FORECAST_KIND
+        snap = store.last_snapshot(FORECAST_KIND)
+        b.metric("wrench_forecast_incidents",
+                 "Projected future incidents by lead-time severity.", "gauge")
+        counts = (snap[1].get("counts", {}) if snap else {})
+        for sev in ("critical", "warning", "info"):
+            b.sample("wrench_forecast_incidents", counts.get(sev, 0),
+                     {"severity": sev})
+        b.metric("wrench_forecast_days_to_threshold",
+                 "Projected days until a resource crosses its danger threshold.",
+                 "gauge")
+        b.metric("wrench_forecast_growth_per_day",
+                 "Fitted growth rate per day (percent for capacity metrics).",
+                 "gauge")
+        if snap:
+            for inc in snap[1].get("incidents", []):
+                if inc.get("kind") == "cert":
+                    continue  # certs already have wrench_cert_expiry_days
+                labels = {"kind": inc.get("kind"), "resource": inc.get("resource")}
+                if inc.get("eta_days") is not None:
+                    b.sample("wrench_forecast_days_to_threshold",
+                             inc["eta_days"], labels)
+                if inc.get("unit") == "%":
+                    b.sample("wrench_forecast_growth_per_day",
+                             inc.get("growth_per_day"), labels)
+        b.metric("wrench_forecast_last_run_timestamp_seconds",
+                 "Unix time of the newest capacity-forecast computation.", "gauge")
+        if snap:
+            b.sample("wrench_forecast_last_run_timestamp_seconds", snap[0])
+    except Exception:  # noqa: BLE001 — a scrape never dies on one family
+        pass
+
     b.metric("wrench_scrape_timestamp_seconds", "Unix time of this scrape.", "gauge")
     b.sample("wrench_scrape_timestamp_seconds", time.time())
     return b.text()

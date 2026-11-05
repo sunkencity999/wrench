@@ -497,6 +497,29 @@ def patrol_summary_line(cfg, store) -> str:
     return f"forecast: {soon.kind} {soon.resource} [{soon.severity}]{extra}"
 
 
+def notify_feed(cfg, report: dict) -> dict | None:
+    """Emit one notification summarizing the soonest actionable projection.
+
+    One event per scan (not one per incident) so a manual ``wrench forecast``
+    never spams the inbox. Returns the record or None. Never raises.
+    """
+    try:
+        from . import notifications
+        soon = report.get("soonest")
+        if not soon:
+            return None
+        sev = soon.get("severity", "info")
+        counts = report.get("counts", {})
+        extra = counts.get("critical", 0) + counts.get("warning", 0) \
+            + counts.get("info", 0) - 1
+        summary = f"forecast: {soon['kind']} {soon['resource']} — {soon['detail']}"
+        if extra > 0:
+            summary += f" (+{extra} more projected)"
+        return notifications.emit_event(cfg, "forecast", sev, summary)
+    except Exception:  # noqa: BLE001 — a notification never breaks a forecast
+        return None
+
+
 def narration_lines(report: dict) -> list[str]:
     """Flatten a feed report for brain narration. Pure, read-only."""
     lines = [f"capacity forecast — worst lead-time severity: {report.get('worst')}"]

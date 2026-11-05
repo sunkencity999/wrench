@@ -221,10 +221,21 @@ class Agent:
             security_findings = security.patrol_findings(self.cfg, self.store)
         except Exception:  # noqa: BLE001 — patrol never fails because a security scan did
             pass
+        # capacity forecasting — trend projections over sensor history, never fatal
+        forecast_findings: list[dict] = []
+        try:
+            from . import forecast
+            lines.append(forecast.patrol_summary_line(self.cfg, self.store))
+            forecast_findings = forecast.patrol_findings(self.cfg, self.store)
+            # persist the feed snapshot so /metrics has fresh days-to-threshold
+            forecast.feed_report(self.cfg, self.store, persist=True)
+        except Exception:  # noqa: BLE001 — patrol never fails because a forecast did
+            pass
         return "\n".join(lines), {"sensor": data, "drift": drift_changes,
                                    "anomalies": anomalies, "webintel": webintel_res,
                                    "cert_findings": cert_findings,
-                                   "security_findings": security_findings}
+                                   "security_findings": security_findings,
+                                   "forecast_findings": forecast_findings}
 
 
 PATROL_GOAL = """\
@@ -323,10 +334,15 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
     # trusted to decide whether a brute-force burst or a new listener pages.
     status, findings = _merge_cert_findings(
         status, findings, raw_data.get("security_findings") or [])
+    # Forecast projections page on the same ladder (deterministic trend math,
+    # never the LLM's guess about when the disk fills).
+    status, findings = _merge_cert_findings(
+        status, findings, raw_data.get("forecast_findings") or [])
     # If certs drove the escalation, make sure the human-visible summary says so.
     if status != prev_status and _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(prev_status, 0):
         paging = [cf for cf in ((raw_data.get("cert_findings") or [])
-                                + (raw_data.get("security_findings") or []))
+                                + (raw_data.get("security_findings") or [])
+                                + (raw_data.get("forecast_findings") or []))
                   if (cf.get("severity") or "").lower() in ("warning", "critical")]
         if paging:
             note = paging[0]["text"]
