@@ -330,6 +330,48 @@ def render(store, data_dir: Path) -> str:
     except Exception:  # noqa: BLE001
         pass
 
+    # ---- fleet (hub side: aggregated node reports + dead-man's switch) ----
+    try:
+        from . import fleet
+        nodes = store.fleet_nodes()
+        if nodes:
+            from .config import load_config
+            try:
+                st = fleet.settings_from(load_config())
+            except Exception:  # noqa: BLE001
+                st = fleet.FleetSettings()
+            states = fleet.node_states(store, st)
+            summ = fleet.fleet_summary(states)
+            b.metric("wrench_fleet_nodes", "Nodes known to this fleet hub.", "gauge")
+            b.sample("wrench_fleet_nodes", summ["total"])
+            b.metric("wrench_fleet_nodes_silent",
+                     "Nodes whose last report is older than factor × cadence.", "gauge")
+            b.sample("wrench_fleet_nodes_silent", summ["silent"])
+            b.metric("wrench_fleet_nodes_by_color",
+                     "Fleet nodes by grid color (green/yellow/red/silent).", "gauge")
+            for color in ("green", "yellow", "red", "silent"):
+                b.sample("wrench_fleet_nodes_by_color", summ.get(color, 0),
+                         {"color": color})
+            color_rank = {"green": 0, "yellow": 1, "red": 2, "silent": 3}
+            b.metric("wrench_fleet_node_status",
+                     "Per-node status rank (0 ok, 1 attention, 2 critical, 3 silent).",
+                     "gauge")
+            b.metric("wrench_fleet_node_last_seen_timestamp_seconds",
+                     "Unix time of each node's most recent report.", "gauge")
+            b.metric("wrench_fleet_node_reports_total",
+                     "Reports received from each node.", "counter")
+            for n in states:
+                lab = {"node": n["node_id"], "hostname": n.get("hostname") or ""}
+                b.sample("wrench_fleet_node_status",
+                         color_rank.get(n.get("color"), 0), lab)
+                if n.get("last_seen"):
+                    b.sample("wrench_fleet_node_last_seen_timestamp_seconds",
+                             n["last_seen"], lab)
+                b.sample("wrench_fleet_node_reports_total",
+                         n.get("report_count", 0), lab)
+    except Exception:  # noqa: BLE001 — a scrape never dies on one family
+        pass
+
     b.metric("wrench_scrape_timestamp_seconds", "Unix time of this scrape.", "gauge")
     b.sample("wrench_scrape_timestamp_seconds", time.time())
     return b.text()
