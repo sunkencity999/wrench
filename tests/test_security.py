@@ -330,3 +330,100 @@ def test_analyze_listeners_new_listener_alarms_even_without_root():
     current = [_lrow("tcp/22", 22, proc=""), _lrow("tcp/1337", 1337, proc="")]
     findings, _ = sec.analyze_listeners(current, base, can_resolve_owners=False)
     assert any(f.title.startswith("NEW listener tcp/1337") for f in findings)
+
+
+# =====================================================================
+# group 4 — OSV CVE client: mocked, offline fail-soft, cached, ranked
+# =====================================================================
+
+def test_severity_bucket_variants():
+    assert sec._severity_bucket("9.8") == "critical"
+    assert sec._severity_bucket("7.0") == "high"
+    assert sec._severity_bucket("5.0") == "medium"
+    assert sec._severity_bucket("2.0") == "low"
+    assert sec._severity_bucket("") == "unknown"
+    assert sec._severity_bucket("CRITICAL") == "critical"
+    assert sec._severity_bucket("moderate") == "medium"
+    # CVSS vector with a high impact flag
+    assert sec._severity_bucket("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") == "high"
+
+
+def _wire_cve(monkeypatch, ids_per_pkg, detail=None):
+    from wrench import webintel
+    pkgs = [{"name": "openssl", "version": "3.0.1", "ecosystem": "Ubuntu"},
+            {"name": "curl", "version": "7.80.0", "ecosystem": "Ubuntu"}]
+    monkeypatch.setattr(sec, "package_inventory",
+                        lambda cap=3000: (pkgs, "dpkg"))
+    monkeypatch.setattr(webintel, "osv_querybatch", lambda p: ids_per_pkg)
+    detail = detail or {"severity": [{"type": "CVSS_V3", "score": "9.8"}],
+                        "affected": [{"package": {"name": "openssl"},
+                                      "ranges": [{"events": [{"fixed": "3.0.2"}]}]}]}
+    monkeypatch.setattr(webintel, "osv_vuln_detail",
+                        lambda store, vid, ttl: detail)
+    return pkgs
+
+
+def test_cve_scan_matches_and_buckets(monkeypatch, store):
+    _wire_cve(monkeypatch, [["CVE-2026-0001"], []])
+    res = sec.cve_scan(FakeCfg(), store, force=True)
+    assert res["available"] is True
+    assert res["checked"] == 2
+    assert res["manager"] == "dpkg"
+    assert len(res["vulns"]) == 1
+    v = res["vulns"][0]
+    assert v["id"] == "CVE-2026-0001" and v["package"] == "openssl"
+    assert v["bucket"] == "critical" and v["fixed"] == "3.0.2"
+    # first sight of a critical is tracked as new-serious
+    assert any(x["id"] == "CVE-2026-0001" for x in res["new_serious"])
+
+
+def test_cve_scan_offline_fail_soft(monkeypatch, store):
+    from wrench import webintel
+    monkeypatch.setattr(sec, "package_inventory",
+                        lambda cap=3000: ([{"name": "x", "version": "1",
+                                            "ecosystem": "Ubuntu"}], "dpkg"))
+
+    def boom(_p):
+        raise OSError("network down")
+    monkeypatch.setattr(webintel, "osv_querybatch", boom)
+    res = sec.cve_scan(FakeCfg(), store, force=True)
+    assert res["available"] is False
+    assert res["vulns"] == [] and res["new_serious"] == []
+    assert "OSV unreachable" in res["error"]
+
+
+def test_cve_scan_no_inventory_fail_soft(monkeypatch, store):
+    monkeypatch.setattr(sec, "package_inventory", lambda cap=3000: ([], "none"))
+    res = sec.cve_scan(FakeCfg(), store, force=True)
+    assert res["available"] is False
+    assert "no supported package inventory" in res["error"]
+
+
+def test_cve_scan_uses_cache_within_ttl(monkeypatch, store):
+    _wire_cve(monkeypatch, [["CVE-2026-0001"], []])
+    first = sec.cve_scan(FakeCfg(), store, force=True)
+    assert first["cached"] is False
+    # a second non-forced scan must NOT hit the network again
+    from wrench import webintel
+    monkeypatch.setattr(webintel, "osv_querybatch",
+                        lambda p: (_ for _ in ()).throw(AssertionError("rescanned")))
+    second = sec.cve_scan(FakeCfg(), store, force=False)
+    assert second["cached"] is True
+    assert second["vulns"] == first["vulns"]
+
+
+def test_cve_findings_severity_ladder_and_new_flag(monkeypatch, store):
+    _wire_cve(monkeypatch, [["CVE-2026-0001"], []])
+    res = sec.cve_scan(FakeCfg(), store, force=True)
+    findings = sec.cve_findings(res)
+    assert findings and findings[0].severity == "critical"
+    assert "[NEW]" in findings[0].title
+    assert findings[0].meta["new"] is True
+
+
+def test_cve_findings_skipped_notice_when_unavailable():
+    findings = sec.cve_findings({"available": False, "error": "OSV unreachable (x)"})
+    assert len(findings) == 1 and findings[0].severity == "info"
+    assert findings[0].category == "cve"
+    # truly empty/unavailable with no error → no noise
+    assert sec.cve_findings({"available": False}) == []
