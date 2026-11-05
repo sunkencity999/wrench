@@ -377,6 +377,27 @@ def test_execute_staged_check_failure_touches_nothing(cfg, root, monkeypatch):
     assert "nothing touched" in res.message
 
 
+def test_missing_checker_binary_skips_with_warning(cfg, root, monkeypatch):
+    """exit 127 (checker not installed) must not fail the ceremony."""
+    _no_drift(monkeypatch)
+    plan, tgt = _plan_for(cfg, root)
+    monkeypatch.setattr(bp, "checker_for",
+                        lambda p: bp.CheckerSpec("logrotate", (str(tgt),),
+                                                 staged_argv=bp._logrotate_staged,
+                                                 live_argv=("logrotate", "-d")))
+
+    def run(argv, timeout=60):
+        if argv[0] == "logrotate":
+            return 127, "(command not found: logrotate)"
+        return 0, "ok"
+
+    dry = bp.apply_plan(cfg, FakeStore(), plan, execute=False, run=run)
+    assert dry.ok
+    assert any("skipped" in s.detail for s in dry.steps)
+    res = bp.apply_plan(cfg, FakeStore(), plan, execute=True, run=run)
+    assert res.ok and not res.rolled_back
+
+
 def test_execute_reload_failure_rolls_back(cfg, root, monkeypatch):
     _no_drift(monkeypatch)
     cfg.policy_tier = "repair"

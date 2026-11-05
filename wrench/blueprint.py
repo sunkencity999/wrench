@@ -586,6 +586,11 @@ def apply_plan(cfg, store, plan: BlueprintPlan, *, execute: bool = False,
                 staged.write_text(new_text)
                 argv = spec.staged_argv(str(staged))
                 code, out = run(argv, timeout=60)
+                if code == 127:  # checker binary not installed — skip w/ warning
+                    step("check_staged", True,
+                         f"{p.path}: {argv[0]} not installed — staged validation "
+                         "skipped (warning)")
+                    continue
                 ok = code == 0
                 step("check_staged", ok, f"{' '.join(argv)} → exit {code} {out[:200]}")
                 if not ok:
@@ -638,6 +643,10 @@ def apply_plan(cfg, store, plan: BlueprintPlan, *, execute: bool = False,
             continue
         done_live.add(spec.live_argv)
         code, out = run(list(spec.live_argv), timeout=60)
+        if code == 127:  # checker binary not installed — skip w/ warning
+            step("check_live", True,
+                 f"{spec.live_argv[0]} not installed — live validation skipped (warning)")
+            continue
         ok = code == 0
         step("check_live", ok, f"{' '.join(spec.live_argv)} → exit {code} {out[:200]}")
         if not ok:
