@@ -396,3 +396,150 @@ def test_patrol_severity_sees_cert_criticals():
     p = {"status": "critical", "findings": [{"severity": "critical", "text": "cert expired"}]}
     assert notif.patrol_severity(p) == "critical"
     assert notif.should_notify(notif.patrol_severity(p), "attention")
+
+
+# ---------------- renewal orchestration ----------------
+
+def _cert(path="/etc/letsencrypt/live/example.com/cert.pem", cn="example.com"):
+    return certs.CertInfo(path=path, subject=f"CN={cn}", sans=[cn])
+
+
+def test_detect_renewer(monkeypatch):
+    monkeypatch.setattr(certs.shutil, "which",
+                        lambda b: "/usr/bin/certbot" if b == "certbot" else None)
+    assert certs.detect_renewer() == "certbot"
+    monkeypatch.setattr(certs.shutil, "which", lambda b: None)
+    monkeypatch.setattr(certs.Path, "home", lambda: Path("/nonexistent-home"))
+    assert certs.detect_renewer() is None
+
+
+def test_certbot_lineage():
+    assert certs.certbot_lineage("/etc/letsencrypt/live/foo.com/cert.pem") == "foo.com"
+    assert certs.certbot_lineage("/etc/ssl/other.pem") is None
+
+
+def test_renewer_commands_certbot():
+    cmds = certs.renewer_commands("certbot", _cert())
+    assert cmds["dry_run"] == ["certbot", "renew", "--cert-name", "example.com",
+                               "--dry-run", "--non-interactive"]
+    assert "--dry-run" not in cmds["renew"]
+    assert cmds["dry_run_is_real"] is True
+
+
+def test_renewer_commands_acme():
+    cmds = certs.renewer_commands("acme.sh", _cert(cn="svc.local"))
+    assert cmds["renew"] == ["acme.sh", "--renew", "-d", "svc.local", "--force"]
+    assert cmds["dry_run"][0] == "acme.sh" and "--info" in cmds["dry_run"]
+
+
+def test_validate_argv_rejects_non_allowlisted():
+    assert certs._validate_argv(["certbot", "renew"]) is True
+    assert certs._validate_argv(["rm", "-rf", "/"]) is False
+    assert certs._validate_argv(["certbot", "renew; rm x"]) is False
+    assert certs._validate_argv([]) is False
+
+
+def test_orchestrate_dry_run_only_touches_nothing():
+    calls = []
+
+    def run(argv, timeout=30, **k):
+        calls.append(argv)
+        return 0, "simulated dry run OK"
+
+    res = certs.orchestrate_renew(_cert(), "certbot", dry_run=True, run=run)
+    assert res.ok and res.dry_run
+    assert [s.name for s in res.steps] == ["dry_run"]
+    # only the dry-run command ran; no renew/reload
+    assert all("--dry-run" in " ".join(a) or a[0] == "certbot" for a in calls)
+    assert len(calls) == 1
+
+
+def test_orchestrate_dry_run_failure_stops():
+    def run(argv, timeout=30, **k):
+        return 1, "ACME challenge failed"
+    res = certs.orchestrate_renew(_cert(), "certbot", dry_run=True, run=run)
+    assert not res.ok
+    assert "dry-run failed" in res.message
+    assert len(res.steps) == 1
+
+
+def test_orchestrate_full_success_with_reload():
+    seq = []
+
+    def run(argv, timeout=30, **k):
+        seq.append(argv[0] + " " + (argv[1] if len(argv) > 1 else ""))
+        return 0, "ok"
+
+    def prober(host, port, timeout=5.0):
+        return {"ok": True, "protocol": "TLSv1.3", "cipher": "X", "days_left": 89}
+
+    monkeypatchverify = certs.verify_chain
+    import wrench.certs as m
+    m.verify_chain = lambda path, untrusted=None: (True, "chain ok")
+    try:
+        res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                      reload_service="nginx", probe_host="localhost",
+                                      run=run, prober=prober)
+    finally:
+        m.verify_chain = monkeypatchverify
+    assert res.ok and not res.rolled_back
+    names = [s.name for s in res.steps]
+    assert names == ["dry_run", "renew", "validate_chain", "reload_test", "reload", "probe"]
+    # nginx -t ran before the reload
+    assert any(s.startswith("nginx -t") for s in seq)
+
+
+def test_orchestrate_bad_chain_does_not_reload():
+    def run(argv, timeout=30, **k):
+        return 0, "ok"
+    import wrench.certs as m
+    saved = m.verify_chain
+    m.verify_chain = lambda path, untrusted=None: (False, "missing issuer")
+    try:
+        res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                      reload_service="nginx", run=run)
+    finally:
+        m.verify_chain = saved
+    assert not res.ok and res.rolled_back
+    assert "NOT reloading" in res.message
+    assert [s.name for s in res.steps] == ["dry_run", "renew", "validate_chain"]
+
+
+def test_orchestrate_reload_test_failure_leaves_service():
+    def run(argv, timeout=30, **k):
+        # nginx -t fails
+        if argv[:2] == ["nginx", "-t"]:
+            return 1, "config error"
+        return 0, "ok"
+    import wrench.certs as m
+    saved = m.verify_chain
+    m.verify_chain = lambda path, untrusted=None: (True, "ok")
+    try:
+        res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                      reload_service="nginx", run=run)
+    finally:
+        m.verify_chain = saved
+    assert not res.ok
+    assert "config test failed" in res.message
+    assert "reload" not in [s.name for s in res.steps][-1:]  # did not reach reload
+
+
+# ---------------- renewal consent / policy gate ----------------
+
+def test_renewal_permitted_tiers(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import wrench.config as wc
+    monkeypatch.setattr(wc, "CONFIG_DIR", tmp_path)
+    cfg_suggest = SimpleNamespace(policy_tier="suggest")
+    ok, reason = certs.renewal_permitted(cfg_suggest)
+    assert not ok and "suggest-only" in reason
+    cfg_repair = SimpleNamespace(policy_tier="repair")
+    ok, _ = certs.renewal_permitted(cfg_repair)
+    assert ok
+    # consent flips suggest to allowed
+    certs.write_renew_consent(cfg_suggest)
+    ok, reason = certs.renewal_permitted(cfg_suggest)
+    assert ok and "consent" in reason
+    assert certs.revoke_renew_consent(cfg_suggest)
+    ok, _ = certs.renewal_permitted(cfg_suggest)
+    assert not ok

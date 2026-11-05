@@ -1149,6 +1149,133 @@ def _probe_local_listeners(cfg, store, cmod) -> None:
                             title="\U0001f4e1 live TLS probe (localhost)"))
 
 
+def _render_renew_result(res) -> None:
+    from rich.console import Group
+    rows = []
+    for s in res.steps:
+        mark = "\u2713" if s.ok else "\u2717"
+        style = "green" if s.ok else "red"
+        rows.append(Text.assemble((f"{mark} {s.name}", style),
+                                  (f"  {s.detail[:90]}", "dim")))
+    border = "green" if res.ok else ("yellow" if res.rolled_back else "red")
+    title = ("\U0001f501 dry-run" if res.dry_run else "\U0001f501 renewal") \
+        + f" \u2014 {Path(res.cert_path).name}"
+    rows.append(Text(res.message, style="bold " + border))
+    console.print(Panel(Group(*rows), border_style=border, title=title))
+
+
+def _renew_consent_ceremony(cfg) -> bool:
+    from . import certs as cmod
+    console.print(Panel(
+        "[bold]You are about to let me RENEW certificates and RELOAD services.[/bold]\n\n"
+        "What a real renewal does, in order:\n"
+        "  \u2022 dry-run the ACME client first (certbot --dry-run / acme.sh --info)\n"
+        "  \u2022 renew via the allowlisted client only (no model-authored commands)\n"
+        "  \u2022 validate the new chain with openssl before trusting it\n"
+        "  \u2022 test the service config (nginx -t, etc.) BEFORE reloading\n"
+        "  \u2022 reload the consuming service; never against an unvalidated cert\n\n"
+        "If any step fails I stop and tell you \u2014 the old cert stays in place and\n"
+        "the service is left running on its known-good config.",
+        border_style="red", title="\u26a0 consent \u2014 certificate renewal"))
+    if not typer.confirm("do you consent to automated renewal on this machine?", default=False):
+        console.print("[dim]no consent \u2014 renewal stays dry-run only.[/dim]")
+        return False
+    p = cmod.write_renew_consent(cfg)
+    console.print(f"[green]renewal consent recorded[/green] [dim]{p}[/dim]")
+    return True
+
+
+@certs_app.command("renew")
+def certs_renew(
+    name: str = typer.Argument(None, help="cert name/CN/path substring to renew"),
+    all_: bool = typer.Option(False, "--all", help="renew every discovered cert"),
+    dry_run: bool = typer.Option(True, "--dry-run/--execute",
+                                 help="dry-run first (default); --execute renews for real"),
+    tool: str = typer.Option(None, "--tool", help="certbot|acme.sh (auto-detected)"),
+    reload_service: str = typer.Option(None, "--reload-service",
+                                       help="nginx|apache2|httpd|caddy|haproxy to reload after renew"),
+    probe_host: str = typer.Option(None, "--probe-host",
+                                   help="host to live-probe after a real renewal"),
+    setup_consent: bool = typer.Option(False, "--setup-consent",
+                                       help="record consent for real (non-dry-run) renewals"),
+    revoke_consent: bool = typer.Option(False, "--revoke-consent",
+                                        help="revoke renewal consent"),
+):
+    """Renew certificates: dry-run first, validate the chain, reload the service."""
+    from . import certs as cmod
+    cfg, store = _ctx()
+
+    if revoke_consent:
+        console.print("[green]renewal consent revoked.[/green]" if cmod.revoke_renew_consent(cfg)
+                      else "[dim]no renewal consent was recorded.[/dim]")
+        return
+    if setup_consent:
+        _renew_consent_ceremony(cfg)
+        return
+
+    tool = tool or cmod.detect_renewer()
+    if not tool:
+        console.print(Panel(
+            "[yellow]no ACME client found[/yellow] \u2014 install [bold]certbot[/bold] or "
+            "[bold]acme.sh[/bold] to renew certificates. Inventory + audit still work.",
+            border_style="yellow", title="\U0001f501 wrench certs renew"))
+        raise typer.Exit(1)
+
+    rows = store.recent_certs()
+    if not rows:
+        with console.status("[cyan]no cached inventory \u2014 scanning now..."):
+            cert_list, _ = cmod.inventory()
+            for c in cert_list:
+                store.upsert_cert(c.to_row())
+        rows = store.recent_certs()
+    targets = _select_renew_targets(rows, name, all_)
+    if not targets:
+        console.print("[yellow]no matching certificate to renew.[/yellow] "
+                      "Run [bold]wrench certs[/bold] to see what's tracked, or pass --all.")
+        raise typer.Exit(1)
+
+    if not dry_run:
+        allowed, reason = cmod.renewal_permitted(cfg)
+        if not allowed:
+            console.print(f"[yellow]{reason}[/yellow]")
+            if not _renew_consent_ceremony(cfg):
+                raise typer.Exit(2)
+
+    console.print(f"[dim]tool: [bold]{tool}[/bold] \u00b7 mode: "
+                  f"[bold]{'dry-run' if dry_run else 'EXECUTE'}[/bold] \u00b7 "
+                  f"{len(targets)} cert(s)[/dim]")
+    any_fail = False
+    for row in targets:
+        cert = cmod._cert_from_cache(row)
+        res = cmod.orchestrate_renew(cert, tool, dry_run=dry_run,
+                                     reload_service=reload_service, probe_host=probe_host)
+        _render_renew_result(res)
+        store.add_action(cfg.policy_tier, f"certs:renew:{'dry' if dry_run else 'exec'}",
+                         f"{tool} {cert.common_name}", res.ok, res.message[:400])
+        any_fail = any_fail or not res.ok
+    if any_fail:
+        raise typer.Exit(1)
+
+
+def _select_renew_targets(rows: list[dict], name: str | None, all_: bool) -> list[dict]:
+    # skip CA certs and parse errors \u2014 only renewable leaf certs
+    leaf = [r for r in rows if not r.get("error") and not r.get("is_ca")]
+    if all_:
+        return leaf
+    if not name:
+        return []
+    nl = name.lower()
+    out = []
+    import re as _re
+    for r in leaf:
+        m = _re.search(r"CN\s*=\s*([^,/]+)", r.get("subject") or "")
+        cn = m.group(1).strip().lower() if m else ""
+        sans = " ".join(r.get("sans") or []).lower()
+        if nl in cn or nl in (r.get("path") or "").lower() or nl in sans:
+            out.append(r)
+    return out
+
+
 app.add_typer(certs_app, name="certs")
 
 

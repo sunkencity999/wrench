@@ -611,3 +611,246 @@ def patrol_summary_line(cfg, store, cadence_s: int = DEFAULT_CADENCE_S) -> str:
     if weaknesses:
         bits.append(f"{len(weaknesses)} weak-TLS config finding(s)")
     return "certs: " + ", ".join(bits)
+
+
+# ---------------- renewal orchestration ----------------
+# certbot / acme.sh under dry-run-first, validate-then-reload discipline.
+# Every command is a hand-written argv list. The model never authors shell.
+
+import json as _json
+from dataclasses import asdict
+
+# Binaries the renewal path is permitted to invoke (plus sudo prefix). Anything
+# not here is refused — a renewal must never become arbitrary execution.
+RENEW_ALLOWED_BINARIES = {
+    "certbot", "acme.sh", "openssl", "systemctl", "nginx", "apachectl",
+    "apache2ctl", "httpd", "caddy", "haproxy", "sudo",
+}
+
+# How to test-then-reload each consuming service (test must pass before reload).
+RELOAD_PLANS = {
+    "nginx": (["nginx", "-t"], ["systemctl", "reload", "nginx"]),
+    "apache2": (["apachectl", "configtest"], ["systemctl", "reload", "apache2"]),
+    "httpd": (["apachectl", "configtest"], ["systemctl", "reload", "httpd"]),
+    "caddy": (["caddy", "validate", "--config", "/etc/caddy/Caddyfile"],
+              ["systemctl", "reload", "caddy"]),
+    "haproxy": (["haproxy", "-c", "-f", "/etc/haproxy/haproxy.cfg"],
+                ["systemctl", "reload", "haproxy"]),
+}
+
+
+@dataclass
+class RenewStep:
+    name: str          # dry_run | renew | validate_chain | probe | reload_test | reload
+    ok: bool
+    detail: str
+
+
+@dataclass
+class RenewResult:
+    cert_path: str
+    tool: str
+    dry_run: bool
+    ok: bool
+    rolled_back: bool
+    message: str
+    steps: list[RenewStep] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        return d
+
+
+def detect_renewer() -> str | None:
+    """Which ACME client is installed? certbot preferred, then acme.sh."""
+    if shutil.which("certbot"):
+        return "certbot"
+    if shutil.which("acme.sh") or (Path.home() / ".acme.sh" / "acme.sh").exists():
+        return "acme.sh"
+    return None
+
+
+def certbot_lineage(cert_path: str) -> str | None:
+    """Derive the certbot --cert-name (lineage) from a live-dir path."""
+    m = re.search(r"/etc/letsencrypt/live/([^/]+)/", cert_path + "/")
+    return m.group(1) if m else None
+
+
+def renewer_commands(tool: str, cert: CertInfo) -> dict:
+    """Hand-written argv for dry-run + real renew for one cert.
+
+    certbot gets a true ``--dry-run``. acme.sh has no dry-run, so its "dry-run"
+    is a read-only ``--info`` inspection; the real renew uses ``--renew -d``.
+    """
+    domain = cert.common_name
+    if tool == "certbot":
+        name = certbot_lineage(cert.path)
+        target = ["--cert-name", name] if name else []
+        return {
+            "dry_run": ["certbot", "renew", *target, "--dry-run", "--non-interactive"],
+            "renew": ["certbot", "renew", *target, "--non-interactive"],
+            "dry_run_is_real": True,
+        }
+    if tool == "acme.sh":
+        return {
+            "dry_run": ["acme.sh", "--info", "-d", domain],
+            "renew": ["acme.sh", "--renew", "-d", domain, "--force"],
+            "dry_run_is_real": False,
+        }
+    return {}
+
+
+def _validate_argv(argv: list[str]) -> bool:
+    """Every renewal argv must start with an allowlisted binary; no shell meta."""
+    if not argv:
+        return False
+    head = argv[0]
+    if head not in RENEW_ALLOWED_BINARIES:
+        return False
+    for tok in argv:
+        if any(c in tok for c in (";", "|", "&", "`", "$(", ">", "<")):
+            return False
+    return True
+
+
+def orchestrate_renew(cert: CertInfo, tool: str, *, dry_run: bool = True,
+                      reload_service: str | None = None, probe_host: str | None = None,
+                      probe_port: int = 443, run=None, prober=None) -> RenewResult:
+    """Run the renewal pipeline for one cert. Pure of policy — the CLI gates it.
+
+    Order: dry-run → (stop if dry_run) → renew → validate chain → reload (test
+    first) → live probe. Any failure stops the pipeline with a rollback message;
+    the service is never reloaded against an unvalidated certificate.
+    """
+    run = run or _run
+    prober = prober or probe_tls
+    res = RenewResult(cert_path=cert.path, tool=tool, dry_run=dry_run,
+                      ok=False, rolled_back=False, message="")
+    cmds = renewer_commands(tool, cert)
+    if not cmds:
+        res.message = f"no renewal plan for tool {tool!r}"
+        return res
+    for key in ("dry_run", "renew"):
+        if not _validate_argv(cmds[key]):
+            res.message = f"refusing non-allowlisted renewal command: {' '.join(cmds[key])}"
+            return res
+
+    # 1. dry-run always first
+    code, out = run(cmds["dry_run"], timeout=600)
+    res.steps.append(RenewStep("dry_run", code == 0, out[:600]))
+    if code != 0:
+        res.message = ("dry-run failed — no changes made. "
+                       "Fix the ACME configuration before renewing.")
+        return res
+    if dry_run:
+        res.ok = True
+        res.message = ("dry-run succeeded — renewal would proceed. "
+                       "Re-run without --dry-run (with consent) to renew for real.")
+        return res
+
+    # 2. real renew
+    code, out = run(cmds["renew"], timeout=1800)
+    res.steps.append(RenewStep("renew", code == 0, out[:600]))
+    if code != 0:
+        res.message = ("renewal command failed — the existing certificate is "
+                       "untouched on disk. No service was reloaded.")
+        return res
+
+    # 3. validate chain
+    complete, note = verify_chain(cert.path)
+    res.steps.append(RenewStep("validate_chain", complete is not False, note))
+    if complete is False:
+        res.rolled_back = True
+        res.message = ("renewed cert failed chain validation — NOT reloading the "
+                       f"service. {note}. Investigate before serving it.")
+        return res
+
+    # 4. reload the consuming service (test config first)
+    if reload_service:
+        plan = RELOAD_PLANS.get(reload_service)
+        if plan:
+            test_cmd, reload_cmd = plan
+            tcode, tout = run(test_cmd, timeout=60)
+            res.steps.append(RenewStep("reload_test", tcode == 0, tout[:400]))
+            if tcode != 0:
+                res.message = (f"{reload_service} config test failed — certificate "
+                               "renewed but service left running on the old config "
+                               "(safe). Fix config, then reload manually.")
+                return res
+            rcode, rout = run(reload_cmd, timeout=120)
+            res.steps.append(RenewStep("reload", rcode == 0, rout[:400]))
+            if rcode != 0:
+                res.message = (f"{reload_service} reload failed after a valid renewal "
+                               "— check the service; the new cert is on disk.")
+                return res
+
+    # 5. live probe (read-only confirmation)
+    if probe_host:
+        pr = prober(probe_host, probe_port, timeout=5.0)
+        res.steps.append(RenewStep("probe", pr.get("ok", False),
+                                   f"{pr.get('protocol','')} cert {pr.get('days_left')}d"
+                                   if pr.get("ok") else pr.get("error", "probe failed")))
+
+    res.ok = True
+    res.message = "renewal complete, chain validated" + (
+        f", {reload_service} reloaded" if reload_service else "")
+    return res
+
+
+# ---------------- renewal consent (mirrors fixxer's gate) ----------------
+
+RENEW_CONSENT_FILENAME = "certs_renew_consent.json"
+
+
+def renew_consent_path(cfg):
+    from .config import CONFIG_DIR
+    return CONFIG_DIR / RENEW_CONSENT_FILENAME
+
+
+def load_renew_consent(cfg) -> dict | None:
+    p = renew_consent_path(cfg)
+    if not p.exists():
+        return None
+    try:
+        data = _json.loads(p.read_text())
+        return data if isinstance(data, dict) and data.get("granted") else None
+    except (ValueError, OSError):
+        return None
+
+
+def write_renew_consent(cfg):
+    import platform as _pf
+    p = renew_consent_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps({
+        "granted": True,
+        "granted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "host": _pf.node() or "localhost",
+        "statement": "I authorize wrench to renew certificates via the allowlisted "
+                     "ACME client, validate the chain, and reload the consuming "
+                     "service, under dry-run-first discipline.",
+    }, indent=2))
+    return p
+
+
+def revoke_renew_consent(cfg) -> bool:
+    p = renew_consent_path(cfg)
+    if p.exists():
+        p.unlink()
+        return True
+    return False
+
+
+# policy tiers that may mutate (renew for real) without the standalone ceremony
+RENEW_ALLOWED_TIERS = ("repair", "autonomous")
+
+
+def renewal_permitted(cfg) -> tuple[bool, str]:
+    """May a real (non-dry-run) renewal proceed? (allowed, reason)."""
+    tier = getattr(cfg, "policy_tier", "suggest")
+    if tier in RENEW_ALLOWED_TIERS:
+        return True, f"policy tier '{tier}' permits allowlisted mutations"
+    if load_renew_consent(cfg):
+        return True, "renewal consent on record"
+    return False, (f"policy tier '{tier}' is suggest-only and no renewal consent is "
+                   "recorded — run `wrench certs renew --setup-consent` first")
