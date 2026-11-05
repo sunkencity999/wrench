@@ -195,6 +195,42 @@ def render(store, data_dir: Path) -> str:
         b.sample("wrench_drift_last_change_timestamp_seconds",
                  max(d["ts"] for d in diffs))
 
+    # ---- security ----
+    try:
+        from .security import BASELINE_KIND, LASTSCAN_KIND
+        last_scan = store.last_snapshot(LASTSCAN_KIND)
+        b.metric("wrench_security_findings",
+                 "Security findings in the newest scan, by severity.", "gauge")
+        counts = (last_scan[1].get("counts", {}) if last_scan else {})
+        for sev in ("critical", "warning", "info"):
+            b.sample("wrench_security_findings", counts.get(sev, 0),
+                     {"severity": sev})
+        b.metric("wrench_security_last_scan_timestamp_seconds",
+                 "Unix time of the newest security scan.", "gauge")
+        if last_scan:
+            b.sample("wrench_security_last_scan_timestamp_seconds", last_scan[0])
+        b.metric("wrench_security_baseline_accepted",
+                 "1 when a security baseline has been accepted.", "gauge")
+        b.sample("wrench_security_baseline_accepted",
+                 1 if store.last_snapshot(BASELINE_KIND) else 0)
+        if last_scan:
+            comp = last_scan[1].get("components", {})
+            lst = comp.get("listeners", {})
+            b.metric("wrench_security_listeners",
+                     "Listening sockets at the newest security scan.", "gauge")
+            b.sample("wrench_security_listeners", lst.get("count", 0))
+            b.metric("wrench_security_listeners_ownerless",
+                     "Listeners with no attributable owner at the newest scan.",
+                     "gauge")
+            b.sample("wrench_security_listeners_ownerless", lst.get("ownerless", 0))
+            cve = comp.get("cve", {})
+            if cve.get("available"):
+                b.metric("wrench_security_cves_known",
+                         "Known CVEs matched against installed packages.", "gauge")
+                b.sample("wrench_security_cves_known", cve.get("vuln_count", 0))
+    except Exception:  # noqa: BLE001 — a scrape never dies on one family
+        pass
+
     b.metric("wrench_scrape_timestamp_seconds", "Unix time of this scrape.", "gauge")
     b.sample("wrench_scrape_timestamp_seconds", time.time())
     return b.text()

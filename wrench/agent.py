@@ -213,9 +213,18 @@ class Agent:
             cert_findings = certs.patrol_findings(self.cfg, self.store)
         except Exception:  # noqa: BLE001 — patrol never fails because a cert scan did
             pass
+        # security watch — quick scan (no CVE), cached, read-only, never fatal
+        security_findings: list[dict] = []
+        try:
+            from . import security
+            lines.append(security.patrol_summary_line(self.cfg, self.store))
+            security_findings = security.patrol_findings(self.cfg, self.store)
+        except Exception:  # noqa: BLE001 — patrol never fails because a security scan did
+            pass
         return "\n".join(lines), {"sensor": data, "drift": drift_changes,
                                    "anomalies": anomalies, "webintel": webintel_res,
-                                   "cert_findings": cert_findings}
+                                   "cert_findings": cert_findings,
+                                   "security_findings": security_findings}
 
 
 PATROL_GOAL = """\
@@ -310,9 +319,14 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
     prev_status = status
     status, findings = _merge_cert_findings(
         status, findings, raw_data.get("cert_findings") or [])
+    # Security findings ride the same deterministic merge: the LLM is never
+    # trusted to decide whether a brute-force burst or a new listener pages.
+    status, findings = _merge_cert_findings(
+        status, findings, raw_data.get("security_findings") or [])
     # If certs drove the escalation, make sure the human-visible summary says so.
     if status != prev_status and _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(prev_status, 0):
-        paging = [cf for cf in (raw_data.get("cert_findings") or [])
+        paging = [cf for cf in ((raw_data.get("cert_findings") or [])
+                                + (raw_data.get("security_findings") or []))
                   if (cf.get("severity") or "").lower() in ("warning", "critical")]
         if paging:
             note = paging[0]["text"]
