@@ -114,10 +114,14 @@ def _tool_in_command(cmd: str) -> str:
     return ""
 
 
-def _follow_wrapper(cmd: str, max_bytes: int = 65536) -> tuple[str, str]:
+_ASSIGN = re.compile(r'^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=([\'\"]?)(.*?)\2\s*$')
+
+
+def _follow_wrapper(cmd: str, max_bytes: int = 65536) -> tuple[str, str, str, dict]:
     """If cmd invokes a readable script, look inside it for the real tool.
 
-    Returns (tool, script_path) or ("", "").
+    Also collects simple VAR="value" assignments so repo/dest variables can be
+    resolved. Returns (tool, script_path, matched_line, env) or ("", "", "", {}).
     """
     for tok in _tokens(cmd):
         tok = tok.strip("'\"")
@@ -132,14 +136,26 @@ def _follow_wrapper(cmd: str, max_bytes: int = 65536) -> tuple[str, str]:
             text = p.read_text(errors="replace")[:max_bytes]
         except OSError:
             continue
+        env: dict[str, str] = {}
         for line in text.splitlines():
             line = line.strip()
             if line.startswith("#"):
                 continue
+            m = _ASSIGN.match(line)
+            if m:
+                env[m.group(1)] = m.group(3)
+                continue
             tool = _tool_in_command(line)
             if tool:
-                return tool, str(p)
-    return "", ""
+                return tool, str(p), _subst(line, env), env
+    return "", "", "", {}
+
+
+def _subst(line: str, env: dict) -> str:
+    """Resolve ${VAR} / $VAR references from collected simple assignments."""
+    for k, v in env.items():
+        line = line.replace("${%s}" % k, v).replace("$%s" % k, v)
+    return line
 
 
 _CRON_LINE = re.compile(
@@ -192,16 +208,17 @@ def _parse_cron_text(text: str, origin: str, has_user_field: bool) -> list["Back
             cadence, sched = _cadence_from_cron(m.group("min"), m.group("hour"),
                                                 m.group("dom"), m.group("dow"))
         tool = _tool_in_command(cmd)
-        script = ""
+        script, inner, wenv = "", "", {}
         if not tool:
-            tool, script = _follow_wrapper(cmd)
+            tool, script, inner, wenv = _follow_wrapper(cmd)
         if not tool:
             continue
+        parse_cmd = inner or cmd
         jobs.append(BackupJob(
-            name=_job_name(tool, cmd, origin), tool=tool, command=cmd.strip(),
+            name=_job_name(tool, parse_cmd, origin), tool=tool, command=cmd.strip(),
             origin=origin if not script else f"{origin} → {script}",
             schedule=sched, cadence_s=cadence,
-            **_parse_src_dest(tool, cmd)))
+            **_parse_src_dest(tool, parse_cmd, wenv)))
     return jobs
 
 
@@ -215,7 +232,7 @@ def _job_name(tool: str, cmd: str, origin: str) -> str:
     return f"{tool}:{base}"
 
 
-def _parse_src_dest(tool: str, cmd: str) -> dict:
+def _parse_src_dest(tool: str, cmd: str, env: dict | None = None) -> dict:
     """Best-effort source/destination extraction per tool. Never raises."""
     out = {"source": "", "dest": ""}
     try:
@@ -228,6 +245,8 @@ def _parse_src_dest(tool: str, cmd: str) -> dict:
                     break
             paths = [t for t in args if t.startswith("/") and "::" not in t]
             out["source"] = " ".join(paths[:3])
+            if not out["dest"] and env and env.get("BORG_REPO"):
+                out["dest"] = env["BORG_REPO"]
         elif tool == "restic":
             for i, t in enumerate(toks):
                 if t in ("-r", "--repo", "--repository") and i + 1 < len(toks):
@@ -273,12 +292,12 @@ def _detect_cron() -> list[BackupJob]:
         for p in sorted(dp.iterdir()):
             if not (p.is_file() and os.access(p, os.R_OK)):
                 continue
-            tool, script = _follow_wrapper(str(p))
+            tool, script, inner, wenv = _follow_wrapper(str(p))
             if tool:
                 jobs.append(BackupJob(
                     name=f"{tool}:{p.name}", tool=tool, command=str(p),
                     origin=f"{d}/{p.name}", schedule=f"@{dp.name.split('.')[-1]}",
-                    cadence_s=cadence))
+                    cadence_s=cadence, **_parse_src_dest(tool, inner, wenv)))
     return jobs
 
 
@@ -321,9 +340,9 @@ def _detect_systemd(user: bool = False) -> list[BackupJob]:
         if not cmd:
             continue
         tool = _tool_in_command(cmd)
-        script = ""
+        script, inner, wenv = "", "", {}
         if not tool:
-            tool, script = _follow_wrapper(cmd)
+            tool, script, inner, wenv = _follow_wrapper(cmd)
         if not tool:
             continue
         rc2, tprops = _run(["systemctl", *scope, "show", timer,
@@ -337,7 +356,7 @@ def _detect_systemd(user: bool = False) -> list[BackupJob]:
             origin=f"{'user:' if user else ''}{timer}"
                    + (f" → {script}" if script else ""),
             schedule=oncal or "timer", cadence_s=_timer_cadence(oncal),
-            **_parse_src_dest(tool, cmd)))
+            **_parse_src_dest(tool, inner or cmd, wenv)))
     return jobs
 
 
@@ -436,9 +455,11 @@ def check_integrity(job: BackupJob, timeout: int = 30) -> None:
                 job.integrity_note = f"latest archive: {out.strip().splitlines()[-1]}"
             elif rc == 0:
                 job.integrity, job.integrity_note = "failed", "repository has no archives"
-            elif "passphrase" in out.lower() or "passcommand" in out.lower():
+            elif ("passphrase" in out.lower() or "passcommand" in out.lower()
+                  or "acquire the lock" in out.lower()
+                  or "permission denied" in out.lower()):
                 job.integrity, job.integrity_note = \
-                    "locked", "repo needs a passphrase (read check skipped)"
+                    "locked", "repo not readable from here (lock/permissions — check skipped)"
             else:
                 job.integrity, job.integrity_note = "failed", out.strip()[:160]
         elif job.tool == "restic":
