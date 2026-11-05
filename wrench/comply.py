@@ -345,9 +345,19 @@ def _check_login_defs(c: dict) -> tuple[str, str]:
     if val is None:
         return "fail", f"{c['key']} unset"
     op = c.get("op", "eq")
-    try:
-        have, want = int(val, 0), int(str(c["value"]), 0)
-    except ValueError:
+
+    def _num(x) -> int | None:
+        s = str(x)
+        try:
+            return int(s, 0)        # 0o027, 0x..., plain decimal
+        except ValueError:
+            try:
+                return int(s, 8)    # bare-octal convention: UMASK 027
+            except ValueError:
+                return None
+
+    have, want = _num(val), _num(c["value"])
+    if have is None or want is None:
         return ("pass", f"{c['key']} = {val}") if str(val) == str(c["value"]) \
             else ("fail", f"{c['key']} = {val}, want {c['value']}")
     ok = {"max": have <= want, "min": have >= want, "eq": have == want}[op]
