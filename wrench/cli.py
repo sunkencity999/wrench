@@ -13,7 +13,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__, agent as agent_mod, driftscan, platforms, report, sensors
+from . import (__version__, agent as agent_mod, driftscan, jsonout, platforms,
+               report, sensors)
 from .config import CONFIG_PATH, load_config, write_default_config
 from .providers import LLMClient
 from .store import Store
@@ -58,25 +59,48 @@ def _confirm(command: str, label: str) -> bool:
 PROVIDER_OPT = typer.Option(None, "--provider", "-p",
                             help="ollama|lmstudio|openai|anthropic|meta|azure|litellm")
 MODEL_OPT = typer.Option(None, "--model", "-m", help="model override")
+JSON_OPT = typer.Option(False, "--json",
+                        help="machine-readable JSON to stdout (no rich formatting)")
 
 
 # ---------------- commands ----------------
 
 @app.command()
-def version():
+def version(json_out: bool = JSON_OPT):
     """Print version."""
+    if json_out:
+        jsonout.emit("version", {})
+        return
     console.print(f"wrench {__version__}")
 
 
 @app.command()
-def status():
+def status(json_out: bool = JSON_OPT):
     """One-screen health: gauges, sparklines, anomalies."""
     cfg, store = _ctx()
+    if json_out:
+        data = sensors.status_snapshot(store)
+        jsonout.emit("status", {
+            "os": data.get("os", {}),
+            "docker": data.get("docker"),
+            "gpu": data.get("gpu"),
+            "anomalies_24h": data.get("anomalies_24h", []),
+            "unread_notifications": _unread_count(cfg),
+        })
+        return
     _notify_banner(cfg)
     with console.status("[cyan]sampling sensors..."):
         data = sensors.status_snapshot(store)
         history = store.recent_samples("os", 86400)
     report.render_status(console, data, history, cfg)
+
+
+def _unread_count(cfg) -> int:
+    try:
+        from . import notifications
+        return len(notifications.unread(cfg.data_dir))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 @app.command()
@@ -187,10 +211,19 @@ def watch(
 def drift(
     narrate: bool = typer.Option(False, "--narrate", help="let the model narrate significance"),
     provider: str = PROVIDER_OPT,
+    json_out: bool = JSON_OPT,
 ):
     """Scan for drift: what changed on this box since last scan?"""
     cfg, store = _ctx(provider)
     first = not driftscan.baseline_exists(store)
+    if json_out:
+        changes = driftscan.scan(store)
+        jsonout.emit("drift", {
+            "baseline_recorded": first,
+            "change_count": sum(len(c.get("changes", [])) for c in changes),
+            "changes": changes,
+        })
+        return
     with console.status("[cyan]snapshotting ports/services/packages/users/cron..."):
         changes = driftscan.scan(store)
     if first:
@@ -230,9 +263,21 @@ def drift(
 def report_cmd(
     last: int = typer.Option(10, "--last", "-n", help="how many patrols to list"),
     open_html: bool = typer.Option(False, "--open", help="regenerate+print latest HTML path"),
+    json_out: bool = JSON_OPT,
 ):
     """Show recent patrol reports. Viewing them marks notifications read."""
     cfg, store = _ctx()
+    if json_out:
+        patrols = store.recent_patrols(last)
+        jsonout.emit("report", {
+            "count": len(patrols),
+            "patrols": [{
+                "ts": p["ts"], "status": p["status"], "summary": p["summary"],
+                "model": p.get("model"), "tokens": p.get("tokens"),
+                "findings": p.get("findings", []),
+            } for p in patrols],
+        })
+        return
     _notify_banner(cfg)
     patrols = store.recent_patrols(last)
     if not patrols:
@@ -1090,12 +1135,32 @@ def certs_main(
                                help="also live-probe local HTTPS listeners (read-only)"),
     verify_chain: bool = typer.Option(True, "--verify-chain/--no-verify-chain",
                                       help="run openssl chain verification per cert"),
+    json_out: bool = JSON_OPT,
 ):
     """Inventory certificates: scan configs + well-known stores, parse, persist, report."""
     if ctx.invoked_subcommand is not None:
         return
     from . import certs as cmod
     cfg, store = _ctx()
+    if json_out:
+        cert_list, weaknesses = cmod.inventory()
+        if verify_chain:
+            for c in cert_list:
+                if c.ok and not c.self_signed and c.chain_complete is None:
+                    complete, _note = cmod.verify_chain(c.path)
+                    c.chain_complete = complete
+        for c in cert_list:
+            store.upsert_cert(c.to_row())
+        attention = [c for c in cert_list if c.ok and c.expiry_severity()]
+        jsonout.emit("certs", {
+            "count": len(cert_list),
+            "needing_attention": len(attention),
+            "certs": [{**c.to_row(), "common_name": c.common_name,
+                       "weak_key": c.weak_key,
+                       "expiry_severity": c.expiry_severity()} for c in cert_list],
+            "weaknesses": weaknesses,
+        })
+        return
     _notify_banner(cfg)
     with console.status("[cyan]scanning configs + well-known stores for certificates..."):
         cert_list, weaknesses = cmod.inventory()
@@ -1289,10 +1354,23 @@ def certs_audit(
     no_llm: bool = typer.Option(False, "--no-llm", help="skip the brain-narrated summary"),
     provider: str = PROVIDER_OPT,
     model: str = MODEL_OPT,
+    json_out: bool = JSON_OPT,
 ):
     """Weak-TLS audit: protocols/ciphers/HSTS/OCSP from configs + live probe, narrated."""
     from . import certs as cmod
     cfg, store = _ctx(provider, model)
+    if json_out:
+        rep = cmod.audit_report(do_probe=not no_probe)
+        for c in rep["certs"]:
+            store.upsert_cert(c.to_row())
+        jsonout.emit("certs.audit", {
+            "certs": [{**c.to_row(), "common_name": c.common_name,
+                       "weak_key": c.weak_key,
+                       "expiry_severity": c.expiry_severity()} for c in rep["certs"]],
+            "weaknesses": rep["weaknesses"],
+            "probes": rep["probes"],
+        })
+        return
     with console.status("[cyan]auditing TLS posture (configs + live probe)..."):
         rep = cmod.audit_report(do_probe=not no_probe)
         for c in rep["certs"]:
@@ -1410,14 +1488,20 @@ def blueprint_main(
                                       help="list past blueprint applications and exit"),
     provider: str = PROVIDER_OPT,
     model: str = MODEL_OPT,
+    json_out: bool = JSON_OPT,
 ):
     """Draft a config change as a reviewed diff and (with consent) apply it."""
     if ctx.invoked_subcommand is not None:
         return
     from . import blueprint as bp
     cfg, store = _ctx(provider, model)
-    if show_history:
-        _bp_history(cfg)
+    # `wrench blueprint history` — the INTENT argument would otherwise swallow
+    # the word "history" and send it to the drafting brain; treat it as --history.
+    if show_history or (intent or "").strip().lower() == "history":
+        if json_out:
+            _bp_history_json(cfg)
+        else:
+            _bp_history(cfg)
         return
     if not intent:
         console.print("[yellow]tell me what to change:[/yellow] "
@@ -1499,11 +1583,20 @@ def _bp_history(cfg) -> None:
     console.print(t)
 
 
+def _bp_history_json(cfg) -> None:
+    from . import blueprint as bp
+    rows = bp.history(cfg, n=100)
+    jsonout.emit("blueprint.history", {"count": len(rows), "history": rows})
+
+
 @blueprint_app.command("history")
-def blueprint_history():
+def blueprint_history(json_out: bool = JSON_OPT):
     """List past blueprint applications with outcomes."""
     cfg, _store = _ctx()
-    _bp_history(cfg)
+    if json_out:
+        _bp_history_json(cfg)
+    else:
+        _bp_history(cfg)
 
 
 @blueprint_app.command("consent")
@@ -1587,10 +1680,81 @@ def install_service(
         border_style="green", title="🔧 wrench install-service"))
 
 
+@app.command("notifications")
+def notifications_cmd(
+    all_: bool = typer.Option(False, "--all", help="include already-read notifications"),
+    last: int = typer.Option(50, "--last", "-n", help="max notifications to list"),
+    mark_read: bool = typer.Option(False, "--mark-read", help="mark listed unread as read"),
+    json_out: bool = JSON_OPT,
+):
+    """List patrol/subsystem notifications from the inbox."""
+    from . import notifications as notif
+    cfg, _store = _ctx()
+    rows = notif.read_all(cfg.data_dir)
+    unread = [r for r in rows if not r.get("read")]
+    shown = (rows if all_ else unread)[-last:]
+    if json_out:
+        jsonout.emit("notifications", {
+            "count": len(shown),
+            "unread_count": len(unread),
+            "notifications": shown,
+        })
+    elif not shown:
+        console.print("[dim]no " + ("" if all_ else "unread ")
+                      + "notifications — the box is quiet[/dim]")
+    else:
+        t = Table(title="🔔 notifications", border_style="bright_blue")
+        t.add_column("when")
+        t.add_column("severity")
+        t.add_column("summary", max_width=70)
+        t.add_column("read", justify="center")
+        for r in shown:
+            t.add_row(time.strftime("%m-%d %H:%M", time.localtime(r.get("ts", 0))),
+                      _sev_text(r.get("severity", "")), r.get("summary", ""),
+                      "✓" if r.get("read") else "")
+        console.print(t)
+    if mark_read and unread:
+        n = notif.mark_read(cfg.data_dir, [r["id"] for r in shown if not r.get("read")])
+        if not json_out:
+            console.print(f"[dim]marked {n} read[/dim]")
+
+
 @app.command()
-def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT):
+def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
+           json_out: bool = JSON_OPT):
     """Check config, data store, sensors, and provider connectivity."""
     cfg, store = _ctx(provider, model)
+    if json_out:
+        caps = platforms.capabilities()
+        checks: dict = {
+            "platform": caps["platform"],
+            "scheduler": caps["service_manager"],
+            "log_backend": caps["log_backend"],
+            "config_path": str(CONFIG_PATH) if CONFIG_PATH.exists() else None,
+            "provider": cfg.provider,
+            "base_url": cfg.base_url,
+            "model": cfg.model,
+            "deep_model": cfg.deep_model,
+            "policy_tier": cfg.policy_tier,
+            "api_key_present": bool(cfg.api_key
+                                    or cfg.provider in ("ollama", "lmstudio")),
+            "db_path": str(cfg.db_path),
+        }
+        try:
+            s = sensors.sample_os()
+            checks["sensor_os"] = {"ok": True, "cpu_pct": s["cpu_pct"],
+                                   "mem_pct": s["mem_pct"]}
+        except Exception as e:  # noqa: BLE001
+            checks["sensor_os"] = {"ok": False, "error": str(e)}
+        checks["sensor_docker"] = sensors.sample_docker() is not None
+        checks["sensor_gpu"] = sensors.sample_gpu() is not None
+        client = LLMClient(cfg, store)
+        alive, detail = client.ping()
+        checks["provider_ping"] = {"ok": alive, "detail": detail}
+        jsonout.emit("doctor", {"healthy": bool(alive), "checks": checks})
+        if not alive:
+            raise typer.Exit(1)
+        return
     t = Table(title="🔧 wrench doctor", border_style="bright_blue", show_header=False)
     t.add_column(style="bold", justify="right")
     t.add_column()
