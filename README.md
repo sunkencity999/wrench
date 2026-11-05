@@ -278,10 +278,47 @@ enabled = true               # master switch
 min_severity = "attention"   # attention | error | critical
 desktop = true
 # webhook_url = "https://ntfy.sh/your-topic"
+# syslog_address = "/dev/log"            # or udp://siem:514 / tcp://siem:601
+# syslog_min_severity = "attention"      # per-sink threshold override
+# http_jsonl_url = "https://splunk:8088/services/collector/raw"   # ndjson POST
+# http_jsonl_min_severity = "error"
 ```
 
 Severity is the worst of the patrol's status and its individual findings, so
 an "attention" patrol carrying one `[critical]` finding notifies as critical.
+
+### Wire it into your stack — `--json`, `/metrics`, syslog/SIEM
+
+wrench doesn't assume it's the only tool watching the box. Whatever you
+already run — Grafana, Splunk, ELK, plain cron and `jq` — it plugs in:
+
+- **`--json` on every read/report command** — `status`, `report`, `drift`,
+  `certs`, `certs audit`, `blueprint --history`, `notifications`, `doctor`,
+  `version`. One stable JSON document on stdout (`wrench.<command>.v1`
+  envelope), no rich formatting, meaningful exit codes
+  (`doctor --json` exits 1 when the provider is unreachable):
+
+  ```bash
+  wrench status --json | jq '.os.disk_pct'
+  wrench certs --json | jq '.certs[] | select(.days_left < 30)'
+  wrench report --json -n 1 | jq -e '.patrols[0].status == "ok"'   # CI gate
+  ```
+
+- **Prometheus exporter** — `GET /metrics` on the dashboard (`wrench web`),
+  or a bare exporter with `wrench metrics serve --port 9465`, or a one-shot
+  scrape to stdout with `wrench metrics` (textfile-collector friendly).
+  Sensor gauges, notification counts by severity, **days-to-expiry per
+  certificate**, patrol counters + last-ok timestamp, blueprint
+  apply/rollback counters, drift change counts. Hand-rolled exposition —
+  zero new dependencies.
+
+- **Syslog / SIEM sink** — RFC 5424 to local `/dev/log` or remote
+  `udp://`/`tcp://` collectors, plus a JSON-lines-over-HTTP sink
+  (Splunk HEC / ELK-style). Per-sink severity thresholds. Patrol findings,
+  the cert expiry ladder, and every blueprint apply/rollback flow through
+  automatically.
+
+Schemas, metric families, and alert ideas: [docs/json-output.md](docs/json-output.md).
 
 ### `wrench cve` — what the internet already knows about your box
 

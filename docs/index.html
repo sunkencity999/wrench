@@ -265,6 +265,14 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       backs up, applies, reloads via allowlisted verbs, health-probes — and <b>auto-rolls-back</b>
       on any failure. Dry-run by default, consent-gated, denylist-protected
       (never passwd/shadow/sudoers-direct), every application a labeled drift snapshot.</p></div>
+    <div class="card"><span class="ico">🔌</span><h3>Wire it into your stack</h3>
+      <p>Every read command speaks <b><code>--json</code></b> — one stable document
+      (<code>wrench.status.v1</code>…), clean exit codes, pipe straight into <code>jq</code> or CI.
+      A <b>Prometheus <code>/metrics</code></b> endpoint (dashboard or bare exporter) exposes sensor
+      gauges, per-cert days-to-expiry, patrol and blueprint counters — hand-rolled exposition,
+      zero new dependencies. Notifications stream to <b>RFC 5424 syslog</b> (local or
+      udp/tcp) and <b>JSON-lines-over-HTTP</b> for Splunk/ELK-style collectors, each with its own
+      severity threshold. Grafana, SIEM, cron — bring your own stack, like your own brain.</p></div>
     <div class="card"><span class="ico">🔔</span><h3>Notify</h3>
       <p>When a patrol finds trouble, wrench <b>taps you on the shoulder</b>: a desktop
       notification, an optional webhook (ntfy / Slack / Discord), a toast on the live dashboard,
