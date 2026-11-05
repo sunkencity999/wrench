@@ -7,6 +7,8 @@ once the baseline has warmed up (n >= 20 samples).
 from __future__ import annotations
 
 import json
+import os
+import platform
 import shutil
 import subprocess
 import time
@@ -17,6 +19,16 @@ from . import platforms
 from .store import Store
 
 ANOMALY_Z = 3.0
+
+# Log directories whose growth capacity-forecasting watches. The du is bounded
+# (file-count + wall-time budget) so a patrol never stalls on a huge tree.
+_LOG_DIRS_BY_OS = {
+    "linux": ["/var/log"],
+    "darwin": ["/var/log", "/Library/Logs"],
+    "windows": [],
+}
+_LOG_DU_MAX_FILES = 20000
+_LOG_DU_TIME_BUDGET_S = 2.5
 # metrics worth baselining (sensor, key)
 BASELINED = {
     "os": [
@@ -33,6 +45,81 @@ def _run(cmd: list[str], timeout: int = 10) -> str:
         ).stdout.strip()
     except Exception:  # noqa: BLE001
         return ""
+
+
+def log_dirs_for(system: str | None = None) -> list[str]:
+    """Log directories to sample on this OS (pure; testable via `system`)."""
+    return _LOG_DIRS_BY_OS.get((system or platform.system()).lower(), [])
+
+
+def dir_size_bounded(path: str, max_files: int = _LOG_DU_MAX_FILES,
+                     time_budget_s: float = _LOG_DU_TIME_BUDGET_S) -> dict:
+    """Best-effort recursive byte count, bounded by file count and wall time.
+
+    Returns {bytes, files, truncated}. Never raises; unreadable entries are
+    skipped. ``truncated`` is True when either budget was hit — the caller can
+    note that the figure is a floor, not an exact total.
+    """
+    total = 0
+    files = 0
+    truncated = False
+    deadline = time.monotonic() + time_budget_s
+    stack = [path]
+    while stack:
+        if files >= max_files or time.monotonic() > deadline:
+            truncated = True
+            break
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    if files >= max_files or time.monotonic() > deadline:
+                        truncated = True
+                        break
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                            files += 1
+                    except (OSError, PermissionError):
+                        continue
+        except (OSError, PermissionError):
+            continue
+    return {"bytes": total, "files": files, "truncated": truncated}
+
+
+def sample_log_dirs(dirs: list[str] | None = None) -> dict:
+    """Bounded du of each existing log directory. {path: {bytes,files,truncated}}."""
+    out: dict[str, dict] = {}
+    for d in (dirs if dirs is not None else log_dirs_for()):
+        try:
+            if os.path.isdir(d):
+                out[d] = dir_size_bounded(d)
+        except OSError:
+            continue
+    return out
+
+
+def inode_usage() -> dict:
+    """Inode utilization percent per mount (statvfs). {} where unsupported."""
+    out: dict[str, float] = {}
+    if not hasattr(os, "statvfs"):
+        return out
+    for part in psutil.disk_partitions(all=False):
+        if part.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
+            continue
+        try:
+            s = os.statvfs(part.mountpoint)
+        except (OSError, PermissionError):
+            continue
+        if s.f_files <= 0:
+            continue
+        used = s.f_files - s.f_ffree
+        out[part.mountpoint] = round(used / s.f_files * 100, 1)
+    return out
 
 
 def sample_os(store: Store | None = None) -> dict:
@@ -67,6 +154,8 @@ def sample_os(store: Store | None = None) -> dict:
         "n_procs": len(psutil.pids()),
         "disk_pct": disks,
         "disk_root_pct": disks.get(platforms.primary_mount(), 0.0),
+        "inode_pct": inode_usage(),
+        "log_dirs": sample_log_dirs(),
         "net_bytes_recv": net.bytes_recv,
         "net_bytes_sent": net.bytes_sent,
         "uptime_s": int(time.time() - psutil.boot_time()),
