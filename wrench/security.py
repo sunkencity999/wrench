@@ -668,3 +668,373 @@ def analyze_listeners(current: list[dict], baseline: dict | None) -> tuple[list[
                 {"key": row["key"]}))
     observed = {"listeners": {r["key"]: (r.get("process") or "") for r in current}}
     return findings, observed
+
+
+# =====================================================================
+# 4. CVE matching — full package inventory vs OSV.dev (fail-soft, cached)
+# =====================================================================
+
+def package_inventory(cap: int = 3000) -> tuple[list[dict], str]:
+    """Full installed-package inventory. Returns (packages, manager).
+
+    dpkg → ecosystem Debian/Ubuntu by /etc/os-release; rpm → the matching RPM
+    ecosystem when OSV knows it. Unknown manager → ([], "none").
+    """
+    from . import webintel
+    if shutil.which("dpkg-query"):
+        osrel = webintel._os_release()  # noqa: SLF001 — same package
+        eco = {"ubuntu": "Ubuntu", "debian": "Debian"}.get(
+            osrel.get("ID", "").lower())
+        if not eco:
+            return [], "dpkg"
+        code, out = _run(["dpkg-query", "-W", "-f",
+                          "${source:Package}\t${Version}\n"], timeout=30)
+        if code != 0:
+            return [], "dpkg"
+        seen: dict[str, str] = {}
+        for line in out.splitlines():
+            if "\t" not in line:
+                continue
+            src, ver = line.split("\t", 1)
+            src = src.split(" ")[0].strip()
+            if src and ver.strip() and src not in seen:
+                seen[src] = ver.strip()
+        pkgs = [{"name": n, "version": v, "ecosystem": eco}
+                for n, v in sorted(seen.items())]
+        return pkgs[:cap], "dpkg"
+    if shutil.which("rpm"):
+        osrel = webintel._os_release()  # noqa: SLF001
+        eco = {"almalinux": "AlmaLinux", "rocky": "Rocky Linux",
+               "fedora": "Fedora", "mageia": "Mageia", "opensuse-leap": "openSUSE",
+               "opensuse-tumbleweed": "openSUSE"}.get(osrel.get("ID", "").lower())
+        if not eco:
+            return [], "rpm"
+        code, out = _run(["rpm", "-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n"],
+                         timeout=30)
+        if code != 0:
+            return [], "rpm"
+        seen = {}
+        for line in out.splitlines():
+            if "\t" in line:
+                n, v = line.split("\t", 1)
+                if n and v.strip() and n not in seen:
+                    seen[n] = v.strip()
+        pkgs = [{"name": n, "version": v, "ecosystem": eco}
+                for n, v in sorted(seen.items())]
+        return pkgs[:cap], "rpm"
+    return [], "none"
+
+
+def _severity_bucket(score: str) -> str:
+    """CVSS vector/score or word → critical|high|medium|low|unknown."""
+    s = (score or "").strip()
+    if not s:
+        return "unknown"
+    low = s.lower()
+    for word in ("critical", "high", "medium", "moderate", "low"):
+        if word in low and "/" not in s:
+            return "medium" if word == "moderate" else word
+    if s.upper().startswith("CVSS:"):
+        # OSV hands us a vector, not a number — rank by impact flags
+        if "/C:H" in s or "/I:H" in s or "/A:H" in s:
+            return "high"
+        return "medium"
+    try:
+        val = float(s)
+    except ValueError:
+        return "unknown"
+    if val >= 9.0:
+        return "critical"
+    if val >= 7.0:
+        return "high"
+    if val >= 4.0:
+        return "medium"
+    return "low"
+
+
+def cve_scan(cfg, store, st: SecuritySettings | None = None,
+             force: bool = False, on_step=None) -> dict:
+    """Inventory × OSV.dev querybatch, cached in sqlite with a TTL. Fail-soft.
+
+    Returns {available, checked, manager, vulns: [...], new_serious: [...],
+    error, cached}. vulns: {package, version, id, severity, bucket, fixed}.
+    """
+    from . import webintel
+    st = st or SecuritySettings()
+
+    def step(msg: str) -> None:
+        if on_step:
+            on_step("security", msg)
+
+    if not force:
+        cached = store.cache_get(CVE_SCAN_KEY, st.cve_ttl_s)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
+
+    pkgs, manager = package_inventory(st.cve_max_packages)
+    if not pkgs:
+        return {"available": False, "checked": 0, "manager": manager, "vulns": [],
+                "new_serious": [], "cached": False,
+                "error": f"no supported package inventory ({manager})"}
+    step(f"OSV: querying {len(pkgs)} {manager} packages in batches")
+    try:
+        hits = webintel.osv_querybatch(pkgs)
+    except Exception as e:  # noqa: BLE001 — offline/air-gap: skip with notice
+        return {"available": False, "checked": len(pkgs), "manager": manager,
+                "vulns": [], "new_serious": [], "cached": False,
+                "error": f"OSV unreachable ({e.__class__.__name__}) — CVE scan skipped"}
+
+    vulns: list[dict] = []
+    detail_budget = webintel.DETAIL_CAP
+    for pkg, ids in zip(pkgs, hits):
+        for vid in ids:
+            sev_score, fixed = "", ""
+            if detail_budget > 0:
+                try:
+                    detail = webintel.osv_vuln_detail(store, vid, st.cve_ttl_s)
+                    detail_budget -= 1
+                    sev_score = webintel._severity_of(detail)  # noqa: SLF001
+                    fixed = webintel._fixed_of(detail, pkg["name"])  # noqa: SLF001
+                except Exception:  # noqa: BLE001
+                    pass
+            vulns.append({"package": pkg["name"], "version": pkg["version"],
+                          "id": vid, "severity": sev_score,
+                          "bucket": _severity_bucket(sev_score), "fixed": fixed})
+
+    seen_before = set(store.cache_get(CVE_SEEN_KEY, 365 * 86400) or [])
+    new_serious = [v for v in vulns
+                   if v["bucket"] in ("critical", "high") and v["id"] not in seen_before]
+    store.cache_put(CVE_SEEN_KEY, sorted(seen_before | {v["id"] for v in vulns}))
+
+    result = {"available": True, "checked": len(pkgs), "manager": manager,
+              "vulns": vulns, "new_serious": new_serious, "cached": False,
+              "error": ""}
+    store.cache_put(CVE_SCAN_KEY, result)
+    return result
+
+
+def cve_findings(cve: dict) -> list[Finding]:
+    """Severity-ranked findings from a cve_scan result. Pure."""
+    findings: list[Finding] = []
+    if not cve.get("available"):
+        if cve.get("error"):
+            findings.append(Finding("info", "cve", "CVE scan skipped",
+                                    cve["error"], {}))
+        return findings
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
+    ranked = sorted(cve.get("vulns", []),
+                    key=lambda v: (order.get(v["bucket"], 9), v["package"]))
+    new_ids = {v["id"] for v in cve.get("new_serious", [])}
+    for v in ranked:
+        if v["bucket"] == "critical":
+            sev = "critical"
+        elif v["bucket"] == "high":
+            sev = "warning"
+        else:
+            sev = "info"
+        is_new = v["id"] in new_ids
+        findings.append(Finding(
+            sev, "cve",
+            f"{v['id']} in {v['package']} {v['version']}"
+            + (" [NEW]" if is_new else ""),
+            (f"severity {v['bucket']}"
+             + (f", fixed in {v['fixed']}" if v.get("fixed") else "")),
+            {"id": v["id"], "package": v["package"], "bucket": v["bucket"],
+             "new": is_new}))
+    return findings
+
+
+# =====================================================================
+# 5. orchestration — baseline, scan, patrol hooks, narration
+# =====================================================================
+
+def baseline_get(store) -> dict | None:
+    row = store.last_snapshot(BASELINE_KIND)
+    return row[1] if row else None
+
+
+def baseline_accept(store, observed: dict) -> dict:
+    """Bless the observed state as the new baseline (explicit consent only)."""
+    payload = {"accepted_at": time.time(), **observed}
+    store.add_snapshot(BASELINE_KIND, payload)
+    return payload
+
+
+def collect_observed(cfg=None, st: SecuritySettings | None = None,
+                     lines: list[str] | None = None) -> dict:
+    """One full observation pass (no analysis): what `accept` would bless."""
+    st = st or (settings_from(cfg) if cfg is not None else SecuritySettings())
+    if lines is None:
+        lines, _src = read_auth_lines(st.lookback_s)
+    events = parse_auth_events(lines)
+    _f1, auth_obs = analyze_auth(events, None, st)
+    access = collect_access_state(st)
+    _f2, access_obs = analyze_access(access, None)
+    listeners = listener_inventory()
+    _f3, listen_obs = analyze_listeners(listeners, None)
+    return {"auth": auth_obs, "access": access_obs, **listen_obs}
+
+
+def scan(cfg, store, include_cve: bool = True, force_cve: bool = False,
+         on_step=None) -> dict:
+    """Full security scan → report dict. Read-only; never raises.
+
+    {findings: [dict...], worst, baseline_exists, observed, components: {...}}
+    """
+    st = settings_from(cfg)
+    findings: list[Finding] = []
+    components: dict = {}
+
+    def step(msg: str) -> None:
+        if on_step:
+            on_step("security", msg)
+
+    baseline = baseline_get(store)
+    b_auth = (baseline or {}).get("auth")
+    b_access = (baseline or {}).get("access")
+    b_listen = {"listeners": (baseline or {}).get("listeners", {})} if baseline else None
+
+    step("reading auth events")
+    lines, auth_source = read_auth_lines(st.lookback_s)
+    events = parse_auth_events(lines)
+    f_auth, auth_obs = analyze_auth(events, b_auth, st)
+    findings += f_auth
+    components["auth"] = {"source": auth_source, "events": len(events),
+                          "findings": len(f_auth)}
+
+    step("checking privilege/access drift")
+    access_state = collect_access_state(st)
+    f_access, access_obs = analyze_access(access_state, b_access)
+    findings += f_access
+    components["access"] = {
+        "sudoers_files": len(access_state["sudoers"]["files"]),
+        "authorized_keys_users": len(access_state["authorized_keys"]),
+        "shadow_readable": access_state["shadow_readable"],
+        "findings": len(f_access)}
+
+    step("inventorying listeners")
+    listeners = listener_inventory()
+    f_listen, listen_obs = analyze_listeners(listeners, b_listen)
+    findings += f_listen
+    components["listeners"] = {"count": len(listeners),
+                               "ownerless": sum(1 for r in listeners if r["ownerless"]),
+                               "findings": len(f_listen),
+                               "rows": listeners}
+
+    cve_res: dict = {"available": False, "skipped": True}
+    if include_cve and st.cve:
+        cve_res = cve_scan(cfg, store, st, force=force_cve, on_step=on_step)
+        f_cve = cve_findings(cve_res)
+        findings += f_cve
+        components["cve"] = {k: v for k, v in cve_res.items() if k != "vulns"}
+        components["cve"]["vuln_count"] = len(cve_res.get("vulns", []))
+    else:
+        components["cve"] = {"available": False, "skipped": True}
+
+    observed = {"auth": auth_obs, "access": access_obs, **listen_obs}
+    report = {
+        "findings": [f.as_dict() for f in findings],
+        "worst": worst_severity(findings),
+        "counts": {s: sum(1 for f in findings if f.severity == s)
+                   for s in ("critical", "warning", "info")},
+        "baseline_exists": baseline is not None,
+        "baseline_accepted_at": (baseline or {}).get("accepted_at"),
+        "observed": observed,
+        "components": components,
+    }
+    # persist a summary snapshot for /metrics + patrol caching (strip bulk)
+    slim = {k: v for k, v in report.items() if k not in ("observed",)}
+    slim["components"] = {**components,
+                          "listeners": {k: v for k, v in components["listeners"].items()
+                                        if k != "rows"}}
+    try:
+        store.add_snapshot(LASTSCAN_KIND, slim)
+    except Exception:  # noqa: BLE001
+        pass
+    return report
+
+
+def notify_scan(cfg, report: dict) -> dict | None:
+    """emit_event for a scan whose findings clear the ladder. Never raises."""
+    from .notifications import emit_event
+    worst = report.get("worst", "info")
+    counts = report.get("counts", {})
+    if worst not in ("warning", "critical"):
+        return None
+    new_cves = [f for f in report["findings"]
+                if f["category"] == "cve" and f["meta"].get("new")]
+    bits = []
+    if counts.get("critical"):
+        bits.append(f"{counts['critical']} critical")
+    if counts.get("warning"):
+        bits.append(f"{counts['warning']} warning")
+    summary = f"security scan: {', '.join(bits)} finding(s)"
+    if new_cves:
+        summary += f" incl. {len(new_cves)} NEW serious CVE(s)"
+    top = [f for f in report["findings"] if f["severity"] == worst][:3]
+    if top:
+        summary += " — " + "; ".join(f["title"] for f in top)
+    sev = "critical" if worst == "critical" else "warning"
+    return emit_event(cfg, "security", sev, summary[:480])
+
+
+# ---------------- patrol integration (quick scan, cached, never fatal) ----
+
+def patrol_findings(cfg, store, cadence_s: int = 1800) -> list[dict]:
+    """Quick security findings for a patrol (no CVE; cached). Never raises."""
+    try:
+        st = settings_from(cfg)
+        if not st.enabled:
+            return []
+        last = store.last_snapshot(LASTSCAN_KIND)
+        if last and (time.time() - last[0]) < cadence_s:
+            report = last[1]
+        else:
+            report = scan(cfg, store, include_cve=False)
+        out = []
+        for f in report.get("findings", []):
+            if f.get("severity") in ("warning", "critical"):
+                out.append({"severity": f["severity"],
+                            "text": f"security [{f['category']}] {f['title']}"})
+        return out
+    except Exception:  # noqa: BLE001 — a patrol never dies on a security scan
+        return []
+
+
+def patrol_summary_line(cfg, store, cadence_s: int = 1800) -> str:
+    try:
+        last = store.last_snapshot(LASTSCAN_KIND)
+        if not last:
+            return "security: no scan yet (run `wrench security`)"
+        age_min = int((time.time() - last[0]) // 60)
+        counts = last[1].get("counts", {})
+        base = "baseline accepted" if last[1].get("baseline_exists") \
+            else "NO baseline accepted yet"
+        return (f"security: {counts.get('critical', 0)} critical / "
+                f"{counts.get('warning', 0)} warning finding(s), {base} "
+                f"(scanned {age_min}m ago)")
+    except Exception:  # noqa: BLE001
+        return "security: scan unavailable"
+
+
+def narration_lines(report: dict) -> list[str]:
+    """Flatten a scan report for the brain. Pure, read-only."""
+    lines = [f"worst severity: {report.get('worst')}",
+             f"baseline accepted: {report.get('baseline_exists')}"]
+    comp = report.get("components", {})
+    if "auth" in comp:
+        lines.append(f"auth: {comp['auth'].get('events', 0)} events from "
+                     f"{comp['auth'].get('source', '?')}")
+    if "listeners" in comp:
+        lines.append(f"listeners: {comp['listeners'].get('count', 0)} total, "
+                     f"{comp['listeners'].get('ownerless', 0)} ownerless")
+    cve = comp.get("cve", {})
+    if cve.get("available"):
+        lines.append(f"cve: {cve.get('vuln_count', 0)} known vulns across "
+                     f"{cve.get('checked', 0)} packages")
+    elif cve.get("error"):
+        lines.append(f"cve: {cve['error']}")
+    for f in report.get("findings", [])[:40]:
+        lines.append(f"[{f['severity']}] ({f['category']}) {f['title']} — {f['detail']}")
+    return lines
