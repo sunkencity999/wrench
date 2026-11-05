@@ -32,3 +32,5 @@ wrench = "wrench.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["wrench*"]
+[tool.setuptools.package-data]
+wrench = ["packs/*.json"]

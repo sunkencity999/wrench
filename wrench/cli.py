@@ -2634,6 +2634,187 @@ def fleet_status(json_out: bool = JSON_OPT):
 app.add_typer(fleet_app, name="fleet")
 
 
+# ---------------------------------------------------------------------------
+# comply — compliance packs (deterministic, read-only, baseline by consent)
+# ---------------------------------------------------------------------------
+
+comply_app = typer.Typer(
+    help="📋 compliance packs: audit the box against hardening baselines — "
+         "deterministic code checks, read-only, offline.",
+    no_args_is_help=False, invoke_without_command=True)
+
+_COMPLY_STYLE = {"critical": "bold red", "high": "red", "medium": "yellow",
+                 "low": "dim"}
+
+
+def _render_comply_table(rep: dict):
+    from rich.table import Table as _T
+    t = _T(title=f"📋 {rep['title']} — score {rep['score']}%",
+           border_style="bright_blue")
+    t.add_column("status", width=7)
+    t.add_column("sev", width=9)
+    t.add_column("rule", style="cyan", no_wrap=True)
+    t.add_column("title")
+    t.add_column("detail", style="dim", max_width=48)
+    icon = {"pass": ("[green]✔ pass[/green]"), "fail": ("[red]✖ fail[/red]"),
+            "skip": ("[dim]· skip[/dim]")}
+    order = {"fail": 0, "skip": 1, "pass": 2}
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    rows = sorted(rep["results"],
+                  key=lambda r: (order[r["status"]],
+                                 sev_order.get(r["severity"], 9)))
+    for r in rows:
+        t.add_row(icon[r["status"]],
+                  Text(r["severity"], style=_COMPLY_STYLE.get(r["severity"], "")),
+                  r["id"], r["title"], r["detail"])
+    return t
+
+
+@comply_app.callback(invoke_without_command=True)
+def comply_main(
+    ctx: typer.Context,
+    pack: str = typer.Option(None, "--pack", "-p",
+                             help="run one pack (default: all shipped packs)"),
+    brief: bool = typer.Option(False, "--brief",
+                               help="ask the brain to triage failures "
+                                    "(analysis only, never executes)"),
+    json_out: bool = JSON_OPT,
+):
+    """Run compliance packs and show pass/fail/skip per rule with a score."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import comply as cm
+    cfg, store = _ctx()
+    try:
+        report = cm.scan(store, packs=[pack] if pack else None)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(2)
+    if json_out:
+        jsonout.emit("comply", {
+            "packs": [{k: rep[k] for k in ("pack", "title", "score",
+                                           "counts", "severity_fails")}
+                      for rep in report["packs"]],
+            "critical_fails": report["critical_fails"],
+            "results": [r for rep in report["packs"] for r in
+                        [dict(x, pack=rep["pack"]) for x in rep["results"]]],
+        })
+        raise typer.Exit(1 if report["critical_fails"] else 0)
+    skips = 0
+    for rep in report["packs"]:
+        console.print(_render_comply_table(rep))
+        skips += rep["counts"]["skip"]
+    if skips:
+        console.print(f"[dim]{skips} check(s) skipped — most need root to "
+                      f"read their target; run with sudo for full coverage.[/dim]")
+    base = cm.baseline_fail_ids(store)
+    if base is None:
+        console.print("[dim]no accepted baseline — patrols will treat every "
+                      "failure as news. Bless the current state with "
+                      "[bold]wrench comply accept[/bold].[/dim]")
+    if brief:
+        _comply_brief(cfg, store, report)
+    if report["critical_fails"]:
+        console.print(f"[bold red]✖ {report['critical_fails']} critical "
+                      f"failure(s)[/bold red]")
+        raise typer.Exit(1)
+
+
+def _comply_brief(cfg, store, report: dict) -> None:
+    from rich.markdown import Markdown as _Md
+
+    from . import comply as cm
+    try:
+        client = LLMClient(cfg, store)
+        ctxt = cm.narration_context(report)
+        with console.status("[cyan]brain triaging failures..."):
+            text = client.chat(
+                [{"role": "system", "content":
+                  "You are wrench, a pragmatic sysadmin agent triaging YOUR "
+                  "machine's compliance scan. Group the failures, call out "
+                  "what actually matters on a real box vs. checkbox noise, "
+                  "and give the 3 highest-value fixes. Be concrete and "
+                  "brief. Analysis only — never commands to run blindly."},
+                 {"role": "user", "content": ctxt}],
+                purpose="comply-brief")
+        console.print(Panel(_Md(text), border_style="magenta",
+                            title="🧠 brain briefing — analysis only"))
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[dim]brain briefing unavailable: {e}[/dim]")
+
+
+@comply_app.command("list")
+def comply_list():
+    """List shipped packs and their rule counts."""
+    from . import comply as cm
+    from rich.table import Table as _T
+    t = _T(title="📋 shipped compliance packs", border_style="bright_blue")
+    t.add_column("pack", style="bold cyan")
+    t.add_column("rules", justify="right")
+    t.add_column("description", style="dim")
+    for p in cm.list_packs():
+        t.add_row(p.name, str(len(p.rules)), p.description)
+    console.print(t)
+
+
+@comply_app.command("show")
+def comply_show(rule_id: str = typer.Argument(..., help="rule id, e.g. sshd.permitrootlogin")):
+    """Show one rule: title, severity, rationale, and its exact check."""
+    from . import comply as cm
+    hit = cm.find_rule(rule_id)
+    if hit is None:
+        console.print(f"[red]no rule named {rule_id!r}[/red] — "
+                      f"try [bold]wrench comply list[/bold]")
+        raise typer.Exit(2)
+    pack, rule = hit
+    res = cm.run_rule(rule)
+    body = Text.assemble(
+        (f"{rule.title}\n", "bold"),
+        (f"pack {pack.name} · severity {rule.severity}\n\n", "dim"),
+        ("why: ", "bold cyan"), (rule.rationale + "\n\n", ""),
+        ("check: ", "bold cyan"),
+        (json.dumps(rule.check, sort_keys=True) + "\n", "dim"),
+        ("now: ", "bold cyan"),
+        (f"{res.status} — {res.detail}",
+         {"pass": "green", "fail": "red", "skip": "dim"}[res.status]))
+    console.print(Panel(body, border_style="bright_blue",
+                        title=f"📋 {rule.id}"))
+
+
+@comply_app.command("accept")
+def comply_accept(
+    yes: bool = typer.Option(False, "--yes", "-y",
+                             help="skip the confirmation prompt (CI use)"),
+):
+    """Bless the CURRENT failures as accepted debt (consent ceremony)."""
+    from . import comply as cm
+    cfg, store = _ctx()
+    with console.status("[cyan]running packs..."):
+        report = cm.scan(store)
+    fails = report["fail_ids"]
+    console.print(Panel(
+        Text.assemble(("about to accept the current compliance failures as "
+                       "baseline debt\n", "bold yellow"),
+                      (f"{len(fails)} failing rule(s) across "
+                       f"{len(report['packs'])} pack(s)\n", "white"),
+                      ("patrols will only alarm on NEW failures after this.",
+                       "dim")),
+        border_style="yellow", title="consent required"))
+    if not yes and not typer.confirm("accept this baseline?", default=False):
+        console.print("[dim]baseline unchanged.[/dim]")
+        raise typer.Exit(0)
+    store.add_snapshot(cm.BASELINE_KIND, {"fail_ids": fails})
+    from . import audit as _amod
+    _amod.log_event(cfg, "comply.baseline.accept",
+                    {"fail_count": len(fails),
+                     "packs": [p["pack"] for p in report["packs"]]})
+    console.print(f"[green]✔ baseline accepted[/green] — {len(fails)} "
+                  f"failure(s) recorded as known debt (audit-sealed)")
+
+
+app.add_typer(comply_app, name="comply")
+
+
 def _key_env(provider: str) -> str:
     from .config import PROVIDER_DEFAULTS
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]
