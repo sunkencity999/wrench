@@ -311,6 +311,14 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       it all runs offline with a score. <code>comply accept</code> blesses known debt by consent
       (audit-sealed); patrols alarm only on <b>new</b> failures. <code>wrench.comply.v1</code> +
       Prometheus score gauges.</p></div>
+    <div class="card"><span class="ico">📦</span><h3>Bundle it for sneakernet</h3>
+      <p><code>wrench bundle</code> packs the <b>whole state of the box</b> into one portable
+      <code>tar.gz</code> — latest patrol, status, drift, security, comply, backups, forecast, the
+      tamper-evident <b>audit chain</b> (+ verify), a notifications tail and versions — as JSON
+      plus a human-readable <b>SUMMARY.md</b>. The air-gap answer to "email me the state of the
+      box": carry it on a USB stick. <b>No secrets</b> — config key material is redacted and the
+      live key is never touched; deterministic filenames, reproducible bytes.
+      <code>wrench.bundle.v1</code>.</p></div>
   </div>
   <h3 class="arc-head">FIX<span class="sub">with your permission — consent-gated, auto-rollback</span></h3>
   <div class="cards">
@@ -347,6 +355,16 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       zero new dependencies. Notifications stream to <b>RFC 5424 syslog</b> (local or
       udp/tcp) and <b>JSON-lines-over-HTTP</b> for Splunk/ELK-style collectors, each with its own
       severity threshold. Grafana, SIEM, cron — bring your own stack, like your own brain.</p></div>
+    <div class="card"><span class="ico">🔒</span><h3>Air-gap / offline-first</h3>
+      <p>Many of the boxes that most need a sysadmin have <b>no internet</b> — classified networks,
+      industrial/OT, ships, labs. Set <code>offline = true</code> and wrench <b>never reaches a
+      public host</b>: OSV/CVE, endoflife.date, webintel, update checks, and provider calls to a
+      non-private <code>base_url</code> are refused with a clear message. A central guard decides
+      local-vs-public with the stdlib <code>ipaddress</code> module (loopback, RFC1918, link-local,
+      CGNAT/Tailscale, IPv6 ULA, <code>localhost</code>). What still works: the <b>local brain</b>
+      (loopback/LAN), <b>fleet push</b> to a private hub, and every local check. <code>wrench doctor</code>
+      grows an offline section and <b>passes clean on a disconnected box</b> with a local model.
+      Default <b>off</b> — zero change until you declare it.</p></div>
     <div class="card"><span class="ico">🔔</span><h3>Notify</h3>
       <p>When a patrol finds trouble, wrench <b>taps you on the shoulder</b>: a desktop
       notification, an optional webhook (ntfy / Slack / Discord), a toast on the live dashboard,

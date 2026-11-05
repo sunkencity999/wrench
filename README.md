@@ -100,6 +100,7 @@ main today — click through to its section.
 | [`wrench backups`](#wrench-backups--untested-backups-dont-exist) | detect borg/restic/rsync/pg_dump jobs, confirm they actually ran |
 | [`wrench drift`](#wrench-drift) baselines | labeled drift snapshots are the before/after proof for every change |
 | [`wrench comply`](#wrench-comply--prove-the-box-meets-the-baseline) | deterministic hardening packs (CIS-inspired + wrench baseline), scored, offline |
+| [`wrench bundle`](#wrench-bundle--the-air-gap-evidence-bundle) | one portable tar.gz of the whole box state (patrol/status/drift/security/comply/audit…) for sneakernet review — no secrets |
 
 **🔧 FIX — with your permission** *(consent-gated, policy-tiered, auto-rollback)*
 
@@ -116,6 +117,7 @@ main today — click through to its section.
 | [`wrench fleet`](#wrench-fleet--many-nodes-one-view) | many nodes → one dashboard; HMAC-signed reports + dead-man's switch |
 | [`--json` / `/metrics` / SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) | machine-readable JSON everywhere, a Prometheus exporter, syslog/SIEM sinks |
 | [webhook approvals · maintenance windows](#wire-it-into-your-stack----json-metrics-syslogsiem) | async out-of-band approval tokens; change-windows that gate executing fixes |
+| [`offline = true`](#offline--air-gap-mode--a-first-class-zero-egress-guarantee) | **declared zero-egress mode** for classified / OT / shipboard boxes: refuse every public call, keep the local brain + LAN fleet |
 
 ## 60-second quickstart
 
@@ -666,6 +668,33 @@ fail), Prometheus (`wrench_comply_score`, `…_fails`, `…_baseline_accepted`),
 and an optional brain briefing that separates what matters from checkbox
 noise — analysis only.
 
+### `wrench bundle` — the air-gap evidence bundle
+
+The air-gap answer to *"email me the state of the box."* On a classified,
+industrial, or shipboard host you cannot screen-share or SSH out — but you can
+carry a USB stick.
+
+```bash
+wrench bundle                      # ./wrench-bundle-<host>-<date>.tar.gz
+wrench bundle --out /mnt/usb/box.tar.gz
+wrench bundle --json               # wrench.bundle.v1: path, bytes, files[]
+```
+
+One self-contained `tar.gz` with a human-readable **SUMMARY.md** plus one JSON
+file each for: the latest **patrol**, a live **status** snapshot, **drift**
+changes, **security** findings, **comply** results, the **backups** report, the
+**forecast** feed, the tamper-evident **audit** chain (and its verify verdict),
+a **notifications** tail, **versions**, the **offline** posture, and a
+secret-redacted copy of your config. Filenames are deterministic and the writer
+is reproducible (fixed member metadata + zeroed gzip mtime), so identical inputs
+produce identical bytes.
+
+**No secrets leave the box.** The config snapshot is walked and every key-ish
+field (`api_key` / `token` / `secret` / `password` / `credential` / …) is
+redacted; the live API key is never touched. Every collector is isolated — one
+broken subsystem records an error stub and the bundle still builds. Unpack it
+anywhere with `tar xzf` and read `SUMMARY.md` first.
+
 ## FIX — with your permission, I fix it
 
 Every change here is consent-gated and policy-tiered: diff/preview → your yes → apply → verify → auto-rollback on failure. The model explains and helps you choose; it never writes the shell.
@@ -902,6 +931,43 @@ already run — Grafana, Splunk, ELK, plain cron and `jq` — it plugs in:
   automatically.
 
 Schemas, metric families, and alert ideas: [docs/json-output.md](docs/json-output.md).
+
+
+### Offline / air-gap mode — a first-class zero-egress guarantee
+
+Plenty of the machines that most need a sysadmin have **no internet**: classified
+networks, industrial/OT segments, ships, labs. wrench already runs there — the
+brain can be a local [ollama/vLLM/llama.cpp endpoint](#the-brain-is-swappable),
+and OSV/EOL/webintel fail soft. Offline mode turns that from an *accident of
+fail-softs* into a **declared, enforced guarantee**:
+
+```toml
+[general]
+offline = true        # (or export WRENCH_OFFLINE=1)
+```
+
+With it on, wrench **never reaches a public host.** OSV/CVE lookups,
+endoflife.date, webintel, update checks, and provider calls to a non-private
+`base_url` are refused with a clear, actionable message. A central guard
+(`wrench/offline.py`) decides "local vs public" with the stdlib `ipaddress`
+module — loopback, RFC1918 (`10.`/`172.16.`/`192.168.`), link-local, CGNAT
+(`100.64/10`, which covers Tailscale), IPv6 ULA, and `localhost` are all
+*private*; a bare public hostname is refused (no DNS is attempted — resolution
+is itself egress). What still works, fully:
+
+- the **local brain** on loopback or a LAN IP (`ollama`, `vllm`, `llama.cpp`, any
+  `custom` OpenAI-compatible endpoint — see [The brain is swappable](#the-brain-is-swappable));
+- **fleet push** to a hub on a private CIDR (the fleet is LAN by design) — a
+  public hub is refused, not silently queued;
+- every **local check** — `status`, `drift`, `comply`, `forecast`, `backups`,
+  `audit`, `security` (minus the CVE lookup, which skips politely);
+- notification sinks that point at a **private** webhook / syslog / HTTP host.
+
+`wrench doctor` grows an **offline section**: it lists what's disabled and
+verifies the brain endpoint is local/private, so `doctor` passes clean on a
+fully disconnected box with a local model. Default is `offline = false` — **zero
+behavior change** until you declare it. Pair it with [`wrench bundle`](#wrench-bundle--the-air-gap-evidence-bundle)
+and a USB stick for the complete sneakernet workflow.
 
 
 ### `wrench init` / `wrench doctor` / `wrench install-service`
