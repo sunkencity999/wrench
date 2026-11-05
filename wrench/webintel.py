@@ -293,6 +293,23 @@ def scan(cfg, store, force: bool = False, on_step=None) -> dict:
         if cached is not None:
             return cached
 
+    # Offline guarantee: OSV.dev and endoflife.date are public hosts. In declared
+    # offline mode, never attempt them — serve the stale cache (marked offline)
+    # or a minimal offline result. No network is touched.
+    from . import offline as _offline
+    if _offline.is_offline(cfg) and not _offline.egress_allowed(cfg, OSV_BATCH_URL):
+        stale = store.cache_get("webintel_scan", float("inf"))
+        if stale is not None:
+            stale = dict(stale)
+            stale["online"] = False
+            stale["offline_mode"] = True
+            stale["errors"] = ["offline mode (offline = true): serving cached scan, "
+                               "no network attempted"]
+            return stale
+        return {"ts": time.time(), "online": False, "offline_mode": True,
+                "packages_checked": 0, "vulns": [], "eol": [],
+                "errors": ["offline mode (offline = true): OSV/EOL lookups disabled"]}
+
     def step(msg):
         if on_step:
             on_step("webintel", msg)

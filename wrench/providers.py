@@ -48,6 +48,13 @@ class LLMClient:
         tools: list[dict] | None = None,
     ) -> str:
         """Send a chat; return assistant text. Raises ProviderError on failure."""
+        # Offline guarantee: in declared offline mode, refuse a provider whose
+        # base_url is not a local/private endpoint. Local brains (ollama/vLLM/
+        # llama.cpp on loopback or a LAN IP) are unaffected.
+        from . import offline as _offline
+        _g = _offline.guard(self.cfg, self.cfg.base_url, f"provider '{self.cfg.provider}'")
+        if not _g.allowed:
+            raise ProviderError(_g.reason)
         model = model or self.cfg.model
         max_tokens = max_tokens or self.cfg.max_tokens
         last_err: Exception | None = None

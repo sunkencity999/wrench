@@ -793,6 +793,22 @@ def cve_scan(cfg, store, st: SecuritySettings | None = None,
             cached["cached"] = True
             return cached
 
+    # Offline guarantee: OSV.dev is a public host. In declared offline mode,
+    # skip the CVE scan politely rather than attempting (and timing out on) a
+    # blocked egress. Serve the stale cache if we have one.
+    from . import offline as _offline
+    if _offline.is_offline(cfg) and not _offline.egress_allowed(cfg, webintel.OSV_BATCH_URL):
+        stale = store.cache_get(CVE_SCAN_KEY, float("inf"))
+        if stale is not None:
+            stale = dict(stale)
+            stale["cached"] = True
+            stale["offline_mode"] = True
+            return stale
+        return {"available": False, "checked": 0, "manager": "", "vulns": [],
+                "new_serious": [], "cached": False, "offline_mode": True,
+                "error": "offline mode (offline = true) — CVE scan skipped "
+                         "(OSV.dev is a public endpoint)"}
+
     pkgs, manager = package_inventory(st.cve_max_packages)
     if not pkgs:
         return {"available": False, "checked": 0, "manager": manager, "vulns": [],

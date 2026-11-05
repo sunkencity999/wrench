@@ -493,6 +493,14 @@ def node_push(cfg, store, settings: FleetSettings | None = None,
     st = settings or settings_from(cfg)
     if not st.node_enabled:
         return {"ok": False, "detail": "fleet node not configured", "queued": False}
+    # Offline guarantee: fleet is LAN by design, so a hub on a private CIDR is
+    # fine even in offline mode. A hub on a PUBLIC host is refused (don't queue
+    # — it would never drain while offline).
+    from . import offline as _offline
+    if _offline.is_offline(cfg) and not _offline.egress_allowed(cfg, st.hub_url):
+        return {"ok": False, "queued": False,
+                "detail": "offline mode (offline = true): hub is not a local/"
+                          "private address — fleet push skipped"}
     data_dir = cfg.data_dir
     report = build_report(cfg, store, st, now=now)
     ok, detail = push_once(st, report, opener=opener)

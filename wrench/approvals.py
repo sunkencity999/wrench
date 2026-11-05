@@ -159,6 +159,11 @@ def create_and_notify(cfg, store, action: str, detail: str,
     """Mint a pending approval and POST the webhook. Returns (token, posted)."""
     st = settings_from(cfg)
     token, rec = create_pending(store, action, detail, st.ttl_s, now=now)
+    # Offline guarantee: a token is still minted (so `wrench approve` works on
+    # the LAN), but the webhook POST is skipped when the hook is a public host.
+    from . import offline as _offline
+    if _offline.is_offline(cfg) and not _offline.url_is_private(st.approval_webhook_url):
+        return token, False
     posted = post_webhook(st.approval_webhook_url,
                           webhook_payload(action, detail, token, rec["expires"]),
                           opener=opener)

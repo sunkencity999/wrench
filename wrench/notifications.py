@@ -393,22 +393,42 @@ def send_http_jsonl(url: str, rec: dict, data_dir: Path,
 
 # ---------------- fan-out ----------------
 
-def fan_out(st: NotifySettings, rec: dict, data_dir: Path, title: str | None = None) -> dict:
+def fan_out(st: NotifySettings, rec: dict, data_dir: Path, title: str | None = None,
+            block_public: bool = False) -> dict:
     """Deliver one record to every configured sink that meets its threshold.
 
-    Returns {sink: bool} for sinks that were attempted. Never raises."""
+    Returns {sink: bool} for sinks that were attempted. Never raises.
+
+    ``block_public`` (offline mode): skip network sinks (webhook / remote
+    syslog / http_jsonl) whose host is not local/private; the desktop sink is
+    always local and unaffected."""
     sev = rec.get("severity", "attention")
     out: dict = {}
     title = title or f"🔧 wrench [{rec.get('kind', 'patrol')}]: {sev}"
+    if block_public:
+        from . import offline as _offline
     if st.desktop and should_notify(sev, st.min_severity):
         out["desktop"] = send_desktop(title, rec.get("summary", ""), data_dir)
     if st.webhook_url and should_notify(sev, st.min_severity):
-        out["webhook"] = send_webhook(st.webhook_url, rec, data_dir)
+        if block_public and not _offline.url_is_private(st.webhook_url):
+            out["webhook"] = False
+            _log(data_dir, "offline mode: webhook sink skipped (public host)")
+        else:
+            out["webhook"] = send_webhook(st.webhook_url, rec, data_dir)
     if st.syslog_address and should_notify(sev, st.syslog_min_severity or st.min_severity):
-        out["syslog"] = send_syslog(st.syslog_address, rec, data_dir)
+        if block_public and not _offline.host_is_private(
+                parse_syslog_address(st.syslog_address)[1]):
+            out["syslog"] = False
+            _log(data_dir, "offline mode: syslog sink skipped (public host)")
+        else:
+            out["syslog"] = send_syslog(st.syslog_address, rec, data_dir)
     if st.http_jsonl_url and should_notify(
             sev, st.http_jsonl_min_severity or st.min_severity):
-        out["http_jsonl"] = send_http_jsonl(st.http_jsonl_url, rec, data_dir)
+        if block_public and not _offline.url_is_private(st.http_jsonl_url):
+            out["http_jsonl"] = False
+            _log(data_dir, "offline mode: http_jsonl sink skipped (public host)")
+        else:
+            out["http_jsonl"] = send_http_jsonl(st.http_jsonl_url, rec, data_dir)
     return out
 
 
@@ -434,7 +454,8 @@ def emit_event(cfg, kind: str, severity: str, summary: str,
         dd = Path(data_dir) if data_dir is not None else cfg.data_dir
         rec = record(dd, severity, summary, report_id=report_id)
         rec["kind"] = kind
-        fan_out(st, rec, dd)
+        from . import offline as _offline
+        fan_out(st, rec, dd, block_public=_offline.is_offline(cfg))
         return rec
     except Exception:  # noqa: BLE001 — a notification must never break the caller
         return None
@@ -462,7 +483,9 @@ def dispatch(cfg, patrol: dict, report_id: float | None = None,
         summary = patrol.get("summary") or "(no summary)"
         rec = record(dd, sev, summary, report_id=report_id)
         rec["kind"] = "patrol"
-        fan_out(st, rec, dd, title=f"🔧 wrench patrol: {sev}")
+        from . import offline as _offline
+        fan_out(st, rec, dd, title=f"🔧 wrench patrol: {sev}",
+                block_public=_offline.is_offline(cfg))
         return rec
     except Exception:  # noqa: BLE001 — a notification must never break a patrol
         return None
