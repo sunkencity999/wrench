@@ -12,6 +12,7 @@ Endpoints:
   /api/notifications          unread patrol notifications (toast funnel)
   POST /api/notifications/read  mark notifications read ({"ids": [...] } or all)
   POST /api/chat    talk to the agent (same loop as `wrench chat`)
+  /metrics          Prometheus text exposition (see wrench/metrics.py)
 
 Security posture: binds 127.0.0.1 by default; /api/chat additionally enforces
 localhost Host/Origin (same-origin only) and a request-size cap.
@@ -462,6 +463,15 @@ def make_handler(db_path, host_label: str, cfg=None):
             try:
                 if path == "/":
                     return self._html(DASHBOARD_HTML)
+                if path == "/metrics":
+                    from . import metrics
+                    body = metrics.render(store, data_dir).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", metrics.CONTENT_TYPE)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return None
                 if path == "/api/summary":
                     last = store.last_sample("os")
                     return self._json({

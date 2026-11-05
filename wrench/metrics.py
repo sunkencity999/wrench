@@ -1,0 +1,234 @@
+"""Prometheus exporter — hand-rolled text exposition, zero new dependencies.
+
+``render()`` produces the standard text format (version 0.0.4) from the same
+sqlite store and notification inbox everything else reads. It is served at
+``/metrics`` on the web dashboard and by ``wrench metrics serve``; ``wrench
+metrics`` prints one scrape to stdout (handy for node_exporter's textfile
+collector).
+
+Counters here are derived from retained history (``retention_days`` window for
+patrols; the audit log for blueprints), so after a prune they can go down —
+Prometheus treats that as a counter reset, which is exactly what it is.
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from . import __version__
+
+
+def _esc(v: object) -> str:
+    """Escape a label value per the exposition format."""
+    return (str(v).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"'))
+
+
+class _Buf:
+    def __init__(self):
+        self.lines: list[str] = []
+        self._typed: set[str] = set()
+
+    def metric(self, name: str, help_: str, mtype: str) -> None:
+        if name not in self._typed:
+            self._typed.add(name)
+            self.lines.append(f"# HELP {name} {help_}")
+            self.lines.append(f"# TYPE {name} {mtype}")
+
+    def sample(self, name: str, value, labels: dict | None = None) -> None:
+        if value is None:
+            return
+        lab = ""
+        if labels:
+            lab = "{" + ",".join(f'{k}="{_esc(v)}"' for k, v in labels.items()) + "}"
+        v = float(value)
+        rendered = str(int(v)) if v.is_integer() else repr(v)  # full precision
+        self.lines.append(f"{name}{lab} {rendered}")
+
+    def text(self) -> str:
+        return "\n".join(self.lines) + "\n"
+
+
+def render(store, data_dir: Path) -> str:
+    """One scrape: sensors, notifications, certs, patrols, blueprints, drift."""
+    b = _Buf()
+
+    b.metric("wrench_info", "wrench build info.", "gauge")
+    b.sample("wrench_info", 1, {"version": __version__})
+
+    # ---- sensor gauges (latest os sample) ----
+    last = store.last_sample("os")
+    if last:
+        ts, os_ = last
+        b.metric("wrench_sample_timestamp_seconds",
+                 "Unix time of the newest os sensor sample.", "gauge")
+        b.sample("wrench_sample_timestamp_seconds", ts)
+        b.metric("wrench_cpu_percent", "CPU utilization percent.", "gauge")
+        b.sample("wrench_cpu_percent", os_.get("cpu_pct"))
+        b.metric("wrench_mem_percent", "Memory utilization percent.", "gauge")
+        b.sample("wrench_mem_percent", os_.get("mem_pct"))
+        b.metric("wrench_swap_percent", "Swap utilization percent.", "gauge")
+        b.sample("wrench_swap_percent", os_.get("swap_pct"))
+        b.metric("wrench_disk_percent", "Disk utilization percent per mount.", "gauge")
+        for mount, pct in (os_.get("disk_pct") or {}).items():
+            b.sample("wrench_disk_percent", pct, {"mount": mount})
+        b.metric("wrench_load_1m", "1-minute load average.", "gauge")
+        b.sample("wrench_load_1m", os_.get("load_1m"))
+        b.metric("wrench_procs", "Process count.", "gauge")
+        b.sample("wrench_procs", os_.get("n_procs"))
+        b.metric("wrench_uptime_seconds", "Host uptime in seconds.", "gauge")
+        b.sample("wrench_uptime_seconds", os_.get("uptime_s"))
+        b.metric("wrench_net_receive_kilobytes_per_second",
+                 "Network receive rate (KB/s) at last sample.", "gauge")
+        b.sample("wrench_net_receive_kilobytes_per_second",
+                 os_.get("net_recv_rate_kbs"))
+        b.metric("wrench_net_transmit_kilobytes_per_second",
+                 "Network transmit rate (KB/s) at last sample.", "gauge")
+        b.sample("wrench_net_transmit_kilobytes_per_second",
+                 os_.get("net_sent_rate_kbs"))
+
+    b.metric("wrench_anomalies_24h",
+             "Sensor anomalies (|z| >= 3) flagged in the last 24h.", "gauge")
+    b.sample("wrench_anomalies_24h", len(store.recent_anomalies(86400)))
+
+    # ---- notifications by severity ----
+    try:
+        from . import notifications
+        rows = notifications.read_all(data_dir)
+    except Exception:  # noqa: BLE001
+        rows = []
+    by_sev: dict[str, int] = {}
+    unread = 0
+    for r in rows:
+        sev = (r.get("severity") or "unknown").lower()
+        by_sev[sev] = by_sev.get(sev, 0) + 1
+        if not r.get("read"):
+            unread += 1
+    b.metric("wrench_notifications_total",
+             "Notifications recorded in the inbox, by severity.", "counter")
+    for sev in sorted(by_sev):
+        b.sample("wrench_notifications_total", by_sev[sev], {"severity": sev})
+    b.metric("wrench_notifications_unread", "Unread notifications.", "gauge")
+    b.sample("wrench_notifications_unread", unread)
+
+    # ---- certificates: days to expiry per cert ----
+    try:
+        certs = store.recent_certs()
+    except Exception:  # noqa: BLE001
+        certs = []
+    import re as _re
+    b.metric("wrench_cert_expiry_days",
+             "Days until certificate expiry (negative = expired).", "gauge")
+    b.metric("wrench_cert_not_after_timestamp_seconds",
+             "Certificate notAfter as Unix time.", "gauge")
+    tracked = 0
+    for c in certs:
+        if c.get("error"):
+            continue
+        tracked += 1
+        m = _re.search(r"CN\s*=\s*([^,/]+)", c.get("subject") or "")
+        cn = m.group(1).strip() if m else (c.get("sans") or [c["path"]])[0]
+        labels = {"cn": cn, "path": c["path"]}
+        if c.get("days_left") is not None:
+            b.sample("wrench_cert_expiry_days", c["days_left"], labels)
+        if c.get("not_after"):
+            b.sample("wrench_cert_not_after_timestamp_seconds",
+                     c["not_after"], labels)
+    b.metric("wrench_certs_tracked", "Certificates in the inventory.", "gauge")
+    b.sample("wrench_certs_tracked", tracked)
+
+    # ---- patrols ----
+    patrols = store.recent_patrols(1000)
+    by_status: dict[str, int] = {}
+    for p in patrols:
+        st = (p.get("status") or "unknown").lower()
+        by_status[st] = by_status.get(st, 0) + 1
+    b.metric("wrench_patrols_total",
+             "Patrol runs in retained history, by status.", "counter")
+    for st in sorted(by_status):
+        b.sample("wrench_patrols_total", by_status[st], {"status": st})
+    b.metric("wrench_patrol_last_run_timestamp_seconds",
+             "Unix time of the newest patrol run.", "gauge")
+    b.metric("wrench_patrol_last_ok_timestamp_seconds",
+             "Unix time of the newest patrol with status ok.", "gauge")
+    if patrols:
+        b.sample("wrench_patrol_last_run_timestamp_seconds", patrols[0]["ts"])
+        ok_ts = next((p["ts"] for p in patrols if p.get("status") == "ok"), None)
+        b.sample("wrench_patrol_last_ok_timestamp_seconds", ok_ts)
+
+    # ---- blueprints (from the audit log) ----
+    applies = rollbacks = failures = 0
+    try:
+        from . import blueprint as bp
+
+        class _Cfg:  # history() only needs data_dir
+            pass
+        _c = _Cfg()
+        _c.data_dir = data_dir
+        for r in bp.history(_c, n=10000):
+            if r.get("ok"):
+                applies += 1
+            elif r.get("rolled_back"):
+                rollbacks += 1
+            else:
+                failures += 1
+    except Exception:  # noqa: BLE001
+        pass
+    b.metric("wrench_blueprint_applies_total",
+             "Blueprint applications that succeeded.", "counter")
+    b.sample("wrench_blueprint_applies_total", applies)
+    b.metric("wrench_blueprint_rollbacks_total",
+             "Blueprint applications rolled back after a failed check.", "counter")
+    b.sample("wrench_blueprint_rollbacks_total", rollbacks)
+    b.metric("wrench_blueprint_failures_total",
+             "Blueprint applications that failed without a clean rollback.", "counter")
+    b.sample("wrench_blueprint_failures_total", failures)
+
+    # ---- drift ----
+    diffs = store.recent_diffs(86400 * 7)
+    b.metric("wrench_drift_changes_7d",
+             "Drift change events recorded in the last 7 days.", "gauge")
+    b.sample("wrench_drift_changes_7d", len(diffs))
+    b.metric("wrench_drift_last_change_timestamp_seconds",
+             "Unix time of the newest drift change.", "gauge")
+    if diffs:
+        b.sample("wrench_drift_last_change_timestamp_seconds",
+                 max(d["ts"] for d in diffs))
+
+    b.metric("wrench_scrape_timestamp_seconds", "Unix time of this scrape.", "gauge")
+    b.sample("wrench_scrape_timestamp_seconds", time.time())
+    return b.text()
+
+
+CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+
+
+def serve(db_path, port: int = 9465, bind: str = "127.0.0.1"):
+    """A bare metrics-only HTTP server (no dashboard, no chat)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from .store import Store
+
+    data_dir = Path(db_path).parent
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):  # quiet
+            pass
+
+        def do_GET(self):  # noqa: N802
+            if self.path.split("?")[0] not in ("/metrics", "/"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            store = Store(db_path)
+            try:
+                body = render(store, data_dir).encode()
+            finally:
+                store.close()
+            self.send_response(200)
+            self.send_header("Content-Type", CONTENT_TYPE)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    return ThreadingHTTPServer((bind, port), Handler)

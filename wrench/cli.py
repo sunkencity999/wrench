@@ -1617,6 +1617,45 @@ def blueprint_consent(
 app.add_typer(blueprint_app, name="blueprint")
 
 
+# ---------------- metrics (Prometheus exporter) ----------------
+
+metrics_app = typer.Typer(
+    help="📈 Prometheus metrics: print one scrape or serve /metrics.",
+    no_args_is_help=False, invoke_without_command=True)
+
+
+@metrics_app.callback(invoke_without_command=True)
+def metrics_main(ctx: typer.Context):
+    """Print one Prometheus scrape to stdout (textfile-collector friendly)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import metrics
+    cfg, store = _ctx()
+    print(metrics.render(store, cfg.data_dir), end="")
+
+
+@metrics_app.command("serve")
+def metrics_serve(
+    port: int = typer.Option(9465, "--port", help="port for the exporter"),
+    bind: str = typer.Option("127.0.0.1", "--bind", help="bind address"),
+):
+    """Serve a bare /metrics endpoint (no dashboard). The dashboard
+    (`wrench web`) also exposes /metrics on its own port."""
+    from . import metrics
+    cfg, store = _ctx()
+    store.close()
+    httpd = metrics.serve(cfg.db_path, port=port, bind=bind)
+    console.print(f"[bold]wrench metrics[/bold] — Prometheus exposition at "
+                  f"[bright_blue]http://{bind}:{port}/metrics[/bright_blue] · Ctrl-C to stop")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]exporter stopped[/dim]")
+
+
+app.add_typer(metrics_app, name="metrics")
+
+
 def _key_env(provider: str) -> str:
     from .config import PROVIDER_DEFAULTS
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]
