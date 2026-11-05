@@ -2,12 +2,14 @@
 
 > **"I'm the sysadmin that lives on your machine. I read the logs so you don't have to. I remember what changed. I explain problems in plain English — and with your permission, I fix them before you ever see them."**
 >
-> 🧠 **Bring your own mind.** wrench is a provider-agnostic sysadmin agent: run it on a **fully local brain** ([Ollama](https://ollama.com) or LM Studio — private, free, nothing leaves the box) or on **any API brain** (OpenAI, Anthropic, Meta, Azure, or anything behind LiteLLM). One agent loop, seven doors, no favorites.
+> wrench is an **intentional sysadmin agent**: **senses** (live sensors + a SQLite time-series) + **memory** (learned baselines, drift snapshots, a hash-chained audit trail) + a **bring-your-own-mind brain** + **consent-gated hands**. It **sees** the box, **predicts** what's coming, **proves** what happened, **fixes** what it can — with your permission — and **scales** to a fleet.
+>
+> 🧠 **Bring your own mind.** Run wrench on a **fully local brain** ([Ollama](https://ollama.com) or LM Studio — private, free, nothing leaves the box) or on **any API brain** (OpenAI, Anthropic, Meta, Azure, LiteLLM, or any OpenAI-compatible endpoint via the `custom` provider). One agent loop, many doors, no favorites.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-58a6ff?style=flat-square)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macos%20%7C%20windows-39c5cf?style=flat-square)](PLATFORMS.md)
-[![Providers](https://img.shields.io/badge/brain-ollama%20%7C%20lmstudio%20%7C%20openai%20%7C%20anthropic%20%7C%20meta%20%7C%20azure%20%7C%20litellm-bc8cff?style=flat-square)](#the-brain-is-swappable)
+[![Providers](https://img.shields.io/badge/brain-ollama%20%7C%20lmstudio%20%7C%20openai%20%7C%20anthropic%20%7C%20meta%20%7C%20azure%20%7C%20litellm%20%7C%20custom-bc8cff?style=flat-square)](#the-brain-is-swappable)
 [![Policy](https://img.shields.io/badge/default%20policy-read--only-d29922?style=flat-square)](#policy-tiers--the-leash)
 [![Site](https://img.shields.io/badge/site-sunkencity999.github.io%2Fwrench-58a6ff?style=flat-square)](https://sunkencity999.github.io/wrench/)
 
@@ -62,6 +64,58 @@ second one, wrench runs eight read-only diagnostics on its own, figures out
 that 37 GiB of "used" swap is cold history rather than live memory pressure,
 and closes with: "With 109 Gi swap, 33% is coffee, not fire."*
 
+## The capability map — SEE · PREDICT · PROVE · FIX · SCALE
+
+wrench is an intentional sysadmin agent: **senses** (live sensors + a SQLite
+time-series), **memory** (learned baselines, drift snapshots, a hash-chained
+audit trail), a **bring-your-own-mind brain** (any OpenAI-compatible endpoint —
+local or API), and **consent-gated hands** (fixxer, blueprints, cert renewal).
+Everything it can do falls into five arcs. Every row below is a real command on
+main today — click through to its section.
+
+**👁 SEE — watch the box, right now** *(read-only; never touches the machine)*
+
+| command | what it does |
+|---|---|
+| [`wrench status`](#wrench-status) | one-screen health: gauges, sparklines, mounts, GPU, Docker, anomalies vs learned baselines |
+| [`wrench ask "…"`](#wrench-ask-) | LLM diagnosis grounded in *your* telemetry, running real read-only diagnostics |
+| [`wrench patrol`](#wrench-patrol) | the full observe→orient→act→report loop; files a report a human wants to read |
+| [`wrench drift`](#wrench-drift) | plain-English change history: ports, services, packages, users, cron |
+| [`wrench explain`](#wrench-explain-service--port--pid--path) | investigate a service / `:port` / PID / path with grounded diagnostics |
+| [`wrench security`](#wrench-security--watch-the-doors) | auth-log anomalies, new sudoers/authorized_keys, listener ownership |
+
+**🔭 PREDICT — see it coming**
+
+| command | what it does |
+|---|---|
+| [`wrench forecast`](#wrench-forecast--see-the-incident-coming) | trends disk / inode / memory / log growth into a "future incidents" feed |
+| [`wrench certs`](#wrench-certs--ssltls-lifecycle-from-inventory-to-renewal) | TLS inventory + expiry ladder (30d→14d→7d) and weak-config audit |
+| [`wrench cve`](#wrench-cve--what-the-internet-already-knows-about-your-box) | OSV.dev CVE matches + endoflife.date EOL checks (free APIs, cached) |
+
+**🧾 PROVE — evidence, not vibes**
+
+| command | what it does |
+|---|---|
+| [`wrench audit`](#wrench-audit--prove-what-happened) | append-only hash-chained log of every ceremony/consent/apply; `audit verify` |
+| [`wrench backups`](#wrench-backups--untested-backups-dont-exist) | detect borg/restic/rsync/pg_dump jobs, confirm they actually ran |
+| [`wrench drift`](#wrench-drift) baselines | labeled drift snapshots are the before/after proof for every change |
+
+**🔧 FIX — with your permission** *(consent-gated, policy-tiered, auto-rollback)*
+
+| command | what it does |
+|---|---|
+| [`wrench fixxer`](#wrench-fixxer--with-your-permission-i-fix-it) | applies hand-written catalog fixes you pick, per-fix verified; opt-in auto mode |
+| [`wrench blueprint`](#wrench-blueprint--declarative-config-automation) | LLM-drafted config change → diff → consent → apply → validate → rollback |
+| [`wrench certs renew`](#wrench-certs--ssltls-lifecycle-from-inventory-to-renewal) | certbot/acme.sh renewal under the ceremony: dry-run → validate chain → reload |
+
+**🛰 SCALE — many machines, wired into your stack**
+
+| command | what it does |
+|---|---|
+| [`wrench fleet`](#wrench-fleet--many-nodes-one-view) | many nodes → one dashboard; HMAC-signed reports + dead-man's switch |
+| [`--json` / `/metrics` / SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) | machine-readable JSON everywhere, a Prometheus exporter, syslog/SIEM sinks |
+| [webhook approvals · maintenance windows](#wire-it-into-your-stack----json-metrics-syslogsiem) | async out-of-band approval tokens; change-windows that gate executing fixes |
+
 ## 60-second quickstart
 
 **Linux**
@@ -111,7 +165,14 @@ No API key? Everything except the agent still works — `status`, `watch`,
 ## The CLI, command by command
 
 Every command below is real output from the dev box (hostnames and paths
-sanitized). Click to expand.
+sanitized). Click to expand. The commands are grouped into the five arcs of the
+work — **SEE → PREDICT → PROVE → FIX → SCALE** — the same shape as the
+capability map above.
+
+
+## SEE — watch the box, right now
+
+Look at what's happening and what changed. These are read-only: they never touch the machine.
 
 ### `wrench status`
 
@@ -139,6 +200,7 @@ Docker, and any anomalies against learned baselines.
 ╰────────────────────────── 2026-11-04 01:23:02 ───────────────────────╯
 ```
 </details>
+
 
 ### `wrench ask "…"`
 
@@ -176,6 +238,12 @@ discrepancy; and because it's in the default **suggest** tier, it handed the
 privileged commands to the human instead of running them.
 </details>
 
+
+### `wrench patrol`
+
+The heart of wrench — see [the next section](#how-a-patrol-works).
+
+
 ### `wrench drift`
 
 "What changed on this box?" — the question behind 90% of debugging sessions.
@@ -202,9 +270,6 @@ ports, running services, installed packages, user accounts, and scheduled
 jobs (cron / LaunchAgents / Scheduled Tasks, per OS).
 </details>
 
-### `wrench patrol`
-
-The heart of wrench — see [the next section](#how-a-patrol-works).
 
 ### `wrench explain <service | :port | PID | /path>`
 
@@ -226,15 +291,63 @@ $ wrench explain :8787
 ```
 </details>
 
+
+### `wrench security` — watch the doors
+
+The box is only as safe as the ways into it. `wrench security` keeps four
+read-only watchers on those doors and runs them through one severity ladder.
+
+```console
+$ wrench security
+📡 listening sockets        ← socket · addr · process · systemd unit
+🛡️ security findings        ← sev · area · finding · detail
+```
+
+**auth.** I parse `auth.log` / `secure` (or journald when there's no file) for
+SSH and sudo events, then flag what matters: a **brute-force burst** (many
+failed passwords from one IP inside a sliding window), a **successful login
+right after a burst** from that same IP (treated as critical — assume
+compromise until proven otherwise), logins from **source IPs never seen before**
+your baseline, and users **newly invoking sudo**.
+
+**access.** Privilege drift is the quiet kind. I hash `/etc/sudoers` and every
+`/etc/sudoers.d` drop-in, hash each account's `authorized_keys`, and watch for
+**extra UID-0 accounts**, **empty password hashes** (when `/etc/shadow` is
+readable — I degrade politely when it isn't), and **world-writable files** in
+sensitive paths. New or changed entries alarm against the accepted baseline.
+
+**listeners.** I inventory every listening socket with its owning process and
+systemd unit (`ss`, with a psutil fallback). A **new listener** since the
+baseline is a warning; an **ownerless** one — a socket no process admits to,
+seen with full root visibility — is worth a hard look. Running without root? I
+say so once instead of crying wolf on every socket I simply can't attribute.
+
+**cve.** I take your **full installed-package inventory** (dpkg/rpm) and match
+it against the **OSV.dev** batch API — free, keyless, cached in SQLite with a
+TTL, and strictly **fail-soft**: no network, no scan, no drama. New serious
+(critical/high) CVEs since the last scan are called out as `[NEW]`.
+
+Everything here is **read-only** — nothing I touch mutates host state. A
+baseline is blessed **only by explicit consent** (`wrench security accept`);
+scans compare against it and never silently update it. Findings feed patrols,
+`--json` (`wrench.security.v1`, exit 1 on a critical), the Prometheus exporter
+(`wrench_security_findings`, `…_listeners`, `…_cves_known`, `…_baseline_accepted`),
+and an optional brain briefing that triages the lot in plain English — analysis
+only, it never executes anything. Bring your own mind; the doors are watched
+either way.
+
+
 ### `wrench chat`
 
 The same agent, conversational — for incidents with plot twists. It keeps
 context across turns, so "what about the other disk?" works.
 
+
 ### `wrench watch`
 
 Foreground patrol loop (`--interval` seconds) for when you want a live
 terminal sentinel instead of a scheduled service.
+
 
 ### `wrench report` / `wrench web`
 
@@ -253,6 +366,7 @@ conversation stays on your machine.
 
 Keyboard shortcuts: <kbd>?</kbd> overlay · <kbd>c</kbd> chat ·
 <kbd>r</kbd> refresh · <kbd>t</kbd> theme · <kbd>Esc</kbd> close.
+
 
 ### Notifications — "wrench taps you on the shoulder"
 
@@ -287,38 +401,10 @@ desktop = true
 Severity is the worst of the patrol's status and its individual findings, so
 an "attention" patrol carrying one `[critical]` finding notifies as critical.
 
-### Wire it into your stack — `--json`, `/metrics`, syslog/SIEM
 
-wrench doesn't assume it's the only tool watching the box. Whatever you
-already run — Grafana, Splunk, ELK, plain cron and `jq` — it plugs in:
+## PREDICT — see it coming
 
-- **`--json` on every read/report command** — `status`, `report`, `drift`,
-  `certs`, `certs audit`, `blueprint --history`, `notifications`, `doctor`,
-  `version`. One stable JSON document on stdout (`wrench.<command>.v1`
-  envelope), no rich formatting, meaningful exit codes
-  (`doctor --json` exits 1 when the provider is unreachable):
-
-  ```bash
-  wrench status --json | jq '.os.disk_pct'
-  wrench certs --json | jq '.certs[] | select(.days_left < 30)'
-  wrench report --json -n 1 | jq -e '.patrols[0].status == "ok"'   # CI gate
-  ```
-
-- **Prometheus exporter** — `GET /metrics` on the dashboard (`wrench web`),
-  or a bare exporter with `wrench metrics serve --port 9465`, or a one-shot
-  scrape to stdout with `wrench metrics` (textfile-collector friendly).
-  Sensor gauges, notification counts by severity, **days-to-expiry per
-  certificate**, patrol counters + last-ok timestamp, blueprint
-  apply/rollback counters, drift change counts. Hand-rolled exposition —
-  zero new dependencies.
-
-- **Syslog / SIEM sink** — RFC 5424 to local `/dev/log` or remote
-  `udp://`/`tcp://` collectors, plus a JSON-lines-over-HTTP sink
-  (Splunk HEC / ELK-style). Per-sink severity thresholds. Patrol findings,
-  the cert expiry ladder, and every blueprint apply/rollback flow through
-  automatically.
-
-Schemas, metric families, and alert ideas: [docs/json-output.md](docs/json-output.md).
+Turn trends and the outside world into a heads-up before the incident.
 
 ### `wrench cve` — what the internet already knows about your box
 
@@ -341,6 +427,31 @@ upgrade is your decision, not mine.
 Everything caches in the same SQLite store (24h TTL, `[webintel]` knobs in
 config: `enable`, `cadence_hours`). Offline? I serve the cached scan and say
 so. Exit code 1 when vulns are found, so you can wire it into CI or cron.
+
+
+### `wrench forecast` — see the incident coming
+
+Monitoring tells you the disk *is* full. Forecasting tells you it *will be* —
+while there's still time to be graceful about it.
+
+```console
+$ wrench forecast
+🔮 future incidents          ← what · now · growth/day · crosses · ETA · confidence
+   disk /var                  78.4%   +1.9%/day        95%     in ~9d    high
+   cert jellyfin.local        —       —                expiry  in 11d    certain
+```
+
+A **least-squares trend engine** runs over the sensor history the box already
+records (the same samples `wrench status` stores): disk per mount, **inodes**,
+memory, swap, and `/var/log` growth. It refuses to guess — projections need a
+minimum sample count *and* time span, confidence comes from R² and history
+depth, and a shrinking series never cries wolf. Certificate expiry joins the
+same **unified future-incidents feed**, so "disk full Tuesday" and "cert dead
+Friday" page through one lead-time ladder (≤14d info, ≤7d warning, ≤3d
+critical). Feeds patrols, `--json` (`wrench.forecast.v1`), and Prometheus
+(`wrench_forecast_days_to_threshold`, `…_incidents`). The trend math is code —
+the model is never asked when your disk fills.
+
 
 ### `wrench certs` — SSL/TLS lifecycle, from inventory to renewal
 
@@ -400,72 +511,10 @@ running on its known-good config. Real renewals require policy tier
 `repair`/`autonomous` or a one-time `wrench certs renew --setup-consent`
 ceremony; every attempt is logged to the actions table.
 
-### `wrench security` — watch the doors
 
-The box is only as safe as the ways into it. `wrench security` keeps four
-read-only watchers on those doors and runs them through one severity ladder.
+## PROVE — evidence, not vibes
 
-```console
-$ wrench security
-📡 listening sockets        ← socket · addr · process · systemd unit
-🛡️ security findings        ← sev · area · finding · detail
-```
-
-**auth.** I parse `auth.log` / `secure` (or journald when there's no file) for
-SSH and sudo events, then flag what matters: a **brute-force burst** (many
-failed passwords from one IP inside a sliding window), a **successful login
-right after a burst** from that same IP (treated as critical — assume
-compromise until proven otherwise), logins from **source IPs never seen before**
-your baseline, and users **newly invoking sudo**.
-
-**access.** Privilege drift is the quiet kind. I hash `/etc/sudoers` and every
-`/etc/sudoers.d` drop-in, hash each account's `authorized_keys`, and watch for
-**extra UID-0 accounts**, **empty password hashes** (when `/etc/shadow` is
-readable — I degrade politely when it isn't), and **world-writable files** in
-sensitive paths. New or changed entries alarm against the accepted baseline.
-
-**listeners.** I inventory every listening socket with its owning process and
-systemd unit (`ss`, with a psutil fallback). A **new listener** since the
-baseline is a warning; an **ownerless** one — a socket no process admits to,
-seen with full root visibility — is worth a hard look. Running without root? I
-say so once instead of crying wolf on every socket I simply can't attribute.
-
-**cve.** I take your **full installed-package inventory** (dpkg/rpm) and match
-it against the **OSV.dev** batch API — free, keyless, cached in SQLite with a
-TTL, and strictly **fail-soft**: no network, no scan, no drama. New serious
-(critical/high) CVEs since the last scan are called out as `[NEW]`.
-
-Everything here is **read-only** — nothing I touch mutates host state. A
-baseline is blessed **only by explicit consent** (`wrench security accept`);
-scans compare against it and never silently update it. Findings feed patrols,
-`--json` (`wrench.security.v1`, exit 1 on a critical), the Prometheus exporter
-(`wrench_security_findings`, `…_listeners`, `…_cves_known`, `…_baseline_accepted`),
-and an optional brain briefing that triages the lot in plain English — analysis
-only, it never executes anything. Bring your own mind; the doors are watched
-either way.
-
-### `wrench forecast` — see the incident coming
-
-Monitoring tells you the disk *is* full. Forecasting tells you it *will be* —
-while there's still time to be graceful about it.
-
-```console
-$ wrench forecast
-🔮 future incidents          ← what · now · growth/day · crosses · ETA · confidence
-   disk /var                  78.4%   +1.9%/day        95%     in ~9d    high
-   cert jellyfin.local        —       —                expiry  in 11d    certain
-```
-
-A **least-squares trend engine** runs over the sensor history the box already
-records (the same samples `wrench status` stores): disk per mount, **inodes**,
-memory, swap, and `/var/log` growth. It refuses to guess — projections need a
-minimum sample count *and* time span, confidence comes from R² and history
-depth, and a shrinking series never cries wolf. Certificate expiry joins the
-same **unified future-incidents feed**, so "disk full Tuesday" and "cert dead
-Friday" page through one lead-time ladder (≤14d info, ≤7d warning, ≤3d
-critical). Feeds patrols, `--json` (`wrench.forecast.v1`), and Prometheus
-(`wrench_forecast_days_to_threshold`, `…_incidents`). The trend math is code —
-the model is never asked when your disk fills.
+Make the machine's history and its safety nets verifiable.
 
 ### `wrench backups` — untested backups don't exist
 
@@ -500,124 +549,6 @@ on critical), Prometheus (`wrench_backup_freshness_seconds`,
 `…_job_severity`), and an optional brain briefing that answers the only
 question that matters: *could this box be restored today?*
 
-### `wrench blueprint` — declarative config automation
-
-You describe the change; the brain drafts it **as a unified diff against your
-real current files**; code does everything else. The model never executes a
-command — its entire output is diff text, and that text has to survive a
-gauntlet before it touches disk.
-
-```text
-$ wrench blueprint "harden sshd: disable root login and password auth"
-📐 proposed blueprint (diff)
---- a/etc/ssh/sshd_config.d/50-wrench-hardening.conf
-+++ b/etc/ssh/sshd_config.d/50-wrench-hardening.conf
-@@ -0,0 +1,4 @@
-+# managed by wrench blueprint — sshd hardening
-+PermitRootLogin no
-+PasswordAuthentication no
-+MaxAuthTries 3
-validator for /etc/ssh/sshd_config.d/50-wrench-hardening.conf: sshd
- ✓ revalidate    1 file(s) apply cleanly
- ✓ check_staged  sshd -t -f /tmp/… → exit 0
- dry-run complete — diff validated, staged checks passed.
-```
-
-**The ceremony** (dry-run is the default; `--execute` applies for real):
-diff preview → consent → **timestamped backup** of every target → apply →
-validate with the **daemon's own checker** (`nginx -t`, `sshd -t -f`,
-`visudo -c`, `named-checkconf`, `logrotate -d`, `fail2ban-client -t`; files
-with no known validator are applied with an explicit warning) → service
-reload (allowlisted `systemctl` verbs only, active units only) → health
-probe → **automatic rollback from the backup on any failure**, including
-re-reloading the daemon on its restored known-good config.
-
-**Safety rails.** Targets are confined to an allowlist (default `/etc`,
-configurable via `[blueprint] allowed_roots`) minus a hard denylist —
-`/etc/passwd`, `shadow`, `fstab`, private keys, and `/etc/sudoers` directly
-(sudoers changes only via `visudo -c`-checked `/etc/sudoers.d/` files).
-Diffs are size-capped, limited to 8 files, and binary patches and file
-deletions are refused outright. If a target file changed between drafting
-and applying, the apply aborts with "nothing touched".
-
-**Audit trail.** Every application is appended to `blueprint_audit.jsonl`,
-recorded in the actions table, and stamped as a **labeled drift snapshot** so
-`wrench drift` knows the change was intentional. `wrench blueprint --history`
-lists past applications with outcomes; the backup directory for each run is
-kept under the data dir. Real applications are gated exactly like `fixxer`
-and `certs renew`: policy tier `repair`/`autonomous`, or a recorded
-`wrench blueprint consent` ceremony.
-
-### `wrench fleet` — many nodes, one view
-
-One box watching itself is a home lab. A hundred boxes reporting to one pane of
-glass is operations. `wrench fleet` is the single biggest home→enterprise jump:
-a lightweight, **stdlib-only, push-based** reporting fabric with a built-in
-dead-man's switch. It is **default OFF** — no `[fleet]` config means zero change.
-
-- A **node** is any wrench install with a `[fleet]` section (`hub_url` + a shared
-  `token`). After each patrol it pushes a *compact* snapshot — status, worst
-  severity, top findings, key gauges (disk/mem/swap, cert/backup/security/forecast
-  worsts, version) — built entirely from **already-cached** scan results. It never
-  reruns an expensive scan, and an unreachable hub never breaks a patrol (the last
-  report is queued and retried next patrol).
-- A **hub** is any wrench install run with `wrench fleet serve`. It accepts signed
-  reports over HTTP, stores them in sqlite, and renders a fleet dashboard, a
-  Prometheus rollup, and a dead-man's switch.
-
-**Auth is an HMAC-SHA256 shared token.** The node signs the exact request body;
-the hub verifies against its `authorized_tokens` with a constant-time compare.
-The token is a shared secret — it is **never logged**, and the hub persists only
-its SHA-256 fingerprint in sqlite, never the raw value. TLS is out of scope by
-design: run the hub behind an nginx/caddy reverse proxy for the public internet.
-
-**Run the fleet in 2 minutes.** On the hub:
-
-```console
-$ wrench fleet token --label web-01     # generates a token, prints it ONCE
-🔧 new node token (shown once): 9bbe…0d7b
-```
-
-Paste that token into the hub's config and into the node's config:
-
-```toml
-# hub   ~/.config/wrench/config.toml
-[fleet]
-listen_host       = "127.0.0.1"
-listen_port       = 8788
-authorized_tokens = ["9bbe…0d7b"]
-
-# node  ~/.config/wrench/config.toml
-[fleet]
-hub_url = "http://hub.example:8788"
-token   = "9bbe…0d7b"
-node_id = "web-01"          # optional; defaults to hostname
-```
-
-```console
-# hub
-$ wrench fleet serve        # nodes POST to /api/fleet/report; dashboard at /fleet
-
-# node
-$ wrench fleet report       # build from cached scans + push (also runs each patrol)
-✔ reported to http://hub.example:8788  (HTTP 200; status=attention, worst=warning)
-
-# hub
-$ wrench fleet status        # table of every node (+ --json wrench.fleet.v1)
-🔧 fleet — 1 node(s): 0 ok / 1 attn / 0 crit / 0 silent
-```
-
-**The dead-man's switch.** The hub knows each node's natural cadence (the node
-declares its patrol interval). When a node's last report is older than
-`silent_factor × cadence` (default 2×), `wrench fleet status` and the dashboard
-mark it **SILENT**, and the hub's own patrol raises a **critical** notification
-through the existing channel (desktop/webhook/syslog/SIEM). A silent box is the
-one you most need to hear about — so wrench makes silence loud. Node
-registrations and every SILENT⇄live transition are sealed into the tamper-evident
-audit chain, and the hub exports `wrench_fleet_nodes`, `wrench_fleet_nodes_silent`,
-and per-node `wrench_fleet_node_status` / `_last_seen_timestamp_seconds` gauges
-for Grafana. The fleet dashboard (`/fleet`) is a green/yellow/red/silent grid in
-the same dark, dependency-free style as the box dashboard.
 
 ### `wrench audit` — prove what happened
 
@@ -695,20 +626,10 @@ run with a pending-but-unapproved action exits cleanly with *"pending approval"*
 instead of hanging. All three features — audit is always on; windows and
 approvals **default OFF**.
 
-### `wrench init` / `wrench doctor` / `wrench install-service`
 
-Onboarding, self-diagnosis, and persistence. `doctor` checks config, store,
-sensors, platform capabilities (which service manager? which log backend?),
-and provider liveness. `install-service` schedules patrols natively on every
-OS:
+## FIX — with your permission, I fix it
 
-| OS | mechanism |
-|---|---|
-| Linux | user systemd service + timer |
-| macOS | launchd user agent (`~/Library/LaunchAgents`) |
-| Windows | Scheduled Task (`schtasks`) |
-
-`wrench install-service --uninstall` removes it just as cleanly.
+Every change here is consent-gated and policy-tiered: diff/preview → your yes → apply → verify → auto-rollback on failure. The model explains and helps you choose; it never writes the shell.
 
 ### `wrench fixxer` — "with your permission, I fix it"
 
@@ -784,6 +705,181 @@ nobody watching. wrench gates it accordingly:
 If any of that makes you uneasy: good instincts — don't enable it. Interactive
 `wrench fixxer` gives you the same fixes with you holding the pen.
 
+
+### `wrench blueprint` — declarative config automation
+
+You describe the change; the brain drafts it **as a unified diff against your
+real current files**; code does everything else. The model never executes a
+command — its entire output is diff text, and that text has to survive a
+gauntlet before it touches disk.
+
+```text
+$ wrench blueprint "harden sshd: disable root login and password auth"
+📐 proposed blueprint (diff)
+--- a/etc/ssh/sshd_config.d/50-wrench-hardening.conf
++++ b/etc/ssh/sshd_config.d/50-wrench-hardening.conf
+@@ -0,0 +1,4 @@
++# managed by wrench blueprint — sshd hardening
++PermitRootLogin no
++PasswordAuthentication no
++MaxAuthTries 3
+validator for /etc/ssh/sshd_config.d/50-wrench-hardening.conf: sshd
+ ✓ revalidate    1 file(s) apply cleanly
+ ✓ check_staged  sshd -t -f /tmp/… → exit 0
+ dry-run complete — diff validated, staged checks passed.
+```
+
+**The ceremony** (dry-run is the default; `--execute` applies for real):
+diff preview → consent → **timestamped backup** of every target → apply →
+validate with the **daemon's own checker** (`nginx -t`, `sshd -t -f`,
+`visudo -c`, `named-checkconf`, `logrotate -d`, `fail2ban-client -t`; files
+with no known validator are applied with an explicit warning) → service
+reload (allowlisted `systemctl` verbs only, active units only) → health
+probe → **automatic rollback from the backup on any failure**, including
+re-reloading the daemon on its restored known-good config.
+
+**Safety rails.** Targets are confined to an allowlist (default `/etc`,
+configurable via `[blueprint] allowed_roots`) minus a hard denylist —
+`/etc/passwd`, `shadow`, `fstab`, private keys, and `/etc/sudoers` directly
+(sudoers changes only via `visudo -c`-checked `/etc/sudoers.d/` files).
+Diffs are size-capped, limited to 8 files, and binary patches and file
+deletions are refused outright. If a target file changed between drafting
+and applying, the apply aborts with "nothing touched".
+
+**Audit trail.** Every application is appended to `blueprint_audit.jsonl`,
+recorded in the actions table, and stamped as a **labeled drift snapshot** so
+`wrench drift` knows the change was intentional. `wrench blueprint --history`
+lists past applications with outcomes; the backup directory for each run is
+kept under the data dir. Real applications are gated exactly like `fixxer`
+and `certs renew`: policy tier `repair`/`autonomous`, or a recorded
+`wrench blueprint consent` ceremony.
+
+
+## SCALE — many machines, one view, wired into your stack
+
+Run wrench everywhere and plug it into what you already operate.
+
+### `wrench fleet` — many nodes, one view
+
+One box watching itself is a home lab. A hundred boxes reporting to one pane of
+glass is operations. `wrench fleet` is the single biggest home→enterprise jump:
+a lightweight, **stdlib-only, push-based** reporting fabric with a built-in
+dead-man's switch. It is **default OFF** — no `[fleet]` config means zero change.
+
+- A **node** is any wrench install with a `[fleet]` section (`hub_url` + a shared
+  `token`). After each patrol it pushes a *compact* snapshot — status, worst
+  severity, top findings, key gauges (disk/mem/swap, cert/backup/security/forecast
+  worsts, version) — built entirely from **already-cached** scan results. It never
+  reruns an expensive scan, and an unreachable hub never breaks a patrol (the last
+  report is queued and retried next patrol).
+- A **hub** is any wrench install run with `wrench fleet serve`. It accepts signed
+  reports over HTTP, stores them in sqlite, and renders a fleet dashboard, a
+  Prometheus rollup, and a dead-man's switch.
+
+**Auth is an HMAC-SHA256 shared token.** The node signs the exact request body;
+the hub verifies against its `authorized_tokens` with a constant-time compare.
+The token is a shared secret — it is **never logged**, and the hub persists only
+its SHA-256 fingerprint in sqlite, never the raw value. TLS is out of scope by
+design: run the hub behind an nginx/caddy reverse proxy for the public internet.
+
+**Run the fleet in 2 minutes.** On the hub:
+
+```console
+$ wrench fleet token --label web-01     # generates a token, prints it ONCE
+🔧 new node token (shown once): 9bbe…0d7b
+```
+
+Paste that token into the hub's config and into the node's config:
+
+```toml
+# hub   ~/.config/wrench/config.toml
+[fleet]
+listen_host       = "127.0.0.1"
+listen_port       = 8788
+authorized_tokens = ["9bbe…0d7b"]
+
+# node  ~/.config/wrench/config.toml
+[fleet]
+hub_url = "http://hub.example:8788"
+token   = "9bbe…0d7b"
+node_id = "web-01"          # optional; defaults to hostname
+```
+
+```console
+# hub
+$ wrench fleet serve        # nodes POST to /api/fleet/report; dashboard at /fleet
+
+# node
+$ wrench fleet report       # build from cached scans + push (also runs each patrol)
+✔ reported to http://hub.example:8788  (HTTP 200; status=attention, worst=warning)
+
+# hub
+$ wrench fleet status        # table of every node (+ --json wrench.fleet.v1)
+🔧 fleet — 1 node(s): 0 ok / 1 attn / 0 crit / 0 silent
+```
+
+**The dead-man's switch.** The hub knows each node's natural cadence (the node
+declares its patrol interval). When a node's last report is older than
+`silent_factor × cadence` (default 2×), `wrench fleet status` and the dashboard
+mark it **SILENT**, and the hub's own patrol raises a **critical** notification
+through the existing channel (desktop/webhook/syslog/SIEM). A silent box is the
+one you most need to hear about — so wrench makes silence loud. Node
+registrations and every SILENT⇄live transition are sealed into the tamper-evident
+audit chain, and the hub exports `wrench_fleet_nodes`, `wrench_fleet_nodes_silent`,
+and per-node `wrench_fleet_node_status` / `_last_seen_timestamp_seconds` gauges
+for Grafana. The fleet dashboard (`/fleet`) is a green/yellow/red/silent grid in
+the same dark, dependency-free style as the box dashboard.
+
+
+### Wire it into your stack — `--json`, `/metrics`, syslog/SIEM
+
+wrench doesn't assume it's the only tool watching the box. Whatever you
+already run — Grafana, Splunk, ELK, plain cron and `jq` — it plugs in:
+
+- **`--json` on every read/report command** — `status`, `report`, `drift`,
+  `certs`, `certs audit`, `blueprint --history`, `notifications`, `doctor`,
+  `version`. One stable JSON document on stdout (`wrench.<command>.v1`
+  envelope), no rich formatting, meaningful exit codes
+  (`doctor --json` exits 1 when the provider is unreachable):
+
+  ```bash
+  wrench status --json | jq '.os.disk_pct'
+  wrench certs --json | jq '.certs[] | select(.days_left < 30)'
+  wrench report --json -n 1 | jq -e '.patrols[0].status == "ok"'   # CI gate
+  ```
+
+- **Prometheus exporter** — `GET /metrics` on the dashboard (`wrench web`),
+  or a bare exporter with `wrench metrics serve --port 9465`, or a one-shot
+  scrape to stdout with `wrench metrics` (textfile-collector friendly).
+  Sensor gauges, notification counts by severity, **days-to-expiry per
+  certificate**, patrol counters + last-ok timestamp, blueprint
+  apply/rollback counters, drift change counts. Hand-rolled exposition —
+  zero new dependencies.
+
+- **Syslog / SIEM sink** — RFC 5424 to local `/dev/log` or remote
+  `udp://`/`tcp://` collectors, plus a JSON-lines-over-HTTP sink
+  (Splunk HEC / ELK-style). Per-sink severity thresholds. Patrol findings,
+  the cert expiry ladder, and every blueprint apply/rollback flow through
+  automatically.
+
+Schemas, metric families, and alert ideas: [docs/json-output.md](docs/json-output.md).
+
+
+### `wrench init` / `wrench doctor` / `wrench install-service`
+
+Onboarding, self-diagnosis, and persistence. `doctor` checks config, store,
+sensors, platform capabilities (which service manager? which log backend?),
+and provider liveness. `install-service` schedules patrols natively on every
+OS:
+
+| OS | mechanism |
+|---|---|
+| Linux | user systemd service + timer |
+| macOS | launchd user agent (`~/Library/LaunchAgents`) |
+| Windows | Scheduled Task (`schtasks`) |
+
+`wrench install-service --uninstall` removes it just as cleanly.
+
 ## How a patrol works
 
 A patrol is the full loop — **observe → orient → act → report** — run end to
@@ -853,10 +949,11 @@ wrench ask -p anthropic "…"            # or Anthropic (native adapter)
 wrench ask -p meta "…"                 # or Meta's muse models
 wrench ask -p azure "…"                # or Azure OpenAI / AI Foundry (enterprise)
 wrench ask -p litellm "…"              # or anything behind a LiteLLM proxy
+wrench ask -p custom "…"               # or any OpenAI-compatible endpoint (vLLM/llama.cpp/TGI/…)
 wrench patrol --deep                   # your provider's deep model for hard cases
 ```
 
-One agent loop, seven doors. Tool calling uses a strict JSON protocol instead of
+One agent loop, many doors. Tool calling uses a strict JSON protocol instead of
 provider-specific function-calling APIs, so every backend — including small
 local models — drives the same tools.
 
@@ -960,6 +1057,40 @@ Base URLs and models remain overridable in `config.toml` or via
 `WRENCH_BASE_URL` / `WRENCH_MODEL` env vars.
 </details>
 
+<details>
+<summary>custom — any OpenAI-compatible endpoint (vLLM / llama.cpp / TGI / your own server)</summary>
+
+For any server that speaks the OpenAI chat-completions API but isn't one of the
+named providers — a local **vLLM** or **llama.cpp** server, **TGI**, a FastAPI
+shim, or an internal gateway. There's no default URL; you give one. The API key
+is **optional** — set `CUSTOM_API_KEY` only if your endpoint requires one (many
+internal servers are keyless).
+
+```bash
+wrench init -p custom          # guided: prompt for base URL → probe GET /models →
+                               # pick a live model → tool-calling smoke test
+# scripted / non-interactive:
+WRENCH_BASE_URL=http://127.0.0.1:8000/v1 wrench init -p custom --yes
+```
+
+Or pin it in `config.toml` (base URL points at your internal server; key omitted):
+
+```toml
+[provider]
+name = "custom"
+
+[custom]
+base_url = "http://10.0.0.9:8000/v1"   # your vLLM / llama.cpp / TGI endpoint
+model = "your-served-model-id"          # as listed by GET /models
+# api_key_file = "~/.config/wrench/custom.key"   # optional — only if the server needs one
+```
+
+The guided flow probes the endpoint first; if nothing answers `GET <base>/models`
+it says so plainly (**⚠ setup is NOT complete**) with the exact steps to finish,
+and never prints a success greeting over a broken setup. Base URL and model stay
+overridable via `WRENCH_BASE_URL` / `WRENCH_MODEL`.
+</details>
+
 Keys come from env (`META_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, …) or an `api_key_file`
 path in the config; they are never logged, and never stored in the database.
 
@@ -1033,7 +1164,7 @@ flowchart TB
         agent["agent.py<br/>observe → orient → act → report"]
         tools["tools.py<br/>read_logs · service_status · disk_tree<br/>net_listeners · proc_top · run_diag · fix_action"]
         policy["policy.py<br/>tiers + allowlists + forbidden patterns"]
-        providers["providers.py<br/>meta · openai · anthropic · azure<br/>ollama · lmstudio · litellm"]
+        providers["providers.py<br/>meta · openai · anthropic · azure<br/>ollama · lmstudio · litellm · custom"]
     end
 
     subgraph show["📺 report"]
