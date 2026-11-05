@@ -275,3 +275,44 @@ def test_dispatch_still_works_with_sinks(tmp_path, monkeypatch):
     rec = notif.dispatch(cfg, {"status": "critical", "summary": "disk full",
                                "findings": []}, report_id=1.0)
     assert rec is not None and sent and sent[0]["kind"] == "patrol"
+
+
+# ---------------- subsystem wiring: blueprint apply/rollback → sinks ----------------
+
+def test_blueprint_audit_emits_events(tmp_path, monkeypatch):
+    from wrench import blueprint as bp
+
+    emitted = []
+    monkeypatch.setattr(notif, "emit_event",
+                        lambda cfg, kind, sev, summary, **k:
+                        emitted.append((kind, sev, summary)))
+
+    class Cfg:
+        data_dir = tmp_path
+        policy_tier = "suggest"
+        raw = {}
+
+    class Plan:
+        intent = "harden sshd"
+        files = ["/etc/ssh/sshd_config"]
+        model = "m"
+
+        def digest(self):
+            return "abc"
+
+    res = bp.ApplyOutcome(ok=True, rolled_back=False, message="applied cleanly",
+                          label="blueprint:abc")
+    bp._audit(Cfg(), None, Plan(), res)
+    assert emitted and emitted[0][0] == "blueprint.apply" and emitted[0][1] == "attention"
+
+    emitted.clear()
+    res = bp.ApplyOutcome(ok=False, rolled_back=True, message="checker rejected",
+                          label="blueprint:abc")
+    bp._audit(Cfg(), None, Plan(), res)
+    assert emitted[0][0] == "blueprint.rollback" and emitted[0][1] == "error"
+
+    emitted.clear()
+    res = bp.ApplyOutcome(ok=False, rolled_back=False, message="rollback incomplete",
+                          label="blueprint:abc")
+    bp._audit(Cfg(), None, Plan(), res)
+    assert emitted[0][0] == "blueprint.failed" and emitted[0][1] == "critical"

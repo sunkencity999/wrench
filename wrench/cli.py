@@ -1252,6 +1252,12 @@ def certs_renew(
         _render_renew_result(res)
         store.add_action(cfg.policy_tier, f"certs:renew:{'dry' if dry_run else 'exec'}",
                          f"{tool} {cert.common_name}", res.ok, res.message[:400])
+        if not dry_run:
+            from . import notifications
+            notifications.emit_event(
+                cfg, "certs.renew",
+                "attention" if res.ok else ("error" if res.rolled_back else "critical"),
+                f"cert renewal {cert.common_name} via {tool}: {res.message[:200]}")
         any_fail = any_fail or not res.ok
     if any_fail:
         raise typer.Exit(1)

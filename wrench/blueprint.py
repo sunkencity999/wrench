@@ -742,6 +742,20 @@ def _audit(cfg, store, plan: BlueprintPlan, res: ApplyOutcome) -> None:
                              res.ok, res.message[:500])
         except Exception:  # noqa: BLE001
             pass
+    # fan out to configured notification sinks (desktop/webhook/syslog/SIEM)
+    try:
+        from . import notifications
+        if res.ok:
+            kind, sev = "blueprint.apply", "attention"
+        elif res.rolled_back:
+            kind, sev = "blueprint.rollback", "error"
+        else:
+            kind, sev = "blueprint.failed", "critical"
+        notifications.emit_event(
+            cfg, kind, sev,
+            f"blueprint {plan.intent[:140]} → {', '.join(plan.files)}: {res.message[:200]}")
+    except Exception:  # noqa: BLE001 — notification must never block the ceremony
+        pass
 
 
 def _drift_snapshot(cfg, store, plan: BlueprintPlan, res: ApplyOutcome) -> None:
