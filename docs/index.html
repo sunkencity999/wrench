@@ -258,6 +258,15 @@ footer { border-top:1px solid var(--border); padding:2.5rem 0; text-align:center
       <b>expiry ladder</b> (30d → 14d → 7d/expired) and flag weak TLS. <code>wrench certs renew</code>
       rotates certs via <b>certbot/acme.sh</b>, dry-run first, chain-validated, service reloaded —
       consent-gated, never model-authored shell.</p></div>
+    <div class="card"><span class="ico">🛡️</span><h3>Watch the doors</h3>
+      <p><code>wrench security</code> watches the ways in: <b>auth-log anomalies</b>
+      (brute-force bursts, a success right after a burst, logins from never-seen IPs, new sudo
+      users), <b>privilege drift</b> (sudoers, authorized_keys, extra UID-0 accounts, empty
+      passwords, world-writable files), <b>listener ownership</b> (new or ownerless sockets), and
+      <b>CVE matching</b> of your full package inventory against OSV.dev. Every watcher is
+      <b>read-only</b>; a baseline is blessed only by explicit <code>security accept</code>, and the
+      OSV scan <b>fails soft</b> offline. Findings land in patrols, <code>--json</code>
+      (<code>wrench.security.v1</code>), and Prometheus gauges.</p></div>
     <div class="card"><span class="ico">📐</span><h3>Blueprint the configs</h3>
       <p><code>wrench blueprint "harden sshd"</code> — the brain drafts the change as a
       <b>unified diff against your real files</b>; it never runs a command. Code validates with the

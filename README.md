@@ -400,6 +400,50 @@ running on its known-good config. Real renewals require policy tier
 `repair`/`autonomous` or a one-time `wrench certs renew --setup-consent`
 ceremony; every attempt is logged to the actions table.
 
+### `wrench security` — watch the doors
+
+The box is only as safe as the ways into it. `wrench security` keeps four
+read-only watchers on those doors and runs them through one severity ladder.
+
+```console
+$ wrench security
+📡 listening sockets        ← socket · addr · process · systemd unit
+🛡️ security findings        ← sev · area · finding · detail
+```
+
+**auth.** I parse `auth.log` / `secure` (or journald when there's no file) for
+SSH and sudo events, then flag what matters: a **brute-force burst** (many
+failed passwords from one IP inside a sliding window), a **successful login
+right after a burst** from that same IP (treated as critical — assume
+compromise until proven otherwise), logins from **source IPs never seen before**
+your baseline, and users **newly invoking sudo**.
+
+**access.** Privilege drift is the quiet kind. I hash `/etc/sudoers` and every
+`/etc/sudoers.d` drop-in, hash each account's `authorized_keys`, and watch for
+**extra UID-0 accounts**, **empty password hashes** (when `/etc/shadow` is
+readable — I degrade politely when it isn't), and **world-writable files** in
+sensitive paths. New or changed entries alarm against the accepted baseline.
+
+**listeners.** I inventory every listening socket with its owning process and
+systemd unit (`ss`, with a psutil fallback). A **new listener** since the
+baseline is a warning; an **ownerless** one — a socket no process admits to,
+seen with full root visibility — is worth a hard look. Running without root? I
+say so once instead of crying wolf on every socket I simply can't attribute.
+
+**cve.** I take your **full installed-package inventory** (dpkg/rpm) and match
+it against the **OSV.dev** batch API — free, keyless, cached in SQLite with a
+TTL, and strictly **fail-soft**: no network, no scan, no drama. New serious
+(critical/high) CVEs since the last scan are called out as `[NEW]`.
+
+Everything here is **read-only** — nothing I touch mutates host state. A
+baseline is blessed **only by explicit consent** (`wrench security accept`);
+scans compare against it and never silently update it. Findings feed patrols,
+`--json` (`wrench.security.v1`, exit 1 on a critical), the Prometheus exporter
+(`wrench_security_findings`, `…_listeners`, `…_cves_known`, `…_baseline_accepted`),
+and an optional brain briefing that triages the lot in plain English — analysis
+only, it never executes anything. Bring your own mind; the doors are watched
+either way.
+
 ### `wrench blueprint` — declarative config automation
 
 You describe the change; the brain drafts it **as a unified diff against your
