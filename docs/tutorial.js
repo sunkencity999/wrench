@@ -1,6 +1,7 @@
 /* wrench interactive tutorial — a simulated terminal, pure vanilla JS, no backend.
    Click a step (or press Enter / the Run button) and watch a scripted wrench
-   session play out with canned-but-real (sanitized) output. */
+   session play out with canned-but-real (sanitized) output. The tour walks the
+   five arcs — SEE · PREDICT · PROVE · FIX · SCALE — then peeks at air-gap mode. */
 (function () {
   "use strict";
 
@@ -9,15 +10,15 @@
   var STEPS = [
     {
       id: "init",
-      label: "1 · wrench init",
+      label: "1 · init",
       cmd: "wrench init",
       out: [
         { t: "🔧 bring your own mind — choose a model provider", cls: "c-acc" },
         { t: "  1  ollama (recommended for this box)   local & private — guided, no API key", cls: "" },
-        { t: "  2  lmstudio         local — LM Studio server", cls: "c-dim" },
-        { t: "  3  openai           API · 4  anthropic  API · 5  meta  API", cls: "c-dim" },
-        { t: "  6  azure            API · 7  litellm    API proxy", cls: "c-dim" },
-        { t: "  8  custom           any OpenAI-compatible endpoint (vLLM, llama.cpp, TGI, your own server)", cls: "c-dim" },
+        { t: "  2  lmstudio   local — LM Studio server", cls: "c-dim" },
+        { t: "  3  openai      API · 4  anthropic  API · 5  meta  API", cls: "c-dim" },
+        { t: "  6  azure       API · 7  litellm    API proxy", cls: "c-dim" },
+        { t: "  8  custom      any OpenAI-compatible endpoint (vLLM, llama.cpp, TGI, your own server)", cls: "c-dim" },
         { t: "detected 64 GB RAM · 24 GB NVIDIA VRAM — a local model will run well here", cls: "c-dim" },
         { t: "provider [1-8 or name]: ⏎   → ollama", cls: "c-cyan" },
         { t: "recommended model: qwen3:30b (~19 GB) — pulled with consent, tool-calling smoke test ✓", cls: "c-cyan" },
@@ -25,20 +26,16 @@
         { t: "recording first sensor sample + drift baseline...", cls: "c-dim" },
         { t: "╭──────────────────── 🔧 wrench initialized ────────────────────╮", cls: "c-ok" },
         { t: "│ I'm wrench — your systems administrator. I live here now.    │", cls: "c-ok" },
-        { t: "│ I read the logs so you don't have to, I remember what        │", cls: "c-ok" },
-        { t: "│ changes on this box, and with your permission I fix problems │", cls: "c-ok" },
-        { t: "│ before you ever see them.                                     │", cls: "c-ok" },
-        { t: "│                                                               │", cls: "c-ok" },
         { t: "│ provider: ollama · model: qwen3:30b · policy: suggest         │", cls: "c-ok" },
         { t: "│ data: ~/.local/share/wrench/wrench.db                         │", cls: "c-ok" },
-        { t: "│ put me to work: doctor · patrol · fixxer · web                │", cls: "c-ok" },
+        { t: "│ put me to work: doctor · status · patrol · fixxer · web        │", cls: "c-ok" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
-        { t: "wrench now knows what \"normal\" looks like — and nothing left the box. Any brain works through the same agent loop: fully local (Ollama, LM Studio) or any API (OpenAI, Anthropic, Meta, Azure, LiteLLM, or any OpenAI-compatible endpoint via custom). No favorites.", cls: "c-dim", note: true }
+        { t: "Entry 8, custom, points wrench at any OpenAI-compatible endpoint. Every brain — fully local (Ollama, LM Studio) or any API (OpenAI, Anthropic, Meta, Azure, LiteLLM) — drives the exact same agent loop. No favorites, and nothing left the box.", cls: "c-dim", note: true }
       ]
     },
     {
       id: "status",
-      label: "2 · wrench status",
+      label: "2 · status · SEE",
       cmd: "wrench status",
       out: [
         { t: "╭──────────────────────── 🔧 wrench status ─────────────────────╮", cls: "c-acc" },
@@ -49,62 +46,71 @@
         { t: "│ disk /mnt/tank  █████████░░░░░░░  52.8%                       │", cls: "" },
         { t: "│                                                               │", cls: "" },
         { t: "│ load 0.63 / 0.77 / 1.26   procs 683   net ↓179 ↑72 KB/s       │", cls: "c-dim" },
+        { t: "│ gpu NVIDIA RTX PRO 6000: 0% util, 96375/97887 MB, 33°C        │", cls: "c-dim" },
         { t: "│ docker: 5/8 containers running                                │", cls: "c-warn" },
         { t: "│ no anomalies in 24h — baselines quiet                         │", cls: "c-ok" },
         { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
-        { t: "One screen, every vital, with sparklines of the last 24h. No doomscrolling through top/df/htop.", cls: "c-dim", note: true }
+        { t: "SEE — one screen, every vital, with 24h sparklines and anomalies flagged against learned baselines (z-score, not arbitrary thresholds). No doomscrolling through top/df/htop.", cls: "c-dim", note: true }
       ]
     },
     {
-      id: "ask",
-      label: "3 · wrench ask",
-      cmd: "wrench ask \"why is my disk filling up?\"",
+      id: "forecast",
+      label: "3 · forecast · PREDICT",
+      cmd: "wrench forecast",
       out: [
-        { t: "  ⚙ run_diag {\"command\": \"df -h\"}", cls: "c-cyan" },
-        { t: "  ⚙ disk_tree {\"path\": \"/home/user/storage\", \"depth\": 1}", cls: "c-cyan" },
-        { t: "  ⚙ disk_tree {\"path\": \"/\", \"depth\": 1}", cls: "c-cyan" },
+        { t: "  ⚙ trend engine — least-squares over 3,125 samples / 1.9d", cls: "c-cyan" },
+        { t: "╭──────────────── 🔮 wrench forecast — future incidents ────────────────╮", cls: "c-acc" },
+        { t: "│ sev     resource        ETA     current   rate/day   confidence      │", cls: "c-dim" },
+        { t: "│ → info  🔁 swap        10.8d     26.5%     +6.37%     medium          │", cls: "c-warn" },
+        { t: "│ · none  💾 /mnt/nvme   181.1d    52.0%     +0.24%     high            │", cls: "" },
+        { t: "│ · none  💾 /home       194.0d    59.2%     +0.18%     medium          │", cls: "" },
+        { t: "│ · none  🧠 memory         —      43.3%      flat       medium          │", cls: "" },
+        { t: "╰────────────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
         { t: "╭──────────────────────────── 🔧 wrench ────────────────────────╮", cls: "c-acc" },
-        { t: "│ Most at risk: /home/user/storage — 59% used, only 722G free,  │", cls: "" },
-        { t: "│ the smallest headroom of your four mounts.                    │", cls: "" },
-        { t: "│                                                               │", cls: "" },
-        { t: "│ But du only accounts for 42G of the 1019G used. The gap hides │", cls: "" },
-        { t: "│ in root-owned dirs: 'backups/borg-system: Permission denied'. │", cls: "c-warn" },
-        { t: "│ Your hog is almost certainly the backup archive, not you.     │", cls: "" },
-        { t: "│                                                               │", cls: "" },
-        { t: "│ To confirm (I'm suggest-tier — run as human):                 │", cls: "c-dim" },
-        { t: "│   sudo du -xhd1 /home/user/storage | sort -hr                 │", cls: "c-mag" },
+        { t: "│ Zero critical/warning incidents. First to break: swap at      │", cls: "" },
+        { t: "│ 26.5%, climbing ~6.4%/day → 95% in ~11 days. Only medium      │", cls: "" },
+        { t: "│ confidence (3,125 samples / 1.9d), so: watch, don't panic.    │", cls: "" },
+        { t: "│ Line up a mitigation before the window closes.                │", cls: "" },
         { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
-        { t: "It ran its own diagnostics, noticed du and df disagree, and named the suspect — then handed the privileged command to you instead of running it.", cls: "c-dim", note: true }
+        { t: "PREDICT — the trend math is CODE; the model is never asked when your disk fills. Certificate expiry joins the same unified feed, so 'disk full Tuesday' and 'cert dead Friday' page through one lead-time ladder (≤14d info → ≤7d warning → ≤3d critical).", cls: "c-dim", note: true }
       ]
     },
     {
-      id: "patrol",
-      label: "4 · wrench patrol",
-      cmd: "wrench patrol",
+      id: "comply",
+      label: "4 · comply · PROVE",
+      cmd: "wrench comply",
       out: [
-        { t: "I'm on patrol — sweeping sensors, drift, and logs (qwen3:30b, tier: suggest)...", cls: "c-dim" },
-        { t: "  ⚙ run_diag {\"command\": \"systemctl --user list-units --state=failed\"}", cls: "c-cyan" },
-        { t: "  ⚙ read_logs {\"unit\": \"smartd\", \"lines\": 60}", cls: "c-cyan" },
-        { t: "  ⚙ run_diag {\"command\": \"smartctl -H /dev/sda\"}", cls: "c-cyan" },
-        { t: "╭──────────────────────── 🔧 wrench patrol ─────────────────────╮", cls: "c-warn" },
-        { t: "│ ⚠ ATTENTION  Box healthy overall, but /dev/sda reports 7      │", cls: "c-warn" },
-        { t: "│ pending sectors — and the SMART email alerts are broken.      │", cls: "c-warn" },
-        { t: "│                                                               │", cls: "" },
-        { t: "│ [high] smartd: 7 unreadable (pending) sectors on /dev/sda —   │", cls: "c-crit" },
-        { t: "│        warned every 30 min all day; 2.8T of data at risk      │", cls: "c-crit" },
-        { t: "│ [low]  smartd-runner fails: /usr/bin/mail missing — those     │", cls: "" },
-        { t: "│        warnings were never delivered to a human               │", cls: "" },
-        { t: "│                                                               │", cls: "" },
-        { t: "│ recommendations:                                              │", cls: "c-dim" },
-        { t: "│   back up /mnt/tank NOW, then plan disk replacement           │", cls: "c-mag" },
-        { t: "│   sudo smartctl -a /dev/sda · sudo apt install mailutils      │", cls: "c-mag" },
-        { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-warn" },
-        { t: "This is a real finding from wrench's first day: a dying disk whose alert pipeline was ALSO broken. Nobody would have known. wrench install-service makes this run every 15 minutes, forever.", cls: "c-dim", note: true }
+        { t: "╭──── 📋 Ubuntu hardening essentials (inspired by CIS L1) — score 56.8% ────╮", cls: "c-acc" },
+        { t: "│ ✖ fail   high     sshd.permitrootlogin   PermitRootLogin → want 'no'       │", cls: "c-crit" },
+        { t: "│ ✖ fail   high     sshd.passwordauth      PasswordAuthentication must be no  │", cls: "c-crit" },
+        { t: "│ ✖ fail   medium   login.umask            default UMASK 027 or stricter      │", cls: "c-warn" },
+        { t: "│ ✔ pass   critical perm.sudoers           /etc/sudoers is 0440               │", cls: "c-ok" },
+        { t: "│ · skip   critical auth.noemptypw         (needs root to read /etc/shadow)   │", cls: "c-dim" },
+        { t: "╰───────────────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "40 checks in cis-ubuntu-essentials · 15 in wrench-baseline · deterministic · offline", cls: "c-dim" },
+        { t: "PROVE — packs are DATA, not code: every rule maps to a read-only check primitive, verdicts are deterministic (never a model's opinion), and it all runs fully offline. A skip is a counted skip, never a fake pass. `comply accept` blesses known debt by consent (audit-sealed); patrols then alarm only on NEW failures.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "audit",
+      label: "5 · audit + bundle · PROVE",
+      cmd: "wrench audit verify && wrench bundle",
+      out: [
+        { t: "╭────────────────────── 🧾 audit verify ──────────────────────╮", cls: "c-ok" },
+        { t: "│ ✔ INTACT — 7 event(s), every link verified.                 │", cls: "c-ok" },
+        { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-ok" },
+        { t: "  (flip one byte anywhere and verify names the exact first broken link, exit 1)", cls: "c-dim" },
+        { t: "╭──────────────────────── 📦 wrench bundle ─────────────────────╮", cls: "c-acc" },
+        { t: "│ wrote ./wrench-bundle-homelab-2026-11-05.tar.gz               │", cls: "c-acc" },
+        { t: "│ 24 KB · 13 files · no secrets (config redacted)               │", cls: "c-ok" },
+        { t: "│ carry it on a USB stick; unpack: tar xzf wrench-bundle-…      │", cls: "c-dim" },
+        { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "PROVE — every consequential act is sealed into a hash-chained, append-only log (each record folds in the previous hash). `bundle` packs the whole box — patrol, status, drift, security, comply, backups, forecast, the tamper-evident audit chain + its verdict — into one reproducible tar.gz. The air-gap answer to 'email me the state of the box.'", cls: "c-dim", note: true }
       ]
     },
     {
       id: "fixxer",
-      label: "5 · wrench fixxer",
+      label: "6 · fixxer · FIX",
       cmd: "wrench fixxer",
       out: [
         { t: "I'm going through the box looking for things I can fix myself...", cls: "c-dim" },
@@ -115,39 +121,52 @@
         { t: " 3   moderate  Apply pending updates      242 packages upgradable (3 security)", cls: "c-warn" },
         { t: " 4   moderate  Remove orphaned packages   3 removable, incl. 1 old kernel", cls: "c-warn" },
         { t: "╭──────────────────────────── 🔧 wrench ────────────────────────────╮", cls: "c-acc" },
-        { t: "│ I'd start with 1 and 2 — both are safe-tier housekeeping:     │", cls: "" },
-        { t: "│ 6 GB back, nothing changes behavior. 3 is worth doing soon    │", cls: "" },
-        { t: "│ (3 security patches) but it's 'moderate': package versions    │", cls: "" },
-        { t: "│ move. 4 includes an old kernel — fine to remove, apt keeps    │", cls: "" },
-        { t: "│ your running one. Your call; nothing happens until you pick.  │", cls: "" },
+        { t: "│ I'd start with 1 and 2 — safe-tier housekeeping: 6 GB back,   │", cls: "" },
+        { t: "│ nothing changes behavior. 3 is worth doing soon (3 security   │", cls: "" },
+        { t: "│ patches) but it's moderate. Your call; nothing happens yet.   │", cls: "" },
         { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
         { t: "apply which? [a]ll / [n]one / numbers e.g. 1,3 ▸ 1,2", cls: "c-cyan" },
-        { t: "⚙ Shrink journald logs (safe)", cls: "c-cyan" },
-        { t: "  $ sudo journalctl --vacuum-size=500M", cls: "c-dim" },
-        { t: "  ✓ fixed + verified · 3.4s · journald now uses 488 MB", cls: "c-ok" },
-        { t: "⚙ Clear package download cache (safe)", cls: "c-cyan" },
-        { t: "  $ sudo apt-get clean", cls: "c-dim" },
-        { t: "  ✓ fixed + verified · 0.8s · apt cache now 0 MB", cls: "c-ok" },
-        { t: "╭─────────────────────────── 🔧 fixxer report ──────────────────────╮", cls: "c-ok" },
-        { t: "│ 2 fixed + verified                                            │", cls: "c-ok" },
-        { t: "│ every action is in the audit log: fixxer_audit.jsonl          │", cls: "c-ok" },
-        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
-        { t: "The fixes are real; the authorship is the point. Every command came from a hand-written, risk-tiered catalog — the model explains and recommends, it never writes the shell. For self-healing boxes, `wrench fixxer --auto` applies safe-tier fixes unattended — after an explicit consent ceremony, with every action audited. `--dry-run` shows what it would do.", cls: "c-dim", note: true }
+        { t: "  ✓ Shrink journald logs — fixed + verified · journald now uses 488 MB", cls: "c-ok" },
+        { t: "  ✓ Clear package cache — fixed + verified · apt cache now 0 MB", cls: "c-ok" },
+        { t: "  2 fixed + verified · every action in fixxer_audit.jsonl", cls: "c-ok" },
+        { t: "FIX — the fixes are real; the authorship is the point. Every command comes from a hand-written, risk-tiered catalog — detection is code, the command is code, verification is code. The model only explains and recommends; it never writes the shell. (`wrench blueprint` extends the same ceremony to config files, LLM-drafted as a diff, validated by the daemon's own checker, auto-rolled-back on failure.)", cls: "c-dim", note: true }
       ]
     },
     {
-      id: "web",
-      label: "6 · wrench web",
-      cmd: "wrench web",
+      id: "fleet",
+      label: "7 · fleet · SCALE",
+      cmd: "wrench fleet status",
+      out: [
+        { t: "  (hub: wrench fleet serve · nodes push a signed snapshot after each patrol)", cls: "c-dim" },
+        { t: "╭──────────────────────── 🔧 wrench fleet ──────────────────────╮", cls: "c-acc" },
+        { t: "│ fleet — 3 node(s): 1 ok / 1 attn / 0 crit / 1 SILENT          │", cls: "c-acc" },
+        { t: "│                                                               │", cls: "" },
+        { t: "│ node      status      worst     last seen                     │", cls: "c-dim" },
+        { t: "│ web-01    ok          —         42s ago                       │", cls: "c-ok" },
+        { t: "│ db-02     attention   warning   1m ago                        │", cls: "c-warn" },
+        { t: "│ edge-03   SILENT      —         6h ago · past 2× cadence      │", cls: "c-crit" },
+        { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "SCALE — one box watching itself is a homelab; a hundred reporting to one pane of glass is operations. Push is HMAC-signed and built from CACHED scans (never a rerun). The dead-man's switch makes silence loud: edge-03 went quiet past 2× its cadence, so the hub raises a CRITICAL. Default OFF — no [fleet] config, zero change.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "offline",
+      label: "8 · offline mode",
+      cmd: "WRENCH_OFFLINE=1 wrench cve",
       chatFinale: true,
       out: [
-        { t: "╭──────────────────────── 🔧 wrench web ───────────────────────╮", cls: "c-acc" },
-        { t: "│ dashboard live at http://127.0.0.1:8787                       │", cls: "c-acc" },
-        { t: "│ sampling every 30s · 🔧 chat bubble bottom-right ·            │", cls: "c-dim" },
-        { t: "│ press ? for shortcuts · Ctrl-C to stop                        │", cls: "c-dim" },
+        { t: "  config: offline = true   (or export WRENCH_OFFLINE=1)", cls: "c-dim" },
+        { t: "╭──────────── ⏳ end-of-life status (endoflife.date) ───────────╮", cls: "c-acc" },
+        { t: "│ os            24.04   supported until 2029-05-31              │", cls: "c-ok" },
+        { t: "│ linux-kernel  7.0     REACHED EOL 2026-06-27                  │", cls: "c-crit" },
+        { t: "│ python        3.12    supported until 2028-10-31              │", cls: "c-ok" },
         { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
-        { t: "live vitals · 24h timelines · patrol + drift + security-intel feeds · action log", cls: "c-cyan" },
-        { t: "…and the 🔧 bubble in YOUR corner right now? That's the dashboard's chat — watch.", cls: "c-dim", note: true }
+        { t: "checked 261 packages · OFFLINE — cached data", cls: "c-dim" },
+        { t: "⚠ briefing unavailable (provider 'meta': skipped — wrench is in offline", cls: "c-warn" },
+        { t: "  mode and api.meta.ai is not a local/private address) — the tables stand", cls: "c-warn" },
+        { t: "  on their own", cls: "c-warn" },
+        { t: "Air-gap mode is a DECLARED, enforced zero-egress guarantee — for classified, OT, shipboard, and air-gapped boxes. OSV/CVE, endoflife.date, update checks, and any public provider call are refused with a clear message; the cached scan still serves and every local check keeps working. A central guard (ipaddress stdlib) decides local-vs-public. wrench runs on boxes that have never seen the internet.", cls: "c-dim", note: true },
+        { t: "…and the 🔧 bubble in YOUR corner right now? On your machine that chat is a live agent loop — watch.", cls: "c-dim", note: true }
       ]
     }
   ];
@@ -253,7 +272,7 @@
 
   function banner() {
     line("wrench interactive tour — nothing here touches your machine.", "c-dim");
-    line("click a step below, or just hit ▶ / Enter.\n", "c-dim");
+    line("the five arcs: see · predict · prove · fix · scale — click a step, or hit ▶ / Enter.\n", "c-dim");
   }
 
   // ---- wire up ----------------------------------------------------------
