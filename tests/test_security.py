@@ -20,6 +20,10 @@ from wrench import security as sec
 from wrench.security import Finding, SecuritySettings
 from wrench.store import Store
 
+import os
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX paths / permission bits")
+
 
 @dataclass
 class FakeCfg:
@@ -177,6 +181,7 @@ def test_sudoers_state_hashes_and_normalizes(tmp_path):
     assert state2["files"][str(main)] == state["files"][str(main)]
 
 
+@posix_only
 def test_authorized_keys_state(tmp_path):
     home = tmp_path / "home" / "alice"
     (home / ".ssh").mkdir(parents=True)
@@ -209,6 +214,7 @@ def test_empty_password_accounts_readable_and_not(tmp_path):
     assert empties2 is None and readable2 is False
 
 
+@posix_only
 def test_world_writable_files(tmp_path):
     (tmp_path / "ok.txt").write_text("fine")
     bad = tmp_path / "bad.sh"

@@ -4,11 +4,15 @@ checker dispatch, ceremony gates, drafting protocol, history."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from wrench import blueprint as bp
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX /etc paths")
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows drive paths")
 
 
 # ---------------- fixtures ----------------
@@ -64,14 +68,14 @@ def _mkdiff(path: str, old: list[str], new: list[str], start: int = 1) -> str:
         body.append("-" + ln)
     for ln in new:
         body.append("+" + ln)
-    return (f"--- a{path}\n+++ b{path}\n"
+    return (f"--- a/{path}\n+++ b/{path}\n"
             f"@@ -{start},{len(old)} +{start},{len(new)} @@\n"
             + "\n".join(body) + "\n")
 
 
 MODIFY_DIFF = """\
---- a{p}
-+++ b{p}
+--- a/{p}
++++ b/{p}
 @@ -1,3 +1,4 @@
  keep1
 -change me
@@ -82,7 +86,7 @@ MODIFY_DIFF = """\
 
 NEW_FILE_DIFF = """\
 --- /dev/null
-+++ b{p}
++++ b/{p}
 @@ -0,0 +1,3 @@
 +# managed by wrench blueprint
 +daily
@@ -181,6 +185,7 @@ def test_apply_preserves_no_trailing_newline():
 
 # ---------------- safety rails ----------------
 
+@posix_only
 @pytest.mark.parametrize("path", [
     "/etc/passwd", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
     "/etc/fstab", "/etc/ssl/private/server.key", "/etc/ssh/ssh_host_ed25519_key",
@@ -192,12 +197,14 @@ def test_denylist(path, cfg):
     assert not ok and "denylist" in reason
 
 
+@posix_only
 def test_sudoers_dropin_allowed_but_direct_denied(cfg):
     cfg.raw = {"blueprint": {"allowed_roots": ["/etc"]}}
     assert bp.path_allowed(cfg, "/etc/sudoers.d/90-wrench")[0]
     assert not bp.path_allowed(cfg, "/etc/sudoers")[0]
 
 
+@posix_only
 def test_allowlist_roots(cfg, root):
     assert bp.path_allowed(cfg, str(root / "app.conf"))[0]
     ok, reason = bp.path_allowed(cfg, "/etc/other.conf")
@@ -577,12 +584,14 @@ def test_draft_exhausts_retries(cfg, root):
         bp.draft(cfg, None, "x", targets=[str(tgt)], client=client)
 
 
+@posix_only
 def test_draft_refuses_denylisted_target(cfg):
     cfg.raw = {"blueprint": {"allowed_roots": ["/etc"]}}
     with pytest.raises(bp.BlueprintError, match="denylisted"):
         bp.draft(cfg, None, "x", targets=["/etc/shadow"], client=FakeClient())
 
 
+@posix_only
 def test_propose_targets_validates(cfg, root):
     good = str(root / "ok.conf")
     client = FakeClient(json.dumps({"targets": [good], "reason": "r"}))
@@ -593,3 +602,47 @@ def test_propose_targets_validates(cfg, root):
     client = FakeClient("garbage, no json")
     with pytest.raises(bp.BlueprintError, match="no usable targets"):
         bp.propose_targets(cfg, None, "intent", client=client)
+
+
+# ---------------- Windows paths ----------------
+
+@windows_only
+def test_windows_allowed_root_and_spellings(cfg, root):
+    inside = root / "app" / "app.conf"
+    assert bp.path_allowed(cfg, str(inside))[0]
+    assert bp.path_allowed(cfg, str(inside).replace("\\", "/"))[0]     # either slash
+    assert bp.path_allowed(cfg, str(inside).upper())[0]                 # NTFS ignores case
+    ok, reason = bp.path_allowed(cfg, r"C:\Windows\win.ini")
+    assert not ok and "outside allowed roots" in reason
+
+
+@windows_only
+@pytest.mark.parametrize("bad", [
+    r"\\server\share\app.conf",        # UNC share
+    r"\\?\C:\app\app.conf",           # device path
+    r"C:app.conf",                       # drive-relative
+    r"app\app.conf",                     # relative
+    r"\app\app.conf",                    # rooted, no drive
+])
+def test_windows_refuses_non_local_or_relative(cfg, bad):
+    assert not bp.path_allowed(cfg, bad)[0]
+
+
+@windows_only
+def test_windows_refuses_traversal_scripts_and_hives(cfg, root):
+    assert not bp.path_allowed(cfg, str(root) + r"\..\other.conf")[0]
+    for name in ("run.ps1", "task.BAT", "tool.exe", "id.pem"):
+        assert not bp.path_allowed(cfg, str(root / name))[0], name
+    cfg.raw = {"blueprint": {"allowed_roots": ["C:\\"]}}
+    assert not bp.path_allowed(cfg, r"C:\Windows\System32\config\SAM")[0]
+    assert not bp.path_allowed(cfg, r"C:\Users\a\.ssh\authorized_keys")[0]
+    assert bp.path_allowed(cfg, r"C:\ProgramData\app\app.conf")[0]
+
+
+@windows_only
+def test_windows_diff_headers_and_backup_location(root):
+    assert bp._strip_ab("a/C:/app/app.conf") == "C:/app/app.conf"
+    assert bp._strip_ab(r"b/C:\app\app.conf") == r"C:\app\app.conf"
+    rel = bp.backup_relpath(r"C:\app\app.conf")
+    assert not os.path.isabs(rel) and ":" not in rel
+    assert str(root / rel).startswith(str(root))     # stays inside the backup dir

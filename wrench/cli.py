@@ -28,6 +28,23 @@ app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
 )
+
+
+def _never_crash_on_encoding() -> None:
+    """A piped or redirected stream on Windows uses the ANSI code page, which
+    cannot encode the glyphs wrench prints — and a UnicodeEncodeError there
+    kills the command (`wrench comply > report.txt`, a scheduled task's log).
+    Keep the stream's encoding; substitute what it cannot represent."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+            if enc not in ("utf8", "utf8sig"):
+                stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+_never_crash_on_encoding()
 console = Console()
 
 # `wrench --help` groups commands by the five arcs instead of one long list.

@@ -36,6 +36,7 @@ BASELINE_KIND = "comply_baseline"
 SEVERITIES = ("critical", "high", "medium", "low")
 
 _PACK_DIR = Path(__file__).parent / "packs"
+_NO_POSIX_MODES = __import__("os").name == "nt"
 _SYSCTL_ROOT = "/proc/sys"     # live kernel settings (module-level so tests can point it at a fixture tree)
 
 
@@ -165,6 +166,8 @@ def _read(path: str) -> tuple[str | None, str]:
 def _check_file_mode(c: dict) -> tuple[str, str]:
     """{kind, path, max_mode: "0644"} — fail when perms exceed max_mode."""
     p = Path(c["path"])
+    if _NO_POSIX_MODES:
+        return "skip", "POSIX permission bits do not exist on Windows (access is by ACL)"
     if not p.exists():
         if c.get("missing_ok"):
             return "pass", f"{p} absent (ok)"
@@ -182,6 +185,8 @@ def _check_file_mode(c: dict) -> tuple[str, str]:
 def _check_file_owner(c: dict) -> tuple[str, str]:
     """{kind, path, owner: "root", group: "root"(opt)}"""
     p = Path(c["path"])
+    if _NO_POSIX_MODES:
+        return "skip", "POSIX owner/group do not exist on Windows (access is by ACL)"
     if not p.exists():
         return "skip", f"{p} does not exist"
     try:

@@ -462,6 +462,8 @@ def world_writable_files(paths: tuple = SENSITIVE_WW_PATHS, max_depth: int = 3,
                          cap: int = 50) -> list[str]:
     """Regular files with the o+w bit in sensitive paths (symlinks skipped)."""
     hits: list[str] = []
+    if os.name == "nt":
+        return hits    # no o+w bit on Windows: st_mode there says nothing about ACLs
     for root_path in paths:
         root_depth = root_path.rstrip("/").count("/")
         for dirpath, dirnames, filenames in os.walk(root_path, topdown=True):

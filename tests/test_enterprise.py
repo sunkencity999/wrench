@@ -466,6 +466,7 @@ def test_fixxer_command_building(monkeypatch):
     assert fixxer.build_command(["apt-get", "update"], True, True)[:3] == ["sudo", "-n", "apt-get"]
 
 
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX /etc paths")
 def test_blueprint_confinement():
     class Cfg:
         raw: dict = {}
@@ -486,7 +487,10 @@ def test_blueprint_symlink_escape(tmp_path):
     (root / "app").mkdir(parents=True)
     outside = tmp_path / "secrets"
     outside.mkdir()
-    (root / "app" / "link").symlink_to(outside)
+    try:
+        (root / "app" / "link").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
 
     class Cfg:
         raw = {"blueprint": {"allowed_roots": [str(root)]}}

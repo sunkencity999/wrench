@@ -80,11 +80,78 @@ EXEC_VECTOR_PATTERNS = (
 )
 
 
+# Windows: the registry hives and credential stores are never a target, and a
+# script or scheduled task is code that runs later, not configuration.
+# Patterns are written with forward slashes; paths are compared the same way.
+WINDOWS_DENY_PATTERNS = (
+    "?:/windows/system32/config/*",      # SAM / SECURITY / SYSTEM hives
+    "?:/windows/ntds/*",
+    "*/microsoft/protect/*", "*/microsoft/credentials/*", "*/microsoft/crypto/*",
+    "*/.ssh/*",
+)
+WINDOWS_EXEC_VECTOR_PATTERNS = (
+    "*.bat", "*.cmd", "*.ps1", "*.psm1", "*.psd1", "*.vbs", "*.vbe", "*.js", "*.jse",
+    "*.wsf", "*.wsh", "*.hta", "*.reg", "*.lnk", "*.scr", "*.msi", "*.exe", "*.dll",
+    "?:/windows/system32/tasks/*", "?:/windows/tasks/*",
+    "*/start menu/programs/startup/*",
+    "?:/windows/system32/grouppolicy/*",
+)
+
+_WIN = os.name == "nt"
+
+
+def _slashed(path: str) -> str:
+    """The path as the deny patterns spell it: forward slashes, case-folded."""
+    p = str(path).replace("\\", "/") if _WIN else str(path)
+    return p.casefold()
+
+
+def _is_abs(p: str) -> bool:
+    """Absolute and local. On Windows that means a drive letter — no UNC
+    shares, no device paths, no drive-relative `C:foo`."""
+    if _WIN:
+        drive, rest = os.path.splitdrive(p)
+        return (len(drive) == 2 and drive[0].isalpha() and drive[1] == ":"
+                and rest[:1] in ("\\", "/"))
+    return p.startswith("/") and not p.startswith("//")
+
+
+def _parts(p: str) -> list[str]:
+    return re.split(r"[\\/]", p) if _WIN else p.split("/")
+
+
+def _same_spelling(a: str, b: str) -> bool:
+    """Is `a` the normalized form of `b`, ignoring a trailing separator (and,
+    on Windows, which slash was typed)?"""
+    if _WIN:
+        a, b = a.replace("\\", "/"), b.replace("\\", "/")
+    return a == b or a == b.rstrip("/")
+
+
+def _within(path: str, root: str) -> bool:
+    """Is `path` the root itself or somewhere beneath it? Case-insensitive
+    where the filesystem is (os.path.normcase)."""
+    a, b = os.path.normcase(path), os.path.normcase(root)
+    b = b.rstrip(os.sep)
+    if not b:                      # the filesystem root
+        return a.startswith(os.sep)
+    return a == b or a.startswith(b + os.sep)
+
+
+def backup_relpath(path: str) -> str:
+    """Where a target is stored under a backup directory. Never absolute:
+    `C:\\x\\y` becomes `C/x/y`, so joining it cannot escape the backup dir."""
+    drive, rest = os.path.splitdrive(str(path))
+    rel = rest.lstrip("\\/") if _WIN else rest.lstrip("/")
+    letter = "".join(ch for ch in drive if ch.isalnum())
+    return os.path.join(letter, rel) if letter else rel
+
+
 def is_exec_vector(path: str) -> bool:
     """True when writing this path means code runs as root later."""
-    norm = os.path.normpath(str(path))
-    cmp = norm.casefold()
-    return any(fnmatch.fnmatchcase(cmp, pat.casefold()) for pat in EXEC_VECTOR_PATTERNS)
+    cmp = _slashed(os.path.normpath(str(path)))
+    pats = EXEC_VECTOR_PATTERNS + (WINDOWS_EXEC_VECTOR_PATTERNS if _WIN else ())
+    return any(fnmatch.fnmatchcase(cmp, pat.casefold()) for pat in pats)
 
 
 class BlueprintError(Exception):
@@ -119,18 +186,19 @@ def allowed_roots(cfg) -> list[str]:
     roots = _bp_cfg(cfg).get("allowed_roots", ["/etc"])
     if not isinstance(roots, list) or not roots:
         roots = ["/etc"]
+    if _WIN:
+        return [str(r).rstrip("\\/") + ("\\" if len(str(r).rstrip("\\/")) == 2 else "")
+                for r in roots]
     return [str(r).rstrip("/") or "/" for r in roots]
 
 
 def path_allowed(cfg, path: str) -> tuple[bool, str]:
     """Is this target path permitted? (allowed, reason)."""
     p = str(path)
-    if not p.startswith("/") or "/../" in p + "/" or "\x00" in p:
-        return False, "target must be an absolute, normalized path"
-    if p.startswith("//"):
+    if not _is_abs(p) or ".." in _parts(p) or "\x00" in p:
         return False, "target must be an absolute, normalized path"
     norm = os.path.normpath(p)
-    if norm != p.rstrip("/") and norm != p:
+    if not _same_spelling(norm, p):
         return False, f"non-normalized path (did you mean {norm}?)"
     # Confinement is decided on where the write would really land: resolve
     # symlinks in the parent chain (and the file itself, if it is one). A link
@@ -139,8 +207,8 @@ def path_allowed(cfg, path: str) -> tuple[bool, str]:
     for cand in dict.fromkeys((norm, real)):
         # deny rules compare case-insensitively: on APFS/NTFS "/etc/Sudoers"
         # IS /etc/sudoers, and on Linux nothing legitimate differs only by case
-        low = cand.casefold()
-        for pat in DENY_PATTERNS:
+        low = _slashed(cand)
+        for pat in DENY_PATTERNS + (WINDOWS_DENY_PATTERNS if _WIN else ()):
             if fnmatch.fnmatchcase(low, pat.casefold()):
                 return False, f"denylisted target ({pat}) — wrench never edits this via blueprint"
         if is_exec_vector(cand) and not bool(_bp_cfg(cfg).get("allow_exec_paths", False)):
@@ -149,10 +217,8 @@ def path_allowed(cfg, path: str) -> tuple[bool, str]:
                            "[blueprint] allow_exec_paths = true to permit it deliberately")
     for root in allowed_roots(cfg):
         real_root = os.path.realpath(root)
-        inside = (real == real_root or real.startswith(real_root.rstrip("/") + "/")
-                  or (real_root == "/" and real.startswith("/")))
-        lexical = (norm == root or norm.startswith(root.rstrip("/") + "/")
-                   or (root == "/" and norm.startswith("/")))
+        inside = _within(real, real_root)
+        lexical = _within(norm, root)
         if lexical and inside:
             return True, f"within allowed root {root}"
         if lexical and not inside:
@@ -187,8 +253,10 @@ def _strip_ab(p: str) -> str:
     p = p.strip().split("\t")[0]
     for pre in ("a/", "b/"):
         if p.startswith(pre):
-            return "/" + p[len(pre):].lstrip("/") if not p[len(pre):].startswith("/") \
-                else p[len(pre):]
+            rest = p[len(pre):]
+            if _WIN and re.match(r"/*[A-Za-z]:[\\/]", rest):
+                return rest.lstrip("/")          # a/C:/ProgramData/app.conf
+            return rest if rest.startswith("/") else "/" + rest
     return p
 
 
@@ -596,7 +664,7 @@ def make_backup(cfg, plan: BlueprintPlan, now: float | None = None) -> Path:
     for p in plan.patches:
         src = Path(p.path)
         if src.exists():
-            dst = bdir / p.path.lstrip("/")
+            dst = bdir / backup_relpath(p.path)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
             st = src.stat()
@@ -621,7 +689,7 @@ def rollback_from_backup(backup_dir: Path) -> list[str]:
     for path, info in manifest.get("files", {}).items():
         try:
             if info.get("backed_up"):
-                src = backup_dir / path.lstrip("/")
+                src = backup_dir / backup_relpath(path)
                 # restore content through the same identity-preserving write,
                 # then put the recorded mode/owner back explicitly
                 _write_file(path, src.read_bytes().decode("utf-8"))

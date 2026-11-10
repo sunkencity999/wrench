@@ -232,7 +232,9 @@ def test_write_config_with_key_is_owner_only(monkeypatch, tmp_path):
     p = write_default_config("azure", model="dep",
                              azure_endpoint="https://x.openai.azure.com",
                              api_key="sk-secret")
-    assert (p.stat().st_mode & 0o777) == 0o600
+    import os
+    if os.name != "nt":      # Windows has no mode bits; the profile ACL does this job
+        assert (p.stat().st_mode & 0o777) == 0o600
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("WRENCH_API_KEY", raising=False)
     cfg = load_config(provider_override="azure")

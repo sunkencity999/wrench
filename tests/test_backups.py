@@ -6,6 +6,10 @@ import time
 
 import pytest
 
+import os
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX paths / permission bits")
+
 from wrench import backups as bk
 from wrench.backups import (BackupJob, _cadence_from_cron, _follow_wrapper,
                             _parse_cron_text, _parse_src_dest, _timer_cadence,
@@ -92,6 +96,7 @@ def test_timer_cadence():
 # ---- wrapper following + env resolution -------------------------------------
 
 
+@posix_only
 def test_follow_wrapper_resolves_tool_and_env(tmp_path):
     script = tmp_path / "nightly-backup.sh"
     script.write_text(
@@ -109,6 +114,7 @@ def test_follow_wrapper_resolves_tool_and_env(tmp_path):
     assert "/etc" in out["source"]
 
 
+@posix_only
 def test_follow_wrapper_substitutes_vars(tmp_path):
     script = tmp_path / "dump.sh"
     script.write_text(
@@ -156,6 +162,7 @@ def _job(**kw) -> BackupJob:
     return BackupJob(**base)
 
 
+@posix_only
 def test_freshness_fresh_via_dest_mtime(tmp_path):
     dest = tmp_path / "backupdir"
     dest.mkdir()
@@ -166,6 +173,7 @@ def test_freshness_fresh_via_dest_mtime(tmp_path):
     assert j.last_run_evidence == "dest-mtime"
 
 
+@posix_only
 def test_freshness_stale_when_old(tmp_path):
     import os
     dest = tmp_path / "old"
@@ -214,6 +222,7 @@ def test_integrity_dump_ok_and_empty(tmp_path):
     assert j2.integrity == "failed"
 
 
+@posix_only
 def test_integrity_rsync_local_and_remote(tmp_path):
     j = _job(tool="rsync", dest=str(tmp_path))
     bk.check_integrity(j)
@@ -311,6 +320,7 @@ class _FakeStore:
 
 def test_scan_empty_box_warns(monkeypatch):
     monkeypatch.setattr(bk, "detect_jobs", lambda: [])
+    monkeypatch.setattr(bk, "detection_supported", lambda: True)
     store = _FakeStore()
     rep = bk.scan(None, store)
     assert rep["no_jobs"] is True

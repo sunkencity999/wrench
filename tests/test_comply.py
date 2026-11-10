@@ -10,6 +10,10 @@ import pytest
 from wrench import comply as cm
 from wrench.comply import Rule
 
+import os
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX paths / permission bits")
+
 
 # ---- fixtures ----------------------------------------------------------------
 
@@ -21,6 +25,7 @@ def _rule(check: dict, sev: str = "medium", rid: str = "t.rule") -> Rule:
 # ---- file_mode / file_owner ---------------------------------------------------
 
 
+@posix_only
 def test_file_mode_pass_and_fail(tmp_path):
     f = tmp_path / "f"
     f.write_text("x")
@@ -42,6 +47,7 @@ def test_file_mode_missing_is_skip_or_ok(tmp_path):
                               "missing_ok": True})).status == "pass"
 
 
+@posix_only
 def test_file_owner(tmp_path):
     import pwd
     me = pwd.getpwuid(__import__("os").getuid()).pw_name
@@ -270,6 +276,7 @@ def _mini_pack(monkeypatch, tmp_path, rules):
          "platforms": ["linux", "macos", "windows"], "rules": rules}))
 
 
+@posix_only
 def test_scoring_ignores_skips(monkeypatch, tmp_path):
     _mini_pack(monkeypatch, tmp_path, [
         {"id": "p1", "title": "passes", "severity": "low", "rationale": "",
