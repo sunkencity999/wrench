@@ -331,7 +331,7 @@ def test_execute_happy_path(cfg, root, monkeypatch):
     # backup exists and holds the ORIGINAL content
     bdir = Path(res.backup_dir)
     assert (bdir / "manifest.json").exists()
-    backed = bdir / str(tgt).lstrip("/")
+    backed = bdir / bp.backup_relpath(str(tgt))
     assert backed.read_text() == "keep1\nchange me\nkeep2\n"
     # audit written + drift snapshot labeled
     rows = bp.history(cfg)
@@ -555,7 +555,7 @@ def test_draft_happy(cfg, root):
 
 def test_draft_retry_on_bad_context(cfg, root):
     tgt = root / "a.conf"
-    tgt.write_text("real line\n")
+    tgt.write_bytes(b"real line\n")
     bad = _mkdiff(str(tgt), ["imaginary line"], ["new"])
     good = _mkdiff(str(tgt), ["real line"], ["new line"])
     client = FakeClient(bad, good)

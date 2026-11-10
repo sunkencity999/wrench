@@ -26,7 +26,7 @@ detail in CHANGELOG.md; the short version:
 ### Honest status
 - Linux was NOT re-run on real hardware in this pass (macOS box only); the
   Linux suite runs in CI.
-- Windows: implemented + unit-tested + CI smoke (non-gating). No native pass.
+- Windows: implemented + unit-tested + CI green and gating (2026-11-10). No native pass.
 - Not run natively on macOS: `install-service` (it would schedule patrols
   against the operator's real data), `fixxer` apply, any LLM provider.
 - Known gaps left open: no macOS/Windows auth-log reader (reported as "not

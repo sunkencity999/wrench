@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — Windows
+
+- **Blueprints work on Windows.** Every drive path was refused as "not an
+  absolute, normalized path". Targets may now be `C:\…` or `C:/…`; UNC shares,
+  device paths and drive-relative paths are refused; scripts, executables,
+  scheduled tasks, registry hives and credential stores are never a target.
+  Backups were being joined onto an absolute path — they now live under the
+  backup directory.
+- **CRLF files keep their line endings.** A diff against a CRLF file failed
+  with "hunk context not found"; it now applies and writes CRLF back.
+- **Piped output no longer crashes.** `wrench comply > report.txt` raised
+  `UnicodeEncodeError` on a non-UTF-8 code page; unencodable glyphs are now
+  substituted.
+- `file_mode` / `file_owner` compliance checks and the world-writable scan
+  report "skipped" on Windows instead of judging POSIX bits that do not exist.
+- The Windows CI job is green and now gates.
+
+### Changed
+
+- wrench describes itself as the sysadmin's right hand rather than "your
+  systems administrator".
+- The sshd compliance check reads drop-ins beside the file being checked.
+
 ## 3.0.0 — the enterprise release
 
 The theme: every machine, trusted. wrench now runs correctly on macOS as well

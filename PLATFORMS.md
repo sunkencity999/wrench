@@ -70,6 +70,8 @@ no Time Machine awareness, a patrol crash. Not yet run natively: `install-servic
 
 **Windows** shares the platform abstraction (`wrench/platforms.py`), has its own
 compliance pack and probes, and runs the test suite and a CLI smoke in CI on
-every push — as a tracked, non-gating job until it is green. It has **not** had
-a hands-on native pass. If you run wrench on Windows, please open an issue with
+every push, where it is green and gates like Linux and macOS. Checks that have
+no Windows meaning (POSIX mode bits, owners, cron-based backup detection) report
+"skipped" there rather than passing or failing. It has **not** had a hands-on
+native pass. If you run wrench on Windows, please open an issue with
 your `wrench doctor` output, good or bad.
