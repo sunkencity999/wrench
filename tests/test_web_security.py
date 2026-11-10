@@ -157,9 +157,14 @@ def test_login_sets_a_hardened_session_cookie(locked_server):
     session = cookie.split(";")[0]
     code, _, body = _req(locked_server + "/api/overview", headers={"Cookie": session})
     assert code == 200 and json.loads(body)["role"] == "admin"
-    # a tampered cookie (role upgrade) is rejected
-    forged = session.replace("admin.", "viewer.").replace("viewer.", "admin.", 1)[:-2] + "00"
+    # a tampered cookie is rejected: a changed signature, and a changed role
+    # under the original signature. (Always flip the last digit — overwriting
+    # it with a constant left the cookie unchanged one run in 256.)
+    forged = session[:-1] + ("0" if session[-1] != "0" else "1")
     code, _, _ = _req(locked_server + "/api/overview", headers={"Cookie": forged})
+    assert code == 401
+    code, _, _ = _req(locked_server + "/api/overview",
+                      headers={"Cookie": session.replace("admin.", "viewer.", 1)})
     assert code == 401
 
 
