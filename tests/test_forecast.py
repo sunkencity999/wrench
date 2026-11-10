@@ -211,7 +211,10 @@ def test_cert_severity_ladder():
     assert forecast._cert_severity(None) == "none"
 
 
-def test_cert_incidents_from_store(tmp_path):
+def test_cert_incidents_from_store(tmp_path, monkeypatch):
+    # keep the host's own certificates out of the store
+    from wrench import certs
+    monkeypatch.setattr(certs, "cached_inventory", lambda *a, **k: [])
     st = Store(tmp_path / "f.db")
     st.upsert_cert({"path": "/etc/ssl/a.pem", "subject": "CN=api.example.com",
                     "days_left": 5, "not_after": time.time() + 5 * DAY,

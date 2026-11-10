@@ -257,7 +257,9 @@ def _check_sshd_config(c: dict) -> tuple[str, str]:
         return "skip", why
     eff = _sshd_effective(text)
     # fold in drop-ins (Include is default on modern Ubuntu, first-wins order)
-    for inc in sorted(_glob.glob("/etc/ssh/sshd_config.d/*.conf")):
+    # — the drop-in directory sits beside the file being checked, so a pack
+    # pointed at another path never picks up this host's /etc/ssh drop-ins
+    for inc in sorted(_glob.glob(_glob.escape(str(path) + ".d") + "/*.conf")):
         t2, _ = _read(inc)
         if t2:
             for k, v in _sshd_effective(t2).items():
