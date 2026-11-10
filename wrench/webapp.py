@@ -1,515 +1,65 @@
-"""wrench web — local dashboard. stdlib http.server + a single dark page.
+"""wrench web — the dashboard, the fleet console and their JSON API.
 
-Endpoints:
-  /                 dashboard
-  /api/summary      latest sample + counts
-  /api/timeline     24h of os samples (downsampled)
-  /api/drift        recent drift events
-  /api/patrols      recent patrol reports
-  /api/actions      action log
-  /api/tokens       token spend by model
-  /api/webintel     cached CVE/EOL scan
-  /api/notifications          unread patrol notifications (toast funnel)
-  POST /api/notifications/read  mark notifications read ({"ids": [...] } or all)
-  POST /api/chat    talk to the agent (same loop as `wrench chat`)
-  /metrics          Prometheus text exposition (see wrench/metrics.py)
+stdlib ``http.server`` only: no framework, no build step, no CDN. Pages live in
+``wrench/web/`` and are served with a per-response CSP nonce.
 
-Security posture: binds 127.0.0.1 by default; /api/chat additionally enforces
-localhost Host/Origin (same-origin only) and a request-size cap.
+Pages
+  /                     this machine: health score, posture, vitals, patrols
+  /fleet                fleet console (when this install is a hub)
+  /login                token sign-in (only when access control is on)
+
+API (JSON; every route needs a credential when access control is on)
+  GET  /healthz                   liveness for load balancers (no auth, no data)
+  GET  /api/overview              host, role, posture, latest sample, brain, audit
+  GET  /api/timeline?hours=24     downsampled os samples (1h / 6h / 24h / 7d)
+  GET  /api/patrols | /api/drift | /api/actions | /api/tokens | /api/webintel
+  GET  /api/posture               the health score and its pillars
+  GET  /api/notifications[?all=1] unread (or all) notifications
+  POST /api/notifications/read    mark read                         [admin]
+  POST /api/chat                  talk to the agent                 [admin]
+  GET  /api/fleet/nodes           fleet summary + nodes
+  GET  /api/fleet/node?id=        one node + report history
+  GET  /api/fleet/export.csv      node inventory as CSV
+  POST /api/fleet/forget          retire a node                     [admin]
+  POST /api/fleet/report          node report ingest (HMAC-signed, no session)
+  GET  /metrics                   Prometheus exposition
+
+Access control, Host validation, CSRF and response headers: wrench/webauth.py.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import platform
+import secrets
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from . import notifications
+from . import __version__, notifications, webauth
 from .store import Store
 
-DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wrench — dashboard</title>
-<style>
-:root { --bg:#0b0e14; --panel:#11151f; --border:#1f2633; --fg:#dce3ee; --dim:#7d8799;
-  --ok:#3fb950; --warn:#d29922; --crit:#f85149; --accent:#58a6ff; --mag:#bc8cff; --cyan:#39c5cf;
-  --shadow:0 10px 30px rgba(0,0,0,.45); }
-html[data-theme="light"] { --bg:#f3f5f9; --panel:#ffffff; --border:#d9dfe8; --fg:#1a2230;
-  --dim:#5c6775; --accent:#0969da; --mag:#8250df; --cyan:#1b7c83;
-  --shadow:0 10px 30px rgba(30,40,60,.12); }
-* { box-sizing:border-box; margin:0; }
-body { background:var(--bg); color:var(--fg);
-  font:14px/1.5 'SF Mono',ui-monospace,Menlo,Consolas,monospace; padding:1.2rem;
-  transition:background .25s,color .25s; }
-header { display:flex; align-items:baseline; gap:1rem; margin-bottom:1.2rem; flex-wrap:wrap; }
-header h1 { font-size:1.4rem; } header .dim { color:var(--dim); font-size:.85rem; }
-header .right { margin-left:auto; display:flex; gap:.6rem; align-items:center; }
-.kbd { border:1px solid var(--border); border-bottom-width:2px; border-radius:5px;
-  padding:0 .45em; font-size:.78rem; color:var(--dim); background:var(--panel); }
-.pulse { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--ok);
-  animation:pulse 2s infinite; margin-right:.4rem; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:1rem; }
-.panel { background:var(--panel); border:1px solid var(--border); border-radius:12px;
-  padding:1rem 1.2rem; overflow:hidden; transition:border-color .2s, transform .2s; }
-.panel:hover { border-color:color-mix(in srgb, var(--accent) 35%, var(--border)); }
-.panel h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.12em;
-  color:var(--dim); margin-bottom:.8rem; }
-.panel.wide { grid-column:1/-1; }
-.gauges { display:flex; gap:1.5rem; flex-wrap:wrap; }
-.gauge { text-align:center; }
-.gauge .num { font-size:1.7rem; font-weight:bold; }
-.gauge .lbl { color:var(--dim); font-size:.75rem; text-transform:uppercase; }
-.ok { color:var(--ok); } .warn { color:var(--warn); } .crit { color:var(--crit); }
-svg text { font:10px ui-monospace,monospace; fill:var(--dim); }
-.feed { max-height:300px; overflow-y:auto; }
-.feed-item { padding:.45rem 0; border-bottom:1px solid var(--border); font-size:.85rem; }
-.feed-item:last-child { border:none; }
-.feed-item .when { color:var(--dim); font-size:.75rem; }
-.badge { display:inline-block; padding:0 .5rem; border-radius:5px; font-size:.75rem;
-  font-weight:bold; margin-right:.4rem; }
-.badge.ok { background:#12301c; color:var(--ok); } .badge.attention { background:#33290f; color:var(--warn); }
-.badge.critical,.badge.error { background:#381417; color:var(--crit); }
-.badge.drift { background:#15232f; color:var(--accent); }
-.badge.action { background:#241b33; color:var(--mag); }
-.badge.vuln { background:#381417; color:var(--crit); }
-.badge.eol { background:#33290f; color:var(--warn); }
-.tokens-row { display:flex; justify-content:space-between; padding:.3rem 0;
-  border-bottom:1px solid var(--border); font-size:.85rem; }
-.tokens-row:last-child { border:none; }
-.big { font-size:1.6rem; font-weight:bold; color:var(--mag); }
-details summary { cursor:pointer; color:var(--accent); font-size:.8rem; }
-
-/* ---- notification toasts ---- */
-#toasts { position:fixed; top:1rem; right:1rem; z-index:70; display:flex;
-  flex-direction:column; gap:.6rem; max-width:340px; }
-.toast { background:var(--panel); border:1px solid var(--border);
-  border-left:4px solid var(--warn); border-radius:10px; padding:.7rem .9rem;
-  font-size:.85rem; box-shadow:var(--shadow); cursor:pointer;
-  animation:toast-in .25s ease-out; transition:opacity .5s; }
-.toast.critical, .toast.error { border-left-color:var(--crit); }
-.toast .when { color:var(--dim); font-size:.72rem; margin-top:.3rem; }
-.toast.fade { opacity:0; }
-@keyframes toast-in { from { opacity:0; transform:translateX(24px); } to { opacity:1; } }
-details pre { white-space:pre-wrap; font-size:.75rem; color:var(--dim);
-  margin-top:.5rem; max-height:260px; overflow-y:auto; }
-footer { color:var(--dim); font-size:.75rem; margin-top:1.4rem; text-align:center; }
-a { color:var(--accent); }
-
-/* ---- chat ---- */
-#chat-fab { position:fixed; right:1.4rem; bottom:1.4rem; width:58px; height:58px;
-  border-radius:50%; background:var(--accent); color:#fff; font-size:1.7rem; border:none;
-  cursor:pointer; box-shadow:var(--shadow); z-index:50; transition:transform .18s;
-  display:flex; align-items:center; justify-content:center; }
-#chat-fab:hover { transform:scale(1.08) rotate(-12deg); }
-#chat-panel { position:fixed; right:1.4rem; bottom:5.6rem; width:min(420px, calc(100vw - 2.8rem));
-  height:min(560px, calc(100vh - 8rem)); background:var(--panel); border:1px solid var(--border);
-  border-radius:16px; box-shadow:var(--shadow); z-index:51; display:none;
-  flex-direction:column; overflow:hidden;
-  transform-origin:bottom right; }
-#chat-panel.open { display:flex; animation:chat-in .22s ease-out; }
-@keyframes chat-in { from { opacity:0; transform:scale(.88) translateY(12px); }
-  to { opacity:1; transform:none; } }
-#chat-head { padding:.8rem 1rem; border-bottom:1px solid var(--border);
-  display:flex; align-items:center; gap:.6rem; }
-#chat-head .t { font-weight:bold; }
-#chat-head .s { color:var(--dim); font-size:.75rem; }
-#chat-head button { margin-left:auto; background:none; border:none; color:var(--dim);
-  font-size:1.1rem; cursor:pointer; }
-#chat-log { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column; gap:.7rem; }
-.msg { max-width:88%; padding:.55rem .8rem; border-radius:12px; font-size:.86rem;
-  white-space:pre-wrap; word-wrap:break-word; animation:msg-in .18s ease-out; }
-@keyframes msg-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; } }
-.msg.you { align-self:flex-end; background:var(--accent); color:#fff;
-  border-bottom-right-radius:4px; }
-.msg.bot { align-self:flex-start; background:color-mix(in srgb, var(--panel) 60%, var(--bg));
-  border:1px solid var(--border); border-bottom-left-radius:4px; }
-.msg.bot .meta { display:block; color:var(--dim); font-size:.7rem; margin-top:.35rem; }
-.typing { align-self:flex-start; display:flex; gap:.25rem; padding:.7rem .9rem; }
-.typing span { width:7px; height:7px; border-radius:50%; background:var(--dim);
-  animation:blink 1.2s infinite; }
-.typing span:nth-child(2){ animation-delay:.2s } .typing span:nth-child(3){ animation-delay:.4s }
-@keyframes blink { 0%,80%,100%{opacity:.25} 40%{opacity:1} }
-#chat-form { display:flex; gap:.5rem; padding:.7rem; border-top:1px solid var(--border); }
-#chat-input { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--fg);
-  border-radius:9px; padding:.55rem .7rem; font:inherit; outline:none; }
-#chat-input:focus { border-color:var(--accent); }
-#chat-send { background:var(--accent); border:none; color:#fff; border-radius:9px;
-  padding:0 1rem; cursor:pointer; font:inherit; font-weight:bold; }
-#chat-send:disabled { opacity:.5; cursor:default; }
-
-/* ---- shortcuts overlay ---- */
-#overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:60; display:none;
-  align-items:center; justify-content:center; }
-#overlay.open { display:flex; }
-#overlay .card { background:var(--panel); border:1px solid var(--border); border-radius:14px;
-  padding:1.4rem 1.8rem; box-shadow:var(--shadow); min-width:300px; }
-#overlay h3 { margin-bottom:.9rem; font-size:1rem; }
-#overlay .row { display:flex; justify-content:space-between; gap:2rem; padding:.3rem 0;
-  font-size:.88rem; color:var(--dim); }
-#overlay .row .kbd { color:var(--fg); }
-</style></head><body>
-<header>
-  <h1>🔧 wrench</h1>
-  <span class="dim"><span class="pulse"></span>live · <span id="host">…</span> · refreshes every 15s</span>
-  <span class="dim" id="updated"></span>
-  <span class="right">
-    <span class="dim">press <span class="kbd">?</span> for shortcuts</span>
-    <button class="kbd" id="theme-btn" title="toggle theme (t)" style="cursor:pointer">◐</button>
-  </span>
-</header>
-<div class="grid">
-  <div class="panel wide">
-    <h2>vitals — last 24h</h2>
-    <div class="gauges" id="gauges"></div>
-    <div id="charts" style="margin-top:1rem"></div>
-  </div>
-  <div class="panel"><h2>patrol feed</h2><div class="feed" id="patrols"></div></div>
-  <div class="panel"><h2>drift feed — what changed on this box</h2><div class="feed" id="drift"></div></div>
-  <div class="panel"><h2>security intel — OSV.dev + endoflife.date</h2><div class="feed" id="webintel"></div></div>
-  <div class="panel"><h2>agent action log</h2><div class="feed" id="actions"></div></div>
-  <div class="panel"><h2>token spend</h2><div id="tokens"></div></div>
-</div>
-<footer>wrench — an intentional local sysadmin agent ·
-<a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a></footer>
-
-<div id="toasts" aria-live="polite"></div>
-<button id="chat-fab" title="chat with wrench (c)">🔧</button>
-<div id="chat-panel" role="dialog" aria-label="chat with wrench">
-  <div id="chat-head"><span>🔧</span><div><div class="t">wrench</div>
-    <div class="s">the sysadmin that lives here</div></div>
-    <button id="chat-close" title="close (Esc)">✕</button></div>
-  <div id="chat-log"></div>
-  <form id="chat-form"><input id="chat-input" autocomplete="off"
-    placeholder="ask me anything about this machine…" maxlength="2000">
-  <button id="chat-send" type="submit">▸</button></form>
-</div>
-
-<div id="overlay"><div class="card">
-  <h3>keyboard shortcuts</h3>
-  <div class="row"><span>toggle chat</span><span class="kbd">c</span></div>
-  <div class="row"><span>refresh data</span><span class="kbd">r</span></div>
-  <div class="row"><span>toggle theme</span><span class="kbd">t</span></div>
-  <div class="row"><span>this overlay</span><span class="kbd">?</span></div>
-  <div class="row"><span>close panels</span><span class="kbd">Esc</span></div>
-</div></div>
-
-<script>
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const ago = ts => { const d = Date.now()/1000 - ts;
-  if (d < 90) return Math.round(d)+'s ago';
-  if (d < 5400) return Math.round(d/60)+'m ago';
-  if (d < 172800) return (d/3600).toFixed(1)+'h ago';
-  return (d/86400).toFixed(1)+'d ago'; };
-const clsFor = p => p < 70 ? 'ok' : p < 90 ? 'warn' : 'crit';
-
-function chart(title, pts, color, unit='%', maxY) {
-  if (!pts.length) return '';
-  const W = 860, H = 90, PL = 44, PB = 14;
-  const t0 = pts[0][0], t1 = pts[pts.length-1][0] || t0+1;
-  const ymax = maxY ?? Math.max(...pts.map(p=>p[1]), 1) * 1.15;
-  const X = t => PL + (t - t0) / Math.max(t1 - t0, 1) * (W - PL - 8);
-  const Y = v => (H - PB) - v / ymax * (H - PB - 12);
-  const path = pts.map((p,i) => (i?'L':'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join('');
-  const area = path + `L${X(t1).toFixed(1)},${H-PB}L${X(t0).toFixed(1)},${H-PB}Z`;
-  const last = pts[pts.length-1][1];
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block">
-    <text x="0" y="12">${esc(title)}</text>
-    <text x="${W-8}" y="12" text-anchor="end" style="fill:${color};font-weight:bold">${last.toFixed(1)}${unit}</text>
-    <line x1="${PL}" y1="${H-PB}" x2="${W-8}" y2="${H-PB}" stroke="var(--border)"/>
-    <path d="${area}" fill="${color}" opacity="0.12"/>
-    <path d="${path}" fill="none" stroke="${color}" stroke-width="1.6"/>
-  </svg>`;
-}
-
-async function j(u) { const r = await fetch(u); return r.json(); }
-
-async function refresh() {
-  try {
-    const [sum, tl, drift, patrols, actions, tokens, wi] = await Promise.all([
-      j('/api/summary'), j('/api/timeline'), j('/api/drift'),
-      j('/api/patrols'), j('/api/actions'), j('/api/tokens'), j('/api/webintel')]);
-
-    $('host').textContent = sum.host || 'localhost';
-    $('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
-
-    const os = sum.os || {};
-    const g = [];
-    const gauge = (lbl, v, unit='%') =>
-      g.push(`<div class="gauge"><div class="num ${clsFor(v)}">${(v??0).toFixed(0)}<span style="font-size:.9rem">${unit}</span></div><div class="lbl">${lbl}</div></div>`);
-    gauge('cpu', os.cpu_pct); gauge('mem', os.mem_pct); gauge('swap', os.swap_pct);
-    for (const [m,p] of Object.entries(os.disk_pct || {})) gauge('disk '+m, p);
-    g.push(`<div class="gauge"><div class="num" style="color:var(--cyan)">${os.n_procs??'—'}</div><div class="lbl">procs</div></div>`);
-    g.push(`<div class="gauge"><div class="num" style="color:var(--cyan)">${os.uptime_s?Math.round(os.uptime_s/3600)+'h':'—'}</div><div class="lbl">uptime</div></div>`);
-    $('gauges').innerHTML = g.join('');
-
-    $('charts').innerHTML =
-      chart('cpu %', tl.map(s=>[s.ts, s.cpu_pct||0]), 'var(--accent)', '%', 100) +
-      chart('mem %', tl.map(s=>[s.ts, s.mem_pct||0]), 'var(--mag)', '%', 100) +
-      chart('net ↓ KB/s', tl.map(s=>[s.ts, s.net_recv_rate_kbs||0]), 'var(--cyan)', '') +
-      chart('load 1m', tl.map(s=>[s.ts, s.load_1m||0]), 'var(--warn)', '');
-
-    $('patrols').innerHTML = patrols.length ? patrols.map(p => `
-      <div class="feed-item" data-ts="${p.ts}"><span class="badge ${esc(p.status)}">${esc(p.status)}</span>${esc(p.summary)}
-      <div class="when">${ago(p.ts)} · ${esc(p.model||'')} · ${p.tokens} tok</div>
-      <details><summary>full report</summary><pre>${esc(p.report_md)}</pre></details></div>`).join('')
-      : '<div class="feed-item dim">no patrols yet — run <b>wrench patrol</b></div>';
-
-    $('drift').innerHTML = drift.length ? drift.map(d => `
-      <div class="feed-item"><span class="badge drift">${esc(d.kind)}</span>${esc(d.summary)}
-      <div class="when">${ago(d.ts)}</div>
-      ${Array.isArray(d.details) && d.details.length ? `<details><summary>${d.details.length} change(s)</summary><pre>${esc(d.details.join('\n'))}</pre></details>` : ''}</div>`).join('')
-      : '<div class="feed-item dim">no drift recorded — this box is exactly as you left it</div>';
-
-    if (wi && wi.ts) {
-      const items = [];
-      for (const v of (wi.vulns || []).slice(0, 12))
-        items.push(`<div class="feed-item"><span class="badge vuln">CVE</span><b>${esc(v.package)}</b> ${esc(v.version)}
-          — ${esc((v.aliases||[]).join(', ') || v.vuln_id)}${v.fixed ? ` <span class="ok">fixed in ${esc(v.fixed)}</span>` : ''}
-          <div class="when">${esc(v.summary || '')}</div></div>`);
-      if ((wi.vulns || []).length > 12)
-        items.push(`<div class="feed-item dim">…and ${wi.vulns.length - 12} more — run <b>wrench cve</b></div>`);
-      for (const e of (wi.eol || []))
-        items.push(`<div class="feed-item"><span class="badge ${e.is_eol ? 'eol' : 'ok'}">${e.is_eol ? 'EOL' : 'OK'}</span>${esc(e.label)}</div>`);
-      $('webintel').innerHTML = items.join('') +
-        `<div class="feed-item when">scanned ${ago(wi.ts)} · ${wi.packages_checked} packages${wi.online === false ? ' · offline (cached)' : ''}</div>`;
-    } else {
-      $('webintel').innerHTML = '<div class="feed-item dim">no scan yet — run <b>wrench cve</b></div>';
-    }
-
-    $('actions').innerHTML = actions.length ? actions.map(a => `
-      <div class="feed-item"><span class="badge action">${esc(a.kind)}</span><code>${esc(a.command)}</code>
-      <div class="when">${ago(a.ts)} · tier ${esc(a.tier)} · ${a.approved?'✓ ran':'✗ blocked'}</div></div>`).join('')
-      : '<div class="feed-item dim">no agent actions yet</div>';
-
-    const total = tokens.reduce((s,t)=>s+t.total, 0);
-    $('tokens').innerHTML = `<div class="big">${total.toLocaleString()}</div>
-      <div class="dim" style="margin-bottom:.6rem">total tokens across ${tokens.reduce((s,t)=>s+t.calls,0)} calls</div>`
-      + tokens.map(t => `<div class="tokens-row"><span>${esc(t.provider)}/${esc(t.model)}</span>
-        <span>${t.total.toLocaleString()} <span class="dim">(${t.calls} calls)</span></span></div>`).join('');
-  } catch (e) { console.error(e); }
-  pollNotifs();
-}
-refresh(); setInterval(refresh, 15000);
-
-/* ---- notification toasts ("wrench taps you on the shoulder") ---- */
-const seenNotif = new Set();
-async function pollNotifs() {
-  try {
-    const list = await j('/api/notifications');
-    for (const n of list) {
-      if (seenNotif.has(n.id)) continue;
-      seenNotif.add(n.id);
-      showToast(n);
-    }
-  } catch (e) { /* inbox unavailable — stay quiet */ }
-}
-function showToast(n) {
-  const t = document.createElement('div');
-  t.className = 'toast ' + esc(n.severity);
-  t.innerHTML = `<b>\u{1F514} patrol: ${esc(n.severity)}</b><div>${esc(n.summary)}</div>` +
-    `<div class="when">${ago(n.ts)} · click to open the report</div>`;
-  t.onclick = async () => {
-    try {
-      await fetch('/api/notifications/read', { method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ids: [n.id] }) });
-    } catch (e) { /* best effort */ }
-    t.remove();
-    openPatrol(n.report_id);
-  };
-  $('toasts').appendChild(t);
-  setTimeout(() => { t.classList.add('fade'); setTimeout(() => t.remove(), 600); }, 25000);
-}
-function openPatrol(ts) {
-  const el = document.querySelector(`#patrols .feed-item[data-ts="${ts}"]`);
-  if (!el) return;
-  const d = el.querySelector('details');
-  if (d) d.open = true;
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-}
-
-/* ---- theme ---- */
-function setTheme(t) { document.documentElement.dataset.theme = t;
-  localStorage.setItem('wrench-theme', t); }
-setTheme(localStorage.getItem('wrench-theme') || 'dark');
-const toggleTheme = () =>
-  setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
-$('theme-btn').onclick = toggleTheme;
-
-/* ---- chat ---- */
-let chatBusy = false, greeted = false;
-const panel = $('chat-panel'), log = $('chat-log'), input = $('chat-input');
-function addMsg(cls, text, meta) {
-  const d = document.createElement('div');
-  d.className = 'msg ' + cls;
-  d.textContent = text;
-  if (meta) { const m = document.createElement('span'); m.className = 'meta';
-    m.textContent = meta; d.appendChild(m); }
-  log.appendChild(d); log.scrollTop = log.scrollHeight;
-  return d;
-}
-function toggleChat(open) {
-  const want = open ?? !panel.classList.contains('open');
-  panel.classList.toggle('open', want);
-  if (want) {
-    if (!greeted) { greeted = true;
-      addMsg('bot', "I'm wrench. I live here. Ask me anything about this machine — " +
-        "what's eating RAM, what changed overnight, whether that port should be open."); }
-    input.focus();
-  }
-}
-$('chat-fab').onclick = () => toggleChat();
-$('chat-close').onclick = () => toggleChat(false);
-$('chat-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const q = input.value.trim();
-  if (!q || chatBusy) return;
-  input.value = '';
-  addMsg('you', q);
-  chatBusy = true; $('chat-send').disabled = true;
-  const t = document.createElement('div'); t.className = 'typing';
-  t.innerHTML = '<span></span><span></span><span></span>';
-  log.appendChild(t); log.scrollTop = log.scrollHeight;
-  try {
-    const r = await fetch('/api/chat', { method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ message: q }) });
-    const d = await r.json();
-    t.remove();
-    if (d.error) addMsg('bot', '⚠ ' + d.error);
-    else addMsg('bot', d.reply, `${d.model || ''} · ${d.tokens} tokens · ${d.steps} tool call(s)`);
-  } catch (err) { t.remove(); addMsg('bot', '⚠ ' + err); }
-  chatBusy = false; $('chat-send').disabled = false; input.focus();
-};
-
-/* ---- keyboard shortcuts ---- */
-const overlay = $('overlay');
-overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove('open'); };
-document.addEventListener('keydown', (e) => {
-  if (e.target === input) {
-    if (e.key === 'Escape') { toggleChat(false); input.blur(); }
-    return;
-  }
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key === '?') overlay.classList.toggle('open');
-  else if (e.key === 'c') toggleChat();
-  else if (e.key === 'r') { refresh(); }
-  else if (e.key === 't') toggleTheme();
-  else if (e.key === 'Escape') { overlay.classList.remove('open'); toggleChat(false); }
-  else return;
-  e.preventDefault();
-});
-</script></body></html>
-"""
+WEB_DIR = Path(__file__).parent / "web"
+MAX_BODY = 16 * 1024
+MAX_CHAT_BODY = MAX_BODY          # kept for callers of the 2.x name
+CHAT_HISTORY_MAX = 12
+_RANGES = {1, 6, 24, 168}
 
 
-FLEET_DISABLED_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>wrench fleet</title><style>body{background:#0b0e14;color:#dce3ee;
-font:15px/1.6 ui-monospace,monospace;max-width:640px;margin:4rem auto;padding:0 1rem}
-a{color:#58a6ff}code{background:#11151f;border:1px solid #1f2633;border-radius:6px;
-padding:.1rem .4rem}</style></head><body>
-<h1>🔧 wrench fleet — not enabled here</h1>
-<p>This wrench install is not configured as a fleet <b>hub</b>. Add an
-<code>[fleet]</code> section with <code>authorized_tokens</code> to
-<code>~/.config/wrench/config.toml</code>, then run <code>wrench fleet serve</code>.</p>
-<p>Generate a node token with <code>wrench fleet token</code>.</p>
-</body></html>"""
-
-FLEET_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wrench fleet</title>
-<style>
-:root { --bg:#0b0e14; --panel:#11151f; --border:#1f2633; --fg:#dce3ee; --dim:#7d8799;
-  --green:#3fb950; --yellow:#d29922; --red:#f85149; --silent:#8b949e; --accent:#58a6ff;
-  --shadow:0 10px 30px rgba(0,0,0,.45); }
-* { box-sizing:border-box; margin:0; }
-body { background:var(--bg); color:var(--fg);
-  font:14px/1.5 ui-monospace,Menlo,Consolas,monospace; padding:1.2rem; }
-header { display:flex; align-items:baseline; gap:1rem; margin-bottom:1.2rem; flex-wrap:wrap; }
-header h1 { font-size:1.4rem; } header .dim { color:var(--dim); font-size:.85rem; }
-.summary { display:flex; gap:1.4rem; margin-bottom:1.2rem; flex-wrap:wrap; }
-.sum { display:flex; align-items:center; gap:.5rem; font-size:1.1rem; }
-.dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
-.dot.green{background:var(--green)} .dot.yellow{background:var(--yellow)}
-.dot.red{background:var(--red)} .dot.silent{background:var(--silent)}
-.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:1rem; }
-.node { background:var(--panel); border:1px solid var(--border); border-radius:12px;
-  padding:1rem 1.1rem; border-left:5px solid var(--silent); box-shadow:var(--shadow); }
-.node.green{border-left-color:var(--green)} .node.yellow{border-left-color:var(--yellow)}
-.node.red{border-left-color:var(--red)} .node.silent{border-left-color:var(--silent)}
-.node h3 { font-size:1.05rem; display:flex; align-items:center; gap:.5rem; }
-.node .host { color:var(--dim); font-size:.8rem; font-weight:normal; margin-left:auto; }
-.node .status { text-transform:uppercase; font-size:.72rem; letter-spacing:.1em;
-  padding:.1rem .5rem; border-radius:5px; }
-.status.green{background:#12301c;color:var(--green)} .status.yellow{background:#33290f;color:var(--yellow)}
-.status.red{background:#381417;color:var(--red)} .status.silent{background:#1b2027;color:var(--silent)}
-.node .sumline { margin:.6rem 0; font-size:.88rem; }
-.node .meta { color:var(--dim); font-size:.76rem; }
-.node .finding { font-size:.8rem; padding:.15rem 0; border-top:1px solid var(--border); margin-top:.3rem; }
-.node .finding.critical,.node .finding.error{color:var(--red)} .node .finding.warning{color:var(--yellow)}
-footer { color:var(--dim); font-size:.75rem; margin-top:1.4rem; text-align:center; }
-a { color:var(--accent); }
-.empty { color:var(--dim); padding:2rem; text-align:center; }
-</style></head><body>
-<header>
-  <h1>🔧 wrench fleet</h1>
-  <span class="dim">hub: <span id="host">…</span> · refreshes every 10s ·
-    <a href="/">← box dashboard</a></span>
-  <span class="dim" id="updated"></span>
-</header>
-<div class="summary" id="summary"></div>
-<div class="grid" id="grid"></div>
-<footer>wrench fleet — many nodes, one view ·
-<a href="https://github.com/sunkencity999/wrench">github.com/sunkencity999/wrench</a></footer>
-<script>
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const ago = s => { const d = s;
-  if (d < 90) return Math.round(d)+'s ago';
-  if (d < 5400) return Math.round(d/60)+'m ago';
-  if (d < 172800) return (d/3600).toFixed(1)+'h ago';
-  return (d/86400).toFixed(1)+'d ago'; };
-async function refresh() {
-  try {
-    const r = await fetch('/api/fleet/nodes'); const d = await r.json();
-    $('host').textContent = d.host || 'localhost';
-    $('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
-    const s = d.summary || {};
-    $('summary').innerHTML =
-      `<span class="sum"><span class="dot green"></span>${s.green||0} healthy</span>` +
-      `<span class="sum"><span class="dot yellow"></span>${s.yellow||0} attention</span>` +
-      `<span class="sum"><span class="dot red"></span>${s.red||0} critical</span>` +
-      `<span class="sum"><span class="dot silent"></span>${s.silent||0} silent</span>` +
-      `<span class="sum dim">${s.total||0} nodes</span>`;
-    const nodes = d.nodes || [];
-    if (!nodes.length) { $('grid').innerHTML = '<div class="empty">no nodes have reported yet — run <b>wrench fleet report</b> on a node</div>'; return; }
-    $('grid').innerHTML = nodes.map(n => {
-      const g = n.gauges || {};
-      const disk = g.disk_pct ? Object.entries(g.disk_pct).map(([m,p])=>`${m} ${Math.round(p)}%`).join(' · ') : '';
-      const findings = (n.findings||[]).slice(0,3).map(f =>
-        `<div class="finding ${esc(f.severity)}">[${esc(f.severity)}] ${esc(f.text)}</div>`).join('');
-      return `<div class="node ${esc(n.color)}">
-        <h3>${esc(n.node_id)} <span class="host">${esc(n.hostname||'')}</span></h3>
-        <div style="margin:.4rem 0"><span class="status ${esc(n.color)}">${n.silent?'silent':esc(n.status)}</span>
-          <span class="meta"> · seen ${ago(n.age_s)}</span></div>
-        <div class="sumline">${esc(n.summary||'')}</div>
-        ${disk?`<div class="meta">${esc(disk)}${g.mem_pct!=null?` · mem ${Math.round(g.mem_pct)}%`:''}${g.cert_worst_days!=null?` · cert ${g.cert_worst_days}d`:''}</div>`:''}
-        ${findings}
-        <div class="meta" style="margin-top:.4rem">v${esc(n.wrench_version||'?')} · ${n.report_count||0} reports</div>
-      </div>`;
-    }).join('');
-  } catch (e) { console.error(e); }
-}
-refresh(); setInterval(refresh, 10000);
-</script></body></html>
-"""
+def _load_pages() -> dict[str, str]:
+    """Read the page templates once and inline the shared CSS/JS."""
+    css = (WEB_DIR / "base.css").read_text(encoding="utf-8")
+    js = (WEB_DIR / "base.js").read_text(encoding="utf-8")
+    pages = {}
+    for name in ("dashboard", "fleet", "login"):
+        html = (WEB_DIR / f"{name}.html").read_text(encoding="utf-8")
+        pages[name] = html.replace("__BASE_CSS__", css).replace("__BASE_JS__", js)
+    return pages
 
 
 def _downsample(samples: list[tuple[float, dict]], target: int = 240) -> list[dict]:
@@ -518,174 +68,357 @@ def _downsample(samples: list[tuple[float, dict]], target: int = 240) -> list[di
     else:
         step = len(samples) / target
         rows = [samples[int(i * step)] for i in range(target)]
+        if rows[-1] is not samples[-1]:
+            rows.append(samples[-1])        # always include the newest point
     keys = ("cpu_pct", "mem_pct", "swap_pct", "load_1m", "net_recv_rate_kbs",
             "net_sent_rate_kbs", "disk_root_pct", "n_procs")
     return [{"ts": ts, **{k: p.get(k) for k in keys}} for ts, p in rows]
 
 
-MAX_CHAT_BODY = 16 * 1024
-CHAT_HISTORY_MAX = 12
-
-
 def _is_local_origin(value: str | None) -> bool:
-    """True for missing Origin (curl, same-origin GET) or a localhost origin."""
+    """True for a missing Origin or a loopback origin. (Kept for callers/tests;
+    request handling uses ``webauth.AuthConfig.same_origin``.)"""
     if not value:
         return True
     host = urlparse(value).hostname or ""
     return host in ("127.0.0.1", "localhost", "::1")
 
 
-def make_handler(db_path, host_label: str, cfg=None):
+def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | None = None,
+                 fleet_hub: bool = False, os_label: str | None = None):
+    auth = auth or webauth.AuthConfig()
+    pages = _load_pages()
+    limiter = webauth.RateLimiter()
     chat_lock = threading.Lock()
-    chat_history: list[dict] = []   # session-scoped conversation memory
-    data_dir = Path(db_path).parent  # notifications inbox lives next to the db
+    chat_history: list[dict] = []          # session-scoped conversation memory
+    data_dir = Path(db_path).parent        # inbox + audit chain live next to the db
+
+    def hub_on(store) -> bool:
+        if cfg is None:
+            return False
+        from . import fleet
+        return fleet_hub or fleet.hub_active(store, fleet.settings_from(cfg))
 
     class Handler(BaseHTTPRequestHandler):
-        def _json(self, obj, code=200):
-            body = json.dumps(obj).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        server_version = "wrench"
+        sys_version = ""
+        protocol_version = "HTTP/1.1"
+        timeout = 30          # an idle or stalled client cannot pin a thread forever
 
-        def _html(self, text: str):
-            body = text.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        def setup(self):
+            # TLS handshakes happen HERE, in the per-connection thread and under
+            # the timeout — never in the accept loop, where one client that
+            # connects and says nothing would stop the hub accepting anyone.
+            if isinstance(self.request, ssl.SSLSocket):
+                self.request.settimeout(self.timeout)
+                self.request.do_handshake()
+            super().setup()
 
-        def log_message(self, *args):  # quiet
+        # ---------- plumbing ----------
+        def log_message(self, *args):  # quiet: access logs are not wrench's job
             pass
 
-        def do_GET(self):  # noqa: N802
-            path = urlparse(self.path).path
-            store = Store(db_path)  # per-request connection (sqlite + threads)
-            try:
-                if path == "/":
-                    return self._html(DASHBOARD_HTML)
-                if path == "/metrics":
-                    from . import metrics
-                    body = metrics.render(store, data_dir).encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", metrics.CONTENT_TYPE)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return None
-                if path == "/api/summary":
-                    last = store.last_sample("os")
-                    return self._json({
-                        "host": host_label,
-                        "ts": last[0] if last else None,
-                        "os": last[1] if last else {},
-                    })
-                if path == "/api/timeline":
-                    return self._json(_downsample(store.recent_samples("os", 86400)))
-                if path == "/api/drift":
-                    return self._json(store.recent_diffs(86400 * 7)[:50])
-                if path == "/api/patrols":
-                    return self._json(store.recent_patrols(20))
-                if path == "/api/actions":
-                    return self._json(store.recent_actions(50))
-                if path == "/api/tokens":
-                    return self._json(store.token_totals())
-                if path == "/api/webintel":
-                    return self._json(store.cache_get("webintel_scan", float("inf")) or {})
-                if path == "/api/notifications":
-                    return self._json(notifications.unread(data_dir))
-                if path in ("/fleet", "/api/fleet/nodes"):
-                    from . import fleet
-                    if cfg is None or not fleet.settings_from(cfg).hub_enabled:
-                        if path == "/fleet":
-                            return self._html(FLEET_DISABLED_HTML)
-                        return self._json({"error": "fleet hub not enabled"}, 503)
-                    if path == "/fleet":
-                        return self._html(FLEET_HTML)
-                    st = fleet.settings_from(cfg)
-                    states = fleet.node_states(store, st)
-                    return self._json({
-                        "host": host_label,
-                        "summary": fleet.fleet_summary(states),
-                        "nodes": states,
-                    })
-                self._json({"error": "not found"}, 404)
-            finally:
-                store.close()
+        def _send(self, code: int, body: bytes, ctype: str, nonce: str = "",
+                  extra: list[tuple[str, str]] | None = None) -> None:
+            if self.command == "POST" and not getattr(self, "_body_read", False):
+                # Replying without having read the request body would leave it
+                # on a keep-alive connection to be parsed as the NEXT request
+                # (request smuggling behind a proxy) — so that connection ends here.
+                self.close_connection = True
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
+            for k, v in webauth.security_headers(nonce, auth.tls):
+                self.send_header(k, v)
+            for k, v in extra or []:
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
-        def do_POST(self):  # noqa: N802
-            path = urlparse(self.path).path
-            if path == "/api/fleet/report":
-                # Remote nodes POST here. Auth is HMAC of the body (NOT origin):
-                # a valid signature against an authorized token is the only gate.
-                from . import fleet
-                if cfg is None or not fleet.settings_from(cfg).hub_enabled:
-                    return self._json({"error": "fleet hub not enabled"}, 503)
-                try:
-                    length = int(self.headers.get("Content-Length", 0))
-                except ValueError:
-                    length = 0
-                if not 0 < length <= MAX_CHAT_BODY:
-                    return self._json({"error": "bad request size"}, 413)
-                raw = self.rfile.read(length)
-                st = fleet.settings_from(cfg)
-                sig = self.headers.get(fleet.SIG_HEADER, "")
-                token = fleet.identify_token(st, raw, sig)
-                if token is None:
-                    return self._json({"error": "invalid signature"}, 401)
-                report = fleet.parse_report(raw)
-                if report is None:
-                    return self._json({"error": "malformed report"}, 400)
-                store = Store(db_path)
-                try:
-                    row = fleet.ingest(store, st, report, token)
-                    fleet.audit_registration(cfg, store, row)
-                finally:
-                    store.close()
-                return self._json({"ok": True, "node_id": row["node_id"],
-                                   "report_count": row["report_count"]})
-            if path == "/api/notifications/read":
-                if not _is_local_origin(self.headers.get("Origin")):
-                    return self._json({"error": "forbidden"}, 403)
-                try:
-                    length = int(self.headers.get("Content-Length", 0))
-                except ValueError:
-                    length = 0
-                ids = None
-                if 0 < length <= MAX_CHAT_BODY:
-                    try:
-                        payload = json.loads(self.rfile.read(length).decode())
-                        raw_ids = payload.get("ids")
-                        if isinstance(raw_ids, list):
-                            ids = [str(i) for i in raw_ids]
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        return self._json({"error": "invalid JSON"}, 400)
-                marked = notifications.mark_read(data_dir, ids)
-                return self._json({"marked": marked})
-            if path != "/api/chat":
-                return self._json({"error": "not found"}, 404)
-            if cfg is None:
-                return self._json({"error": "chat is not enabled on this server"}, 503)
-            # same-origin only: the dashboard binds localhost; reject foreign origins.
-            if not _is_local_origin(self.headers.get("Origin")):
-                return self._json({"error": "forbidden"}, 403)
+        def _json(self, obj, code: int = 200, extra=None):
+            self._send(code, json.dumps(obj).encode(), "application/json", extra=extra)
+
+        def _page(self, name: str, code: int = 200, **subs):
+            nonce = secrets.token_urlsafe(16)
+            html = pages[name].replace("__NONCE__", nonce)
+            for key, val in subs.items():
+                # JSON-encode into the script context; break up "</" so a value
+                # can never close the <script> element
+                html = html.replace(f"'__{key}__'", json.dumps(val).replace("</", "<\\/"))
+            self._send(code, html.encode(), "text/html; charset=utf-8", nonce=nonce)
+
+        def _redirect(self, where: str, extra=None):
+            self._send(303, b"", "text/plain", extra=[("Location", where), *(extra or [])])
+
+        def _client(self) -> str:
+            return self.client_address[0] if self.client_address else "?"
+
+        def _body(self, limit: int = MAX_BODY) -> bytes | None:
+            """The request body, or None after replying 4xx (bad/oversize length)."""
             try:
                 length = int(self.headers.get("Content-Length", 0))
             except ValueError:
-                length = 0
-            if not 0 < length <= MAX_CHAT_BODY:
-                return self._json({"error": "bad request size"}, 413)
+                length = -1
+            if length < 0 or length > limit:
+                self.close_connection = True      # don't read an unbounded body
+                self._json({"error": "request too large"}, 413)
+                return None
+            data = self.rfile.read(length) if length else b""
+            self._body_read = True
+            return data
+
+        def _json_body(self) -> dict | None:
+            raw = self._body()
+            if raw is None:
+                return None
+            if not raw:
+                return {}
             try:
-                payload = json.loads(self.rfile.read(length).decode())
-                message = str(payload.get("message", "")).strip()
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return self._json({"error": "invalid JSON"}, 400)
+                obj = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                self._json({"error": "invalid JSON"}, 400)
+                return None
+            if not isinstance(obj, dict):
+                self._json({"error": "expected a JSON object"}, 400)
+                return None
+            return obj
+
+        def _gate(self, need: str = "viewer", api: bool = True) -> str | None:
+            """Host check + authentication + role. Returns the role, or None
+            after having replied (redirect to /login for pages, 401/403 for API)."""
+            if not auth.host_allowed(self.headers.get("Host", "")):
+                self._json({"error": "unrecognized Host header"}, 421)
+                return None
+            role = auth.role_for_request(self.headers)
+            if role is None:
+                if api:
+                    self._json({"error": "authentication required"}, 401,
+                               extra=[("WWW-Authenticate", 'Bearer realm="wrench"')])
+                else:
+                    self._redirect("/login?next=" + urlparse(self.path).path)
+                return None
+            if need == "admin" and role != "admin":
+                self._json({"error": "this action needs the admin role"}, 403)
+                return None
+            return role
+
+        # ---------- GET ----------
+        def do_HEAD(self):  # noqa: N802
+            self.do_GET()
+
+        def do_GET(self):  # noqa: N802
+            url = urlparse(self.path)
+            path, query = url.path, parse_qs(url.query)
+            if path == "/healthz":
+                return self._json({"ok": True})
+            if path == "/login":
+                if not auth.host_allowed(self.headers.get("Host", "")):
+                    return self._json({"error": "unrecognized Host header"}, 421)
+                if not auth.required or auth.role_for_request(self.headers):
+                    return self._redirect("/")
+                return self._page("login", HOST=host_label)
+            is_page = path in ("/", "/fleet")
+            try:
+                role = self._gate(api=not is_page)
+            except Exception:  # noqa: BLE001 — a malformed credential is just "no"
+                return self._json({"error": "authentication required"}, 401)
+            if role is None:
+                return None
+            store = Store(db_path)  # per-request connection (sqlite + threads)
+            try:
+                return self._get(path, query, role, store)
+            except BrokenPipeError:
+                return None
+            except Exception as e:  # noqa: BLE001 — never leak a traceback to a client
+                return self._json({"error": f"internal error ({e.__class__.__name__})"}, 500)
+            finally:
+                store.close()
+
+        def _get(self, path: str, query: dict, role: str, store: Store):
+            if path == "/":
+                return self._page("dashboard")
+            if path == "/fleet":
+                if not hub_on(store):
+                    return self._redirect("/")
+                return self._page("fleet")
+            if path == "/metrics":
+                from . import metrics
+                return self._send(200, metrics.render(store, data_dir).encode(),
+                                  metrics.CONTENT_TYPE)
+            if path in ("/api/overview", "/api/summary"):
+                return self._json(self._overview(store, role))
+            if path == "/api/posture":
+                from . import posture
+                return self._json(posture.compute(cfg, store))
+            if path == "/api/timeline":
+                try:
+                    hours = int((query.get("hours") or ["24"])[0])
+                except ValueError:
+                    hours = 24
+                hours = hours if hours in _RANGES else 24
+                return self._json(_downsample(store.recent_samples("os", hours * 3600)))
+            if path == "/api/drift":
+                return self._json(store.recent_diffs(86400 * 7)[:50])
+            if path == "/api/patrols":
+                return self._json(store.recent_patrols(20))
+            if path == "/api/actions":
+                return self._json(store.recent_actions(50))
+            if path == "/api/tokens":
+                return self._json(store.token_totals())
+            if path == "/api/webintel":
+                return self._json(store.cache_get("webintel_scan", float("inf")) or {})
+            if path == "/api/notifications":
+                rows = (notifications.read_all(data_dir)[-100:] if query.get("all")
+                        else notifications.unread(data_dir))
+                return self._json(rows)
+            if path.startswith("/api/fleet/"):
+                return self._fleet_get(path, query, store)
+            return self._json({"error": "not found"}, 404)
+
+        def _overview(self, store: Store, role: str) -> dict:
+            from . import posture
+            last = store.last_sample("os")
+            out = {
+                "host": host_label, "version": __version__, "role": role,
+                "auth_required": auth.required,
+                "ts": last[0] if last else None,
+                "os": last[1] if last else {},
+                "posture": posture.compute(cfg, store),
+                "fleet_hub": hub_on(store),
+                "unread": len(notifications.unread(data_dir)),
+                "tokens_total": sum(t["total"] or 0 for t in store.token_totals()),
+            }
+            try:
+                from . import platforms
+                out["os_label"] = os_label or platforms.os_label()
+            except Exception:  # noqa: BLE001
+                out["os_label"] = platform.system()
+            out["audit"] = _audit_state(data_dir)
+            if cfg is not None:
+                from . import agent as agent_mod
+                usable, why = agent_mod.brain_status(cfg)
+                out["brain"] = {"usable": usable, "reason": why,
+                                "provider": cfg.provider, "model": cfg.model}
+                out["policy_tier"] = cfg.policy_tier
+                out["offline"] = bool(getattr(cfg, "offline", False))
+            else:
+                out["brain"] = {"usable": False, "reason": "no config loaded"}
+                out["policy_tier"] = "suggest"
+                out["offline"] = False
+            return out
+
+        def _fleet_get(self, path: str, query: dict, store: Store):
+            from . import fleet
+            if not hub_on(store):
+                return self._json({"error": "fleet hub not enabled"}, 503)
+            st = fleet.settings_from(cfg)
+            states = [_public_node(n) for n in fleet.node_states(store, st)]
+            if path == "/api/fleet/nodes":
+                summ = fleet.fleet_summary(states)
+                scores = [n["meta"].get("score") for n in states
+                          if n["meta"].get("score") is not None and not n["silent"]]
+                summ["avg_score"] = round(sum(scores) / len(scores), 1) if scores else None
+                return self._json({"host": host_label, "summary": summ, "nodes": states})
+            if path == "/api/fleet/node":
+                node_id = (query.get("id") or [""])[0]
+                node = next((n for n in states if n["node_id"] == node_id), None)
+                if node is None:
+                    return self._json({"error": "unknown node"}, 404)
+                return self._json({"node": node,
+                                   "history": store.fleet_report_history(node_id, 120)})
+            if path == "/api/fleet/export.csv":
+                return self._send(200, _fleet_csv(states).encode("utf-8"),
+                                  "text/csv; charset=utf-8",
+                                  extra=[("Content-Disposition",
+                                          'attachment; filename="wrench-fleet.csv"')])
+            return self._json({"error": "not found"}, 404)
+
+        # ---------- POST ----------
+        def do_POST(self):  # noqa: N802
+            path = urlparse(self.path).path
+            self._body_read = False
+            if self.headers.get("Transfer-Encoding"):
+                # only Content-Length bodies are accepted; a chunked body would
+                # otherwise be read as zero bytes and its chunks as a new request
+                self.close_connection = True
+                return self._json({"error": "Content-Length required"}, 411)
+            try:
+                if path == "/api/fleet/report":
+                    return self._fleet_report()
+                if not auth.host_allowed(self.headers.get("Host", "")):
+                    return self._json({"error": "unrecognized Host header"}, 421)
+                if not auth.same_origin(self.headers):
+                    return self._json({"error": "cross-origin request refused"}, 403)
+                if path == "/login":
+                    return self._login()
+                if path == "/logout":
+                    return self._json({"ok": True},
+                                      extra=[("Set-Cookie", auth.clear_cookie())])
+                if path == "/api/notifications/read":
+                    return self._mark_read()
+                if path == "/api/chat":
+                    return self._chat()
+                if path == "/api/fleet/forget":
+                    return self._fleet_forget()
+                return self._json({"error": "not found"}, 404)
+            except BrokenPipeError:
+                return None
+            except Exception as e:  # noqa: BLE001
+                return self._json({"error": f"internal error ({e.__class__.__name__})"}, 500)
+
+        def _login(self):
+            client = self._client()
+            if limiter.blocked(client):
+                return self._json({"error": "too many attempts — wait a minute"}, 429,
+                                  extra=[("Retry-After", "60")])
+            payload = self._json_body()
+            if payload is None:
+                return None
+            role = auth.role_for_token(str(payload.get("token", "")))
+            if role is None:
+                limiter.fail(client)
+                self._audit("web.login.failed", {"client": client})
+                return self._json({"error": "that token is not valid"}, 401)
+            self._audit("web.login", {"client": client, "role": role})
+            return self._json({"ok": True, "role": role},
+                              extra=[("Set-Cookie", auth.session_cookie(role))])
+
+        def _audit(self, kind: str, detail: dict) -> None:
+            try:
+                from . import audit
+                audit.append(data_dir, kind, detail, actor="web")
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _mark_read(self):
+            if self._gate("admin") is None:
+                return None
+            payload = self._json_body()
+            if payload is None:
+                return None
+            raw_ids = payload.get("ids")
+            ids = [str(i) for i in raw_ids] if isinstance(raw_ids, list) else None
+            return self._json({"marked": notifications.mark_read(data_dir, ids)})
+
+        def _chat(self):
+            if cfg is None:
+                return self._json({"error": "chat is not enabled on this server"}, 503)
+            if self._gate("admin") is None:
+                return None
+            payload = self._json_body()
+            if payload is None:
+                return None
+            message = str(payload.get("message", "")).strip()[:4000]
             if not message:
                 return self._json({"error": "empty message"}, 400)
-
-            from .agent import Agent   # late import: keep GET path light
+            from . import agent as agent_mod
+            usable, why = agent_mod.brain_status(cfg)
+            if not usable:
+                return self._json({"error": f"no brain available — {why}. "
+                                            "Run `wrench init` to configure one."}, 503)
             store = Store(db_path)
             try:
                 with chat_lock:   # one conversation, one turn at a time
@@ -693,42 +426,203 @@ def make_handler(db_path, host_label: str, cfg=None):
                                       for m in chat_history[-6:])
                     goal = (f"Conversation so far:\n{convo}\n\nHuman's new message: "
                             f"{message}") if chat_history else message
-                    agent = Agent(cfg, store)   # no confirm_fn → mutations stay blocked
+                    # Web chat investigates; it never changes the machine. With no
+                    # confirm channel "repair" already cannot act — but
+                    # "autonomous" needs no confirmation, so pin the tier.
+                    import copy
+                    chat_cfg = copy.copy(cfg)
+                    chat_cfg.policy_tier = "suggest"
+                    agent = agent_mod.Agent(chat_cfg, store)
                     res = agent.run(goal, purpose="web-chat")
                     chat_history.append({"role": "user", "content": message})
                     chat_history.append({"role": "assistant", "content": res["answer"]})
                     del chat_history[:-CHAT_HISTORY_MAX]
-                return self._json({
-                    "reply": res["answer"],
-                    "tokens": res["tokens"],
-                    "steps": len(res["steps"]),
-                    "model": cfg.model,
-                })
-            except Exception as e:  # noqa: BLE001
-                return self._json({"error": f"{e.__class__.__name__}: {e}"}, 500)
+                return self._json({"reply": res["answer"], "tokens": res["tokens"],
+                                   "steps": len(res["steps"]), "model": cfg.model})
+            finally:
+                store.close()
+
+        def _fleet_forget(self):
+            if self._gate("admin") is None:
+                return None
+            payload = self._json_body()
+            if payload is None:
+                return None
+            node_id = str(payload.get("node_id", ""))[:120]
+            store = Store(db_path)
+            try:
+                gone = store.delete_fleet_node(node_id)
+            finally:
+                store.close()
+            if not gone:
+                return self._json({"error": "unknown node"}, 404)
+            self._audit("fleet.forget", {"node_id": node_id, "client": self._client()})
+            return self._json({"ok": True})
+
+        def _fleet_report(self):
+            """Node report ingest. Authenticated by HMAC signature, not session."""
+            from . import fleet
+            client = self._client()
+            if limiter.blocked("fleet:" + client):
+                return self._json({"error": "too many rejected reports"}, 429,
+                                  extra=[("Retry-After", "60")])
+            raw = self._body(fleet.MAX_REPORT_BYTES)
+            if raw is None:
+                return None
+            if not raw:
+                return self._json({"error": "empty report"}, 400)
+            store = Store(db_path)
+            try:
+                if not hub_on(store):
+                    return self._json({"error": "fleet hub not enabled"}, 503)
+                st = fleet.settings_from(cfg)
+                res = fleet.authenticate(store, st, self.headers, raw)
+                if not res.ok:
+                    limiter.fail("fleet:" + client)
+                    return self._json({"error": res.error}, res.code)
+                report = fleet.parse_report(raw)
+                if report is None:
+                    return self._json({"error": "malformed report"}, 400)
+                try:
+                    row = fleet.ingest(store, st, report, res)
+                except fleet.IngestRejected as e:
+                    return self._json({"error": e.message}, e.code)
+                fleet.audit_registration(cfg, store, row)
+                # a node that was silent and just reported is live again — say so now
+                if row.get("silent"):
+                    fleet.check_silent_nodes(cfg, store, st)
+                return self._json({"ok": True, "node_id": row["node_id"],
+                                   "report_count": row["report_count"]})
             finally:
                 store.close()
 
     return Handler
 
 
+_audit_cache: dict = {}
+_audit_cache_lock = threading.Lock()
+
+
+def _audit_state(data_dir: Path) -> dict:
+    """Audit-chain verdict for the dashboard, re-verified only when the log or
+    its head changed (every open page polls this; the walk is O(log size))."""
+    from . import audit
+    try:
+        sig = tuple((p.stat().st_size, p.stat().st_mtime_ns) if p.exists() else None
+                    for p in (audit.audit_path(data_dir), audit.head_path(data_dir)))
+    except OSError:
+        sig = None
+    key = str(data_dir)
+    with _audit_cache_lock:
+        hit = _audit_cache.get(key)
+        if hit and sig is not None and hit[0] == sig:
+            return hit[1]
+    try:
+        v = audit.verify(data_dir)
+        state = {"intact": v["intact"], "count": v["count"], "reason": v["reason"]}
+    except Exception as e:  # noqa: BLE001 — "could not verify" is never shown as fine
+        state = {"intact": False, "count": 0,
+                 "reason": f"audit log could not be verified ({e.__class__.__name__})"}
+    with _audit_cache_lock:
+        _audit_cache[key] = (sig, state)
+    return state
+
+
+def _public_node(n: dict) -> dict:
+    """A node row for API consumers — credential fingerprints stay on the hub."""
+    return {k: v for k, v in n.items() if k not in ("token_hash", "key_id")}
+
+
+def _fleet_csv(states: list[dict]) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["node_id", "hostname", "state", "status", "health_score", "grade", "os",
+                "arch", "wrench_version", "max_disk_pct", "mem_pct", "last_seen_utc",
+                "report_count", "tags", "worst_finding"])
+    for n in states:
+        meta, gauges = n.get("meta") or {}, n.get("gauges") or {}
+        disks = (gauges.get("disk_pct") or {}).values()
+        worst = next((f.get("text", "") for f in n.get("findings") or []
+                      if str(f.get("severity", "")).lower() in ("critical", "error", "warning")), "")
+        row = [n["node_id"], n.get("hostname", ""), "silent" if n["silent"] else n["color"],
+               n.get("status", ""), meta.get("score", ""), meta.get("grade", ""),
+               meta.get("os_label", ""), meta.get("arch", ""), n.get("wrench_version", ""),
+               max(disks, default=""), gauges.get("mem_pct", ""),
+               time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(n.get("last_seen") or 0)),
+               n.get("report_count", ""), " ".join(meta.get("tags") or []), worst]
+        # neutralize spreadsheet formula injection: node-supplied text must not
+        # be evaluated by Excel when an operator opens the export
+        w.writerow([("'" + c) if isinstance(c, str)
+                     and c[:1] in ("=", "+", "-", "@", "\t", "\r") else c
+                    for c in row])
+    return buf.getvalue()
+
+
+class _QuietServer(ThreadingHTTPServer):
+    """Client-side failures (a dropped connection, a failed or abandoned TLS
+    handshake, a timeout) are routine on a network listener — not tracebacks."""
+
+    def handle_error(self, request, client_address):
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ssl.SSLError, ConnectionError, TimeoutError, OSError)):
+            return
+        super().handle_error(request, client_address)
+
+
+def tls_context(cert: str, key: str) -> ssl.SSLContext:
+    """A server-side TLS context (TLS 1.2+) for the dashboard / hub listener."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(certfile=cert, keyfile=key or None)
+    return ctx
+
+
 def serve(db_path, port: int = 8787, host_label: str = "localhost",
-          bind: str = "127.0.0.1", sample_thread: bool = True, cfg=None):
-    """Serve the dashboard. Optionally keep sampling in the background."""
+          bind: str = "127.0.0.1", sample_thread: bool = True, cfg=None,
+          auth: webauth.AuthConfig | None = None, fleet_hub: bool = False,
+          tls_cert: str = "", tls_key: str = "", os_label: str | None = None):
+    """Build the HTTP(S) server. Optionally keep sampling in the background.
+
+    Returns the server; the caller runs ``serve_forever()``. The resolved
+    access policy is attached as ``httpd.auth`` and the scheme as
+    ``httpd.scheme`` so the CLI can print an accurate URL.
+    """
     from .sensors import sample_all
+
+    use_tls = bool(tls_cert)
+    if auth is None:
+        auth = (webauth.resolve(cfg, bind, Path(db_path).parent, tls=use_tls)
+                if cfg is not None else webauth.AuthConfig(bind=bind, tls=use_tls))
+    auth.tls = use_tls
 
     if sample_thread:
         def sampler():
             while True:
                 try:
                     s = Store(db_path)
-                    sample_all(s)
-                    s.close()
+                    try:
+                        sample_all(s)
+                        s.maybe_prune(getattr(cfg, "retention_days", 30) if cfg else 30)
+                    finally:
+                        s.close()
                 except Exception:  # noqa: BLE001
                     pass
                 time.sleep(30)
 
-        threading.Thread(target=sampler, daemon=True).start()
+        threading.Thread(target=sampler, name="wrench-sampler", daemon=True).start()
 
-    httpd = ThreadingHTTPServer((bind, port), make_handler(db_path, host_label, cfg=cfg))
+    if fleet_hub and cfg is not None:
+        from . import fleet
+        fleet.start_sweeper(cfg, db_path)
+
+    httpd = _QuietServer(
+        (bind, port), make_handler(db_path, host_label, cfg=cfg, auth=auth, fleet_hub=fleet_hub,
+                                   os_label=os_label))
+    httpd.daemon_threads = True
+    if use_tls:
+        httpd.socket = tls_context(tls_cert, tls_key).wrap_socket(
+            httpd.socket, server_side=True, do_handshake_on_connect=False)
+    httpd.auth = auth                      # type: ignore[attr-defined]
+    httpd.scheme = "https" if use_tls else "http"   # type: ignore[attr-defined]
     return httpd

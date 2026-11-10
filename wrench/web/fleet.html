@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wrench — fleet</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%233987e5' d='M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z'/%3E%3C/svg%3E">
+<style>__BASE_CSS__</style></head>
+<body>
+<div class="topbar">
+  <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z"/></svg>wrench</span>
+  <span class="hostchip"><span class="live" id="live"></span>hub <b id="host">…</b></span>
+  <nav class="nav" aria-label="sections"><a href="/">Overview</a><a class="on" href="/fleet">Fleet</a></nav>
+  <span class="spacer"></span>
+  <span class="dim" id="updated" style="font-size:12px"></span>
+  <a class="iconbtn" id="export" href="/api/fleet/export.csv" title="download the node list as CSV">Export CSV</a>
+  <button class="iconbtn" id="theme-btn" title="toggle theme" aria-label="toggle theme">
+    <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2.5v11a5.5 5.5 0 000-11z" fill="currentColor"/></svg></button>
+  <span class="rolechip" id="role" hidden></span>
+  <button class="iconbtn" id="signout" hidden>Sign out</button>
+</div>
+
+<main class="page">
+  <div class="summary" id="summary" role="group" aria-label="filter by status"></div>
+  <div class="toolbar">
+    <input class="input" id="q" type="search" placeholder="Search name, host, OS, tag, finding…  ( / )" aria-label="search nodes">
+    <span class="seg" role="group" aria-label="operating system" id="osfilter"></span>
+    <span class="dim" id="shown" style="font-size:12.5px"></span>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th><button data-sort="state">Status</button></th>
+        <th><button data-sort="node_id">Node</button></th>
+        <th class="r"><button data-sort="score">Health</button></th>
+        <th><button data-sort="os">System</button></th>
+        <th><button data-sort="disk">Disk</button></th>
+        <th><button data-sort="mem">Memory</button></th>
+        <th>Needs attention</th>
+        <th class="r"><button data-sort="age_s">Last report</button></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="none" hidden style="padding:28px;text-align:center"></div>
+  </div>
+  <footer class="foot">Nodes sign every report; a node that stops reporting is marked <b>silent</b> within a minute of missing its deadline.</footer>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="node" role="dialog" aria-label="node detail">
+  <header><h2 id="n-title">node</h2><span id="n-status"></span>
+    <button class="iconbtn" data-close aria-label="close">✕</button></header>
+  <div class="content" id="n-body"></div>
+</aside>
+
+<script nonce="__NONCE__">__BASE_JS__</script>
+<script nonce="__NONCE__">
+let nodes = [], me = {}, filter = { state: null, os: null, q: '' }, sort = { key: 'state', dir: 1 };
+const RANK = { silent: 0, red: 1, yellow: 2, green: 3 };
+const maxDisk = (n) => Math.max(0, ...Object.values((n.gauges || {}).disk_pct || {}).map(Number).filter(Number.isFinite));
+const sortVal = (n, k) => k === 'state' ? RANK[n.color] : k === 'score' ? (n.meta.score ?? -1)
+  : k === 'os' ? (n.meta.os_label || '') : k === 'disk' ? maxDisk(n) : k === 'mem' ? ((n.gauges || {}).mem_pct ?? -1) : n[k];
+const worst = (n) => (n.findings || []).find((f) => ['critical', 'error', 'warning'].includes(String(f.severity).toLowerCase()));
+
+function matches(n) {
+  if (filter.state && n.color !== filter.state) return false;
+  if (filter.os && n.meta.os !== filter.os) return false;
+  if (!filter.q) return true;
+  const hay = [n.node_id, n.hostname, n.meta.os_label, n.meta.arch, n.summary, n.wrench_version,
+    ...(n.meta.tags || []), ...(n.findings || []).map((f) => f.text)].join(' ').toLowerCase();
+  return filter.q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+}
+const pctOf = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(n, 0), 100) : null; };
+const bar = (v) => { const pct = pctOf(v); return pct == null ? '<span class="dim">—</span>'
+  : `<span class="bar ${stateOf(pct)}"><i style="width:${pct}%"></i></span><span class="num">${Math.round(pct)}%</span>`; };
+
+function render(d) {
+  const s = d.summary;
+  const tile = (key, label, n, state) => `<button class="sumtile" data-state="${key || ''}" aria-pressed="${filter.state === key}">
+    <div class="k">${state ? `<span class="dot ${state}"></span>` : ''}${label}</div><div class="v">${n}</div></button>`;
+  $('summary').innerHTML = tile(null, 'All nodes', s.total) + tile('green', 'Healthy', s.green, 'green')
+    + tile('yellow', 'Attention', s.yellow, 'yellow') + tile('red', 'Critical', s.red, 'red')
+    + tile('silent', 'Silent', s.silent, '')
+    + `<div class="sumtile" style="cursor:default"><div class="k">Fleet health</div><div class="v">${s.avg_score == null ? '—' : Math.round(s.avg_score)}<small class="dim" style="font-size:13px;font-weight:500"> avg</small></div></div>`;
+  const oses = [...new Set(nodes.map((n) => n.meta.os).filter(Boolean))].sort();
+  $('osfilter').hidden = oses.length < 2;
+  $('osfilter').innerHTML = [null, ...oses].map((o) => `<button data-os="${esc(o || '')}" aria-pressed="${filter.os === o}">${o ? esc(o) : 'all'}</button>`).join('');
+  const shown = nodes.filter(matches).sort((a, b) => {
+    const x = sortVal(a, sort.key), y = sortVal(b, sort.key);
+    return (x < y ? -1 : x > y ? 1 : a.node_id.localeCompare(b.node_id)) * sort.dir;
+  });
+  $('shown').textContent = shown.length === nodes.length ? '' : `${shown.length} of ${nodes.length} shown`;
+  $('rows').innerHTML = shown.map((n) => {
+    const w = worst(n), label = n.silent ? 'silent' : n.color;
+    return `<tr data-id="${esc(n.node_id)}" tabindex="0">
+      <td>${badge(label)}</td>
+      <td><b>${esc(n.node_id)}</b>${n.hostname && n.hostname !== n.node_id ? `<div class="dim" style="font-size:12px">${esc(n.hostname)}</div>` : ''}
+        ${(n.meta.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join(' ')}</td>
+      <td class="r num">${pctOf(n.meta.score) == null ? '<span class="dim">—</span>' : `<b>${Math.round(pctOf(n.meta.score))}</b> <span class="dim">${esc(n.meta.grade || '')}</span>`}</td>
+      <td>${esc(n.meta.os_label || '—')}<div class="dim" style="font-size:12px">${esc(n.meta.arch || '')} · v${esc(n.wrench_version || '?')}</div></td>
+      <td>${bar(Object.keys((n.gauges || {}).disk_pct || {}).length ? maxDisk(n) : null)}</td>
+      <td>${bar((n.gauges || {}).mem_pct)}</td>
+      <td style="max-width:340px">${n.silent ? `<span class="dim">no report for ${dur(n.age_s)} — expected every ${dur(n.effective_cadence_s)}</span>`
+        : w ? esc(w.text) : `<span class="dim">${esc(n.summary || 'nothing')}</span>`}</td>
+      <td class="r num dim">${ago(Date.now() / 1000 - n.age_s)}</td></tr>`;
+  }).join('');
+  $('none').hidden = shown.length > 0;
+  $('none').innerHTML = nodes.length ? 'No nodes match these filters.'
+    : 'No nodes have reported yet.<br><br>On this hub run <code>wrench fleet enroll</code>, then run the <code>wrench fleet join …</code> command it prints on each machine.';
+}
+
+async function refresh() {
+  try {
+    const [d, o] = await Promise.all([api('/api/fleet/nodes'), api('/api/overview')]);
+    nodes = d.nodes.map((n) => ({ ...n, meta: n.meta || {} })); me = o;
+    $('host').textContent = d.host; $('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    $('role').hidden = $('signout').hidden = !o.auth_required; $('role').textContent = o.role;
+    $('live').classList.remove('stale');
+    render(d);
+  } catch (e) { if (e.message !== 'auth') { $('updated').textContent = e.message; $('live').classList.add('stale'); } }
+}
+
+async function openNode(id) {
+  const n = nodes.find((x) => x.node_id === id); if (!n) return;
+  $('n-title').textContent = n.node_id; $('n-status').innerHTML = badge(n.silent ? 'silent' : n.color);
+  $('n-body').innerHTML = '<div class="empty">loading…</div>'; openDrawer('node');
+  let hist = [];
+  try { hist = (await api('/api/fleet/node?id=' + encodeURIComponent(id))).history || []; } catch (e) { /* show what we have */ }
+  const g = n.gauges || {}, m = n.meta || {};
+  const pill = Object.entries(m.pillars || {}).map(([k, v]) =>
+    `<dt style="text-transform:capitalize">${esc(k)}</dt><dd class="num">${pctOf(v) == null ? '<span class="dim">not measured</span>' : Math.round(pctOf(v))}</dd>`).join('');
+  $('n-body').innerHTML = `
+    <p>${esc(n.summary || '')}</p>
+    <dl class="kv">
+      <dt>Health</dt><dd class="num">${pctOf(m.score) == null ? '—' : `<b>${Math.round(pctOf(m.score))}</b> / 100 · grade ${esc(m.grade || '')}`}</dd>
+      <dt>Hostname</dt><dd>${esc(n.hostname || '—')}</dd>
+      <dt>System</dt><dd>${esc(m.os_label || '—')} ${esc(m.arch || '')}</dd>
+      <dt>Uptime</dt><dd>${dur(m.uptime_s)}</dd>
+      <dt>wrench</dt><dd>v${esc(n.wrench_version || '?')} · tier ${esc(m.policy_tier || '?')} · brain ${esc(m.brain || 'none')}</dd>
+      <dt>Reports</dt><dd class="num">${n.report_count} · every ${dur(n.effective_cadence_s)}</dd>
+      <dt>First seen</dt><dd>${new Date(n.first_seen * 1000).toLocaleString()}</dd>
+      <dt>Last report</dt><dd>${new Date(n.last_seen * 1000).toLocaleString()}</dd>
+      ${(m.tags || []).length ? `<dt>Tags</dt><dd>${m.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ')}</dd>` : ''}
+    </dl>
+    <div class="chart" id="n-chart"></div>
+    <div><h2 style="font-size:13px;color:var(--text-2);margin-bottom:8px">Volumes</h2><div class="disks">${
+      Object.entries(g.disk_pct || {}).map(([mnt, v]) => [mnt, pctOf(v)]).filter((e) => e[1] != null)
+        .sort((a, b) => b[1] - a[1]).map(([mnt, p]) => `<div class="disk"><span class="mount">${esc(mnt)}</span>
+        <div class="meter ${stateOf(p)}"><i style="width:${p}%"></i></div><span class="num"><b>${Math.round(p)}%</b></span></div>`).join('') || '<span class="dim">no data</span>'}</div></div>
+    <div><h2 style="font-size:13px;color:var(--text-2);margin-bottom:8px">Findings</h2><div class="findings">${
+      (n.findings || []).map((f) => `<div class="finding">${badge(f.severity)}<span>${esc(f.text)}</span></div>`).join('') || '<span class="dim">none reported</span>'}</div></div>
+    ${pill ? `<div><h2 style="font-size:13px;color:var(--text-2);margin-bottom:8px">Posture pillars</h2><dl class="kv">${pill}</dl></div>` : ''}
+    <div><h2 style="font-size:13px;color:var(--text-2);margin-bottom:8px">Recent reports</h2><div class="feed" style="max-height:220px">${
+      hist.slice(0, 40).map((h) => `<div class="item"><div class="head">${badge(h.status)}<span class="when">${new Date(h.ts * 1000).toLocaleString()}</span></div><div class="sub">${esc(h.summary || '')}</div></div>`).join('') || '<span class="dim">no history</span>'}</div></div>
+    ${me.role === 'admin' ? `<div><button class="btn danger" id="forget">Forget this node</button>
+      <p class="dim" style="font-size:12px;margin-top:6px">Removes it and its history from the hub. It reappears if it reports again.</p></div>` : ''}`;
+  const pts = hist.filter((h) => h.score != null).map((h) => [h.ts, h.score]).reverse();
+  if (pts.length > 1) lineChart($('n-chart'), { title: 'Health score', points: pts, max: 100, fmt: (v) => v.toFixed(0) });
+  const fb = $('forget');
+  if (fb) fb.addEventListener('click', async () => {
+    if (!confirm(`Forget ${id}? Its history on this hub is deleted.`)) return;
+    try { await post('/api/fleet/forget', { node_id: id }); closeDrawers(); refresh(); } catch (e) { alert(e.message); }
+  });
+}
+
+wireChrome();
+$('summary').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; filter.state = b.dataset.state || null; refresh(); });
+$('osfilter').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; filter.os = b.dataset.os || null; refresh(); });
+$('q').addEventListener('input', (e) => { filter.q = e.target.value.trim(); refresh(); });
+document.querySelector('thead').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  sort = { key: b.dataset.sort, dir: sort.key === b.dataset.sort ? -sort.dir : 1 }; refresh();
+});
+$('rows').addEventListener('click', (e) => { const tr = e.target.closest('tr'); if (tr) openNode(tr.dataset.id); });
+$('rows').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const tr = e.target.closest('tr'); if (tr) openNode(tr.dataset.id); } });
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && !e.target.matches('input')) { e.preventDefault(); $('q').focus(); }
+  else if (e.key === 't' && !e.target.matches('input')) toggleTheme();
+});
+refresh(); setInterval(refresh, 10000);
+</script></body></html>

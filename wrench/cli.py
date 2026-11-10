@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -40,11 +41,14 @@ def _notify_banner(cfg) -> None:
     """One-line heads-up when unread patrol notifications exist. Never fatal."""
     try:
         from . import notifications
-        n = len(notifications.unread(cfg.data_dir))
+        rows = notifications.unread(cfg.data_dir)
+        n = len(rows)
         if n:
+            worst = max(rows, key=lambda r: notifications.severity_rank(r.get("severity", "")))
             console.print(
-                f"[bold yellow]\U0001f514 {n} new patrol finding{'s' if n != 1 else ''} "
-                f"since you last looked[/bold yellow] [dim]\u2014 run `wrench report`[/dim]")
+                f"[bold yellow]\U0001f514 {n} unread notification{'s' if n != 1 else ''}"
+                f"[/bold yellow] [dim]\u2014 worst: {worst.get('severity', '?')} "
+                f"({worst.get('kind', 'patrol')}) \u00b7 run `wrench notifications`[/dim]")
     except Exception:  # noqa: BLE001
         pass
 
@@ -89,19 +93,29 @@ def _approval_gate(cfg, store, action: str, detail: str) -> None:
     st = approvals.settings_from(cfg)
     if not st.enabled or sys.stdin.isatty():
         return
-    if approvals.claim_approval(store, action):
-        _amod.log_event(cfg, "approval.claimed", {"action": action})
+    # the approval is bound to THIS request (action + a digest of its detail)
+    key = approvals.bound_action(action, detail)
+    if approvals.claim_approval(store, key):
+        _amod.log_event(cfg, "approval.claimed", {"action": action, "key": key})
         console.print("[green]✔ approved out-of-band — proceeding[/green]")
         return
-    token, posted = approvals.create_and_notify(cfg, store, action, detail)
-    _amod.log_event(cfg, "approval.requested", {"action": action, "posted": posted})
-    console.print(Panel(
-        "[yellow]pending approval[/yellow] — this action needs out-of-band "
-        "approval before it runs.\n"
-        f"a second channel must run: [bold]wrench approve {token}[/bold]\n"
-        f"webhook POST: {'sent' if posted else 'not sent (check approval_webhook_url)'}",
-        border_style="yellow", title="⏸ pending approval"))
-    raise typer.Exit(0)
+    token, posted = approvals.create_and_notify(cfg, store, key, detail)
+    _amod.log_event(cfg, "approval.requested",
+                    {"action": action, "key": key, "posted": posted})
+    # The token is the approver's credential. It goes to the approval channel
+    # only — printing it here would put it in the requesting job's own log
+    # (cron mail, CI output) and let the requester approve itself.
+    if posted:
+        body = ("[yellow]pending approval[/yellow] — this action needs out-of-band "
+                "approval before it runs.\n"
+                "the approval token was sent to the approval webhook; the approver "
+                "runs [bold]wrench approve <token>[/bold], then re-run this command.")
+    else:
+        body = ("[red]approval could not be requested[/red] — the webhook POST failed, "
+                "so nobody holds a token for this action.\n"
+                "check [bold][approvals] approval_webhook_url[/bold] and re-run.")
+    console.print(Panel(body, border_style="yellow", title="⏸ pending approval"))
+    raise typer.Exit(0 if posted else 1)
 
 
 PROVIDER_OPT = typer.Option(None, "--provider", "-p",
@@ -134,6 +148,7 @@ def status(json_out: bool = JSON_OPT):
             "gpu": data.get("gpu"),
             "anomalies_24h": data.get("anomalies_24h", []),
             "unread_notifications": _unread_count(cfg),
+            "posture": _posture_brief(cfg, store),
         })
         return
     _notify_banner(cfg)
@@ -141,6 +156,23 @@ def status(json_out: bool = JSON_OPT):
         data = sensors.status_snapshot(store)
         history = store.recent_samples("os", 86400)
     report.render_status(console, data, history, cfg)
+    pb = _posture_brief(cfg, store)
+    if pb.get("score") is not None:
+        style = {"ok": "green", "attention": "yellow", "critical": "bold red"}.get(pb["state"], "dim")
+        console.print(Text.assemble(
+            ("health ", "dim"), (f"{pb['score']:.0f}/100", style), (f" (grade {pb['grade']})", style),
+            (f" · {pb['measured']} of {pb['total']} pillars measured · ", "dim"),
+            ("wrench score", "bold"), (" for the breakdown", "dim")))
+
+
+def _posture_brief(cfg, store) -> dict:
+    try:
+        from . import posture
+        p = posture.compute(cfg, store)
+        return {"score": p["score"], "grade": p["grade"], "state": p["state"],
+                "measured": p["coverage"]["measured"], "total": p["coverage"]["total"]}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _unread_count(cfg) -> int:
@@ -209,8 +241,15 @@ def patrol(
     deep: bool = typer.Option(False, "--deep", help="deep patrol with the reasoning model"),
     html: bool = typer.Option(True, "--html/--no-html", help="also write an HTML report"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="only print if attention/critical"),
+    no_llm: bool = typer.Option(False, "--no-llm",
+                                help="deterministic patrol: every code check, no model call"),
+    json_out: bool = JSON_OPT,
 ):
-    """Run one patrol: observe → investigate → report. The heart of wrench."""
+    """Run one patrol: observe → investigate → report. The heart of wrench.
+
+    Without a configured brain (or with --no-llm) the patrol still runs every
+    deterministic check — sensors, drift, certs, security, backups, compliance,
+    forecast — and files a report."""
     cfg, store = _ctx(provider, model)
     steps_seen: list[str] = []
 
@@ -219,10 +258,20 @@ def patrol(
         if not quiet:
             console.print(f"  [dim cyan]⚙ {detail}[/dim cyan]")
 
+    quiet = quiet or json_out
+    usable, why = agent_mod.brain_status(cfg)
     if not quiet:
+        brain = (cfg.deep_model if deep else cfg.model) if (usable and not no_llm) \
+            else "deterministic mode"
         console.print(f"[dim italic]I'm on patrol — sweeping sensors, drift, and logs "
-                      f"({cfg.deep_model if deep else cfg.model}, tier: {cfg.policy_tier})...[/dim italic]")
-    p = agent_mod.run_patrol(cfg, store, on_step=on_step, deep=deep)
+                      f"({brain}, tier: {cfg.policy_tier})...[/dim italic]")
+    p = agent_mod.run_patrol(cfg, store, on_step=on_step, deep=deep, use_llm=not no_llm)
+    if json_out:
+        jsonout.emit("patrol", {
+            "status": p["status"], "summary": p["summary"], "findings": p["findings"],
+            "model": p["model"], "deterministic": p["deterministic"],
+            "tokens": p["tokens"], "duration_s": p["duration_s"], "ts": p["ts"]})
+        raise typer.Exit({"ok": 0, "attention": 1}.get(p["status"], 2))
     if quiet and p["status"] == "ok":
         return
     report.render_patrol(console, p)
@@ -357,29 +406,120 @@ def report_cmd(
         pass
 
 
+def _serve_banner(httpd, bind: str, port: int, title: str, lines: list[str]) -> None:
+    """Print where the server is and how to get in (token shown once if minted)."""
+    auth = httpd.auth
+    host = "localhost" if bind in ("127.0.0.1", "::1") else bind
+    if bind in ("0.0.0.0", "::"):
+        host = platform.node() or "this-host"
+    url = f"{httpd.scheme}://{host}:{port}"
+    body = [f"{ln}".replace("{url}", url) for ln in lines]
+    if auth.required:
+        if auth.generated:
+            body.append(
+                f"[yellow]access token[/yellow] (generated, stored owner-only in the data dir):\n"
+                f"[bold bright_green]{auth.admin_token}[/bold bright_green]")
+        else:
+            body.append("[dim]access control: on — sign in with the token from "
+                        "[bold][web] auth_token[/bold] / WRENCH_WEB_TOKEN[/dim]")
+        if auth.viewer_token:
+            body.append("[dim]a read-only viewer token is also configured[/dim]")
+    else:
+        body.append("[dim]access: this machine only (loopback), no sign-in. "
+                    "Binding wider turns sign-in on automatically.[/dim]")
+    if not auth.loopback and httpd.scheme == "http":
+        body.append("[yellow]serving plain HTTP on a network address[/yellow] — add "
+                    "[bold]--tls-cert/--tls-key[/bold] (or a TLS reverse proxy) so tokens "
+                    "and telemetry are not sent in the clear")
+    console.print(Panel("\n".join(body), border_style="bright_blue", title=title))
+
+
 @app.command()
 def web(
     port: int = typer.Option(None, "--port", help="port (default from config, 8787)"),
-    bind: str = typer.Option("127.0.0.1", "--bind", help="bind address"),
+    bind: str = typer.Option(None, "--bind", help="bind address (default 127.0.0.1)"),
     no_sample: bool = typer.Option(False, "--no-sample", help="don't sample in the background"),
+    tls_cert: str = typer.Option(None, "--tls-cert", help="serve HTTPS with this certificate (PEM)"),
+    tls_key: str = typer.Option(None, "--tls-key", help="private key for --tls-cert (PEM)"),
 ):
-    """Serve the live dashboard (dark, gorgeous, auto-refreshing)."""
+    """Serve the dashboard: health score, posture, vitals, patrols — and the
+    fleet console when this box is a hub.
+
+    Loopback needs no sign-in. Any wider bind requires a token (one is
+    generated if you have not set [web] auth_token)."""
     from .webapp import serve
 
     cfg, store = _ctx()
     store.close()
+    web_cfg = (cfg.raw or {}).get("web", {}) if isinstance((cfg.raw or {}).get("web"), dict) else {}
     port = port or cfg.web_port
-    httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
-                  bind=bind, sample_thread=not no_sample, cfg=cfg)
-    console.print(Panel(
-        f"dashboard live at [bold bright_blue]http://{bind}:{port}[/bold bright_blue]\n"
-        f"[dim]sampling every 30s in the background · 🔧 chat bubble bottom-right · "
-        f"press ? for shortcuts · Ctrl-C to stop[/dim]",
-        border_style="bright_blue", title="🔧 wrench web"))
+    bind = bind or str(web_cfg.get("bind", "127.0.0.1"))
+    tls_cert = tls_cert or str(web_cfg.get("tls_cert", "") or "")
+    tls_key = tls_key or str(web_cfg.get("tls_key", "") or "")
+    try:
+        httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
+                      bind=bind, sample_thread=not no_sample, cfg=cfg,
+                      tls_cert=tls_cert, tls_key=tls_key)
+    except OSError as e:
+        console.print(f"[red]could not start the dashboard on {bind}:{port} — {e}[/red]\n"
+                      "[dim]is another wrench (or something else) using that port? "
+                      "try --port[/dim]")
+        raise typer.Exit(1) from None
+    _serve_banner(httpd, bind, port, "🔧 wrench web", [
+        "dashboard: [bold bright_blue]{url}[/bold bright_blue]",
+        "[dim]sampling every 30s · press ? in the page for shortcuts · Ctrl-C to stop[/dim]"])
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         console.print("\n[dim]dashboard stopped[/dim]")
+
+
+@app.command()
+def score(json_out: bool = JSON_OPT):
+    """One number for this box: a 0–100 health score with the reasons behind it.
+
+    Deterministic arithmetic over what each subsystem last measured (capacity,
+    security, vulnerabilities, compliance, backups, certificates, forecast,
+    patrol). Unmeasured pillars are shown as such and left out of the score."""
+    from . import posture
+    cfg, store = _ctx()
+    if store.last_sample("os") is None:
+        sensors.sample_all(store)
+    p = posture.compute(cfg, store)
+    store.close()
+    if json_out:
+        jsonout.emit("score", p)
+        raise typer.Exit(0 if p["state"] in ("ok", "unknown") else 1 if p["state"] == "attention" else 2)
+    style = {"ok": "green", "attention": "yellow", "critical": "bold red"}.get(p["state"], "dim")
+    head = Text()
+    if p["score"] is None:
+        head.append("no data yet", style="dim")
+    else:
+        head.append(f"{p['score']:.0f}", style=f"bold {style}")
+        head.append(" / 100", style="dim")
+        head.append(f"   grade {p['grade']}", style=style)
+    cov = p["coverage"]
+    head.append(f"\n{cov['measured']} of {cov['total']} pillars measured", style="dim")
+    t = Table(border_style="bright_blue", show_edge=False, pad_edge=False)
+    t.add_column("pillar", style="bold")
+    t.add_column("score", justify="right")
+    t.add_column("", width=12)
+    t.add_column("why")
+    for x in p["pillars"]:
+        st = {"ok": "green", "attention": "yellow", "critical": "bold red"}.get(x["state"], "dim")
+        if x["score"] is None:
+            t.add_row(x["label"], Text("—", style="dim"), Text("not measured", style="dim"),
+                      Text(f"{x['detail']} — run `{x['command']}`", style="dim"))
+        else:
+            filled = round(x["score"] / 10)
+            t.add_row(x["label"], Text(f"{x['score']:.0f}", style=st),
+                      Text("█" * filled + "░" * (10 - filled), style=st), x["detail"])
+    console.print(Panel(head, border_style="bright_blue", title="🔧 wrench score"))
+    console.print(t)
+    if p["top_issues"]:
+        console.print("\n[bold]next steps[/bold]")
+        for i in p["top_issues"]:
+            console.print(f"  • {i['label']}: {i['detail']}  [dim]→ {i['command']}[/dim]")
 
 
 @app.command()
@@ -1337,7 +1477,6 @@ def certs_main(
 
 def _probe_local_listeners(cfg, store, cmod) -> None:
     """Live-probe HTTPS on common local ports (read-only handshake)."""
-    from . import tools
     rows = []
     for port in (443, 8443):
         res = cmod.probe_tls("127.0.0.1", port, timeout=3.0)
@@ -1673,7 +1812,7 @@ def blueprint_main(
             plan = bp.draft(cfg, store, intent, targets=list(target) if target else None)
     except bp.BlueprintError as e:
         console.print(f"[red]draft failed:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     # 2. preview
     _render_diff(plan.diff_text)
@@ -1857,7 +1996,6 @@ def security_main(
             sec.notify_scan(cfg, report)
         _security_json(report)
         raise typer.Exit(1 if report["worst"] == "critical" else 0)
-    steps: list[str] = []
 
     def on_step(kind, detail):
         console.print(f"  [dim cyan]⚙ {detail}[/dim cyan]")
@@ -1904,7 +2042,6 @@ def security_main(
                              "No markdown headers, no filler."},
                  {"role": "user", "content": "\n".join(lines)}],
                 purpose="security-brief")
-        report_mod = report  # keep name clear
         from . import report as _report
         _report.render_answer(console, text, f"{cfg.model} · security brief")
     except Exception as e:  # noqa: BLE001
@@ -2052,7 +2189,7 @@ def backups_main(
                       "and verifying...[/dim italic]")
     report = bmod.scan(cfg, store, on_step=on_step)
     if notify:
-        bmod.notify_scan(cfg, report)
+        bmod.notify_scan(cfg, report, store)
 
     # L3 — consent-gated restore proof
     if restore_test and report["jobs"]:
@@ -2244,7 +2381,6 @@ def approve_cmd(token: str = typer.Argument(..., help="approval token from the p
 @app.command("approvals")
 def approvals_cmd(json_out: bool = JSON_OPT):
     """List recent approval tokens and their state (hashes only; never plaintext)."""
-    from . import approvals as _ap
     cfg, store = _ctx()
     rows = store.recent_approvals(50)
     now = time.time()
@@ -2448,14 +2584,184 @@ _FLEET_COLOR_STYLE = {"green": "green", "yellow": "yellow", "red": "bold red",
                      "silent": "bold magenta"}
 
 
-@fleet_app.command("token")
+@fleet_app.command("enroll")
+def fleet_enroll(
+    label: str = typer.Option("", "--label", "-l", help="what this key is for (a host, a site, a team)"),
+    single_node: bool = typer.Option(False, "--single-node",
+                                     help="bind the key to the first node that uses it"),
+    hub_url: str = typer.Option(None, "--hub-url",
+                                help="the address nodes will reach this hub at (for the join command)"),
+    json_out: bool = JSON_OPT,
+):
+    """HUB: mint an enrollment key and print the one-line command that joins a node.
+
+    The key is shown once. The hub stores only a derived signing key under a
+    short id, so it can be listed and revoked (`wrench fleet keys` / `revoke`)
+    without ever being shown again. One key can enroll many machines — put it
+    in your MDM / config-management script — unless you pass --single-node."""
+    from . import fleet as fmod, audit as _amod
+    cfg, store = _ctx()
+    st = fmod.settings_from(cfg)
+    res = fmod.enroll(store, label=label, single_node=single_node)
+    store.close()
+    _amod.log_event(cfg, "fleet.enroll", {"key_id": res["key_id"], "label": label,
+                                          "single_node": single_node})
+    scheme = "https" if st.tls_cert else "http"
+    host = platform.node() or "HUB-HOST"
+    url = hub_url or f"{scheme}://{host}:{st.listen_port}"
+    join = f"wrench fleet join {url} {res['token']}"
+    if json_out:
+        jsonout.emit("fleet.enroll", {"key_id": res["key_id"], "token": res["token"],
+                                      "label": label, "single_node": single_node,
+                                      "join_command": join})
+        return
+    console.print(Panel(
+        Text.assemble(
+            ("run this on each machine that should report to this hub:\n\n", "dim"),
+            (join, "bold bright_green"),
+            (f"\n\nkey id {res['key_id']}", "dim"),
+            (f" · label: {label or '(none)'}", "dim"),
+            (" · single node" if single_node else " · reusable", "dim"),
+            ("\nthe key is shown once — the hub keeps only a derived signing key", "dim")),
+        border_style="bright_green", title="\U0001f527 wrench fleet enroll"))
+    console.print("[dim]then start the hub if it is not running: [bold]wrench fleet serve "
+                  "--host 0.0.0.0[/bold]  ·  check the URL above is how nodes reach "
+                  "this box (override with --hub-url)[/dim]")
+
+
+@fleet_app.command("join")
+def fleet_join(
+    hub_url: str = typer.Argument(..., help="the hub address, e.g. https://hub.example:8788"),
+    token: str = typer.Argument(..., help="the enrollment key from `wrench fleet enroll`"),
+    node_id: str = typer.Option(None, "--node-id", help="name for this node (default: hostname)"),
+    tags: str = typer.Option("", "--tags", help="comma-separated labels, e.g. prod,web,eu"),
+    ca_file: str = typer.Option(None, "--ca-file", help="CA bundle for a hub with a private certificate"),
+    no_verify: bool = typer.Option(False, "--no-test", help="write the config without a test report"),
+):
+    """NODE: point this machine at a hub. Tests the connection, then saves the
+    [fleet] settings so every patrol reports from now on."""
+    from . import fleet as fmod, audit as _amod
+    from .config import set_section_values, CONFIG_PATH as _CP
+    hub_url = hub_url.rstrip("/")
+    if not hub_url.lower().startswith(("http://", "https://")):
+        console.print("[red]the hub address must start with http:// or https://[/red]")
+        raise typer.Exit(2)
+    cfg, store = _ctx()
+    st = fmod.settings_from(cfg)
+    st.hub_url, st.token = hub_url, token.strip()
+    if node_id:
+        st.node_id = node_id
+    if tags:
+        st.tags = fmod._clean_tags(tags)  # noqa: SLF001
+    if ca_file:
+        st.ca_file = ca_file
+    if not no_verify:
+        if store.last_sample("os") is None:
+            sensors.sample_all(store)
+        ok, detail = fmod.push_once(st, fmod.build_report(cfg, store, st))
+        if not ok:
+            store.close()
+            console.print(Panel(
+                f"[red]the hub did not accept a test report[/red] — {detail}\n"
+                "[dim]nothing was saved. Check the address, that the hub is running "
+                "(`wrench fleet serve`), and that the key was copied whole.[/dim]",
+                border_style="red", title="\U0001f527 wrench fleet join"))
+            raise typer.Exit(1)
+    store.close()
+    values: dict = {"hub_url": hub_url, "token": st.token}
+    if node_id:
+        values["node_id"] = node_id
+    if st.tags:
+        values["tags"] = st.tags
+    if ca_file:
+        values["ca_file"] = ca_file
+    try:
+        set_section_values("fleet", values)
+    except (ValueError, OSError) as e:
+        console.print(Panel(
+            f"[red]the hub accepted this machine, but the config could not be saved[/red] — {e}\n"
+            "[dim]add these lines under [bold][fleet][/bold] yourself:[/dim]\n"
+            + "\n".join(f"{k} = {json.dumps(v)}" for k, v in values.items() if k != "token")
+            + "\ntoken = \"<the enrollment key you just used>\"",
+            border_style="red", title="\U0001f527 wrench fleet join"))
+        raise typer.Exit(1) from None
+    _amod.log_event(cfg, "fleet.join", {"hub_url": hub_url, "node_id": st.node_id,
+                                        "key_id": fmod.key_id_of(st.token)})
+    console.print(Panel(
+        f"[green]joined[/green] {hub_url} as [bold]{st.node_id}[/bold]"
+        + (f" [dim](tags: {', '.join(st.tags)})[/dim]" if st.tags else "") + "\n"
+        f"[dim]saved to {_CP} (owner-only) · every patrol now reports · "
+        "schedule them with [bold]wrench install-service[/bold][/dim]",
+        border_style="green", title="\U0001f527 wrench fleet join"))
+
+
+@fleet_app.command("keys")
+def fleet_keys(json_out: bool = JSON_OPT):
+    """HUB: list enrollment keys — id, label, state, nodes using each."""
+    cfg, store = _ctx()
+    rows = []
+    for k in store.fleet_keys():
+        rows.append({"key_id": k["key_id"], "label": k["label"], "created": k["created"],
+                     "revoked": k["revoked"], "single_node": k["single_node"],
+                     "last_used": k["last_used"],
+                     "nodes": store.fleet_nodes_for_key(k["key_id"])})
+    store.close()
+    if json_out:
+        jsonout.emit("fleet.keys", {"keys": rows})
+        return
+    if not rows:
+        console.print("[dim]no enrollment keys yet — create one with [bold]wrench fleet enroll[/bold][/dim]")
+        return
+    t = Table(title="\U0001f527 fleet enrollment keys", border_style="bright_blue")
+    for col in ("key id", "label", "state", "created", "last used", "nodes"):
+        t.add_column(col)
+    for r in rows:
+        fmt = lambda ts: time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "never"  # noqa: E731
+        t.add_row(r["key_id"], r["label"] or "", Text("revoked", style="red") if r["revoked"]
+                  else Text("active", style="green"), fmt(r["created"]), fmt(r["last_used"]),
+                  ", ".join(r["nodes"][:6]) + (f" +{len(r['nodes']) - 6}" if len(r["nodes"]) > 6 else ""))
+    console.print(t)
+
+
+@fleet_app.command("revoke")
+def fleet_revoke(key_id: str = typer.Argument(..., help="key id from `wrench fleet keys`")):
+    """HUB: revoke an enrollment key. Nodes using it are refused from the next report."""
+    from . import audit as _amod
+    cfg, store = _ctx()
+    ok = store.revoke_fleet_key(key_id, time.time())
+    nodes = store.fleet_nodes_for_key(key_id)
+    store.close()
+    if not ok:
+        console.print(f"[red]no active key with id {key_id}[/red]")
+        raise typer.Exit(1)
+    _amod.log_event(cfg, "fleet.revoke", {"key_id": key_id, "nodes": nodes})
+    console.print(f"[green]revoked[/green] {key_id}"
+                  + (f" — {len(nodes)} node(s) will go silent until re-joined: "
+                     f"{', '.join(nodes[:8])}" if nodes else ""))
+
+
+@fleet_app.command("forget")
+def fleet_forget(node_id: str = typer.Argument(..., help="node to retire from the hub")):
+    """HUB: remove a decommissioned node and its history."""
+    from . import audit as _amod
+    cfg, store = _ctx()
+    ok = store.delete_fleet_node(node_id)
+    store.close()
+    if not ok:
+        console.print(f"[red]no node named {node_id}[/red]")
+        raise typer.Exit(1)
+    _amod.log_event(cfg, "fleet.forget", {"node_id": node_id})
+    console.print(f"[green]forgot[/green] {node_id} [dim](it will reappear if it reports again)[/dim]")
+
+
+@fleet_app.command("token", hidden=True)
 def fleet_token(
     label: str = typer.Option("", "--label", help="a human label for this node token"),
     register: bool = typer.Option(True, "--register/--no-register",
                                   help="record the token FINGERPRINT in this hub's db"),
 ):
-    """Generate a node token. Paste it into the node config AND the hub's
-    authorized_tokens. The raw token is shown once; the hub stores only its hash."""
+    """(legacy, 2.x) Generate a shared token for [fleet] authorized_tokens.
+    New deployments: use `wrench fleet enroll` + `wrench fleet join`."""
     from . import fleet as fmod
     cfg, store = _ctx()
     tok = fmod.generate_token()
@@ -2465,22 +2771,16 @@ def fleet_token(
     store.close()
     console.print(Panel(
         Text.assemble(
-            ("new node token (shown once \u2014 copy it now):\n\n", "dim"),
+            ("legacy shared token (shown once \u2014 copy it now):\n\n", "dim"),
             (tok, "bold bright_green"),
             (f"\n\nfingerprint: {fp[:16]}\u2026  ", "dim"),
             (f"label: {label or '(none)'}", "dim"),
         ),
         border_style="bright_green", title="\U0001f527 wrench fleet token"))
     console.print(
-        "[dim]On the NODE \u2014 add to [bold]~/.config/wrench/config.toml[/bold]:[/dim]\n"
-        "[bright_blue][fleet]\n"
-        'hub_url = "http://<this-hub>:8788"\n'
-        f'token   = "{tok}"[/bright_blue]\n')
-    console.print(
-        "[dim]On the HUB \u2014 add the same token to its [bold][fleet][/bold] "
-        "[bold]authorized_tokens[/bold] list, then run [bold]wrench fleet serve[/bold].[/dim]")
-    console.print("[dim]The token is a shared secret \u2014 it is never logged, and the "
-                  "hub persists only its hash.[/dim]")
+        "[dim]Add it to the node's [bold][fleet] token[/bold] and to the hub's "
+        "[bold][fleet] authorized_tokens[/bold]. Prefer [bold]wrench fleet enroll[/bold]: "
+        "no config editing, and keys can be listed and revoked.[/dim]")
 
 
 @fleet_app.command("report")
@@ -2539,35 +2839,39 @@ def fleet_report(
 
 @fleet_app.command("serve")
 def fleet_serve(
-    host: str = typer.Option(None, "--host", help="bind address (default from config)"),
+    host: str = typer.Option(None, "--host", help="bind address (default from config, 127.0.0.1)"),
     port: int = typer.Option(None, "--port", help="port (default from config, 8788)"),
     no_sample: bool = typer.Option(False, "--no-sample",
                                    help="don't sample this hub box in the background"),
+    tls_cert: str = typer.Option(None, "--tls-cert", help="serve HTTPS with this certificate (PEM)"),
+    tls_key: str = typer.Option(None, "--tls-key", help="private key for --tls-cert (PEM)"),
 ):
-    """Run the fleet HUB: accept signed node reports + serve the fleet dashboard."""
+    """Run the fleet HUB: accept signed node reports, serve the fleet console,
+    and watch for nodes that go silent."""
     from . import fleet as fmod
     from .webapp import serve
     cfg, store = _ctx()
     st = fmod.settings_from(cfg)
+    n_keys = sum(1 for k in store.fleet_keys() if not k["revoked"])
     store.close()
-    if not st.hub_enabled:
-        console.print(Panel(
-            "[yellow]no fleet hub configured.[/yellow] Add an [bold][fleet][/bold] "
-            "section with [bold]authorized_tokens[/bold] to config.toml "
-            "(generate one with [bold]wrench fleet token[/bold]).",
-            border_style="yellow", title="\U0001f527 wrench fleet serve"))
-        raise typer.Exit(2)
     bind = host or st.listen_host
     port = port or st.listen_port
-    httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
-                  bind=bind, sample_thread=not no_sample, cfg=cfg)
-    console.print(Panel(
-        f"fleet hub live \u2014 nodes POST to "
-        f"[bold bright_blue]http://{bind}:{port}/api/fleet/report[/bold bright_blue]\n"
-        f"dashboard: [bright_blue]http://{bind}:{port}/fleet[/bright_blue] \u00b7 "
-        f"{len(st.authorized_tokens)} authorized token(s) \u00b7 Ctrl-C to stop\n"
-        f"[dim]HMAC-authenticated \u2014 terminate TLS at a reverse proxy for public use.[/dim]",
-        border_style="bright_blue", title="\U0001f527 wrench fleet serve"))
+    try:
+        httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
+                      bind=bind, sample_thread=not no_sample, cfg=cfg, fleet_hub=True,
+                      tls_cert=tls_cert or st.tls_cert, tls_key=tls_key or st.tls_key)
+    except OSError as e:
+        console.print(f"[red]could not start the hub on {bind}:{port} — {e}[/red]")
+        raise typer.Exit(1) from None
+    lines = ["fleet console: [bold bright_blue]{url}/fleet[/bold bright_blue]",
+             "nodes report to: [bright_blue]{url}/api/fleet/report[/bright_blue]",
+             f"[dim]{n_keys} enrollment key(s)"
+             + (f" + {len(st.authorized_tokens)} legacy token(s)" if st.authorized_tokens else "")
+             + " · silent-node sweep every 30s · Ctrl-C to stop[/dim]"]
+    if not n_keys and not st.authorized_tokens:
+        lines.append("[yellow]no enrollment keys yet[/yellow] — in another terminal: "
+                     "[bold]wrench fleet enroll[/bold]")
+    _serve_banner(httpd, bind, port, "\U0001f527 wrench fleet serve", lines)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -2594,6 +2898,7 @@ def fleet_status(json_out: bool = JSON_OPT):
                 "cadence_s": n["cadence_s"], "wrench_version": n["wrench_version"],
                 "report_count": n["report_count"],
                 "findings": n["findings"], "gauges": n["gauges"],
+                "meta": n.get("meta") or {},
             } for n in states],
         })
         raise typer.Exit(1 if summary.get("silent") or summary.get("red") else 0)
@@ -2649,7 +2954,8 @@ _COMPLY_STYLE = {"critical": "bold red", "high": "red", "medium": "yellow",
 
 def _render_comply_table(rep: dict):
     from rich.table import Table as _T
-    t = _T(title=f"📋 {rep['title']} — score {rep['score']}%",
+    score = "n/a (nothing could be graded)" if rep["score"] is None else f"{rep['score']}%"
+    t = _T(title=f"📋 {rep['title']} — score {score}",
            border_style="bright_blue")
     t.add_column("status", width=7)
     t.add_column("sev", width=9)
@@ -2674,7 +2980,7 @@ def _render_comply_table(rep: dict):
 def comply_main(
     ctx: typer.Context,
     pack: str = typer.Option(None, "--pack", "-p",
-                             help="run one pack (default: all shipped packs)"),
+                             help="run one pack (default: the packs written for this OS)"),
     brief: bool = typer.Option(False, "--brief",
                                help="ask the brain to triage failures "
                                     "(analysis only, never executes)"),
@@ -2689,17 +2995,24 @@ def comply_main(
         report = cm.scan(store, packs=[pack] if pack else None)
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
-        raise typer.Exit(2)
+        raise typer.Exit(2) from None
     if json_out:
         jsonout.emit("comply", {
-            "packs": [{k: rep[k] for k in ("pack", "title", "score",
-                                           "counts", "severity_fails")}
+            "packs": [{k: rep.get(k) for k in ("pack", "title", "score", "platforms",
+                                               "counts", "severity_fails")}
                       for rep in report["packs"]],
             "critical_fails": report["critical_fails"],
             "results": [r for rep in report["packs"] for r in
                         [dict(x, pack=rep["pack"]) for x in rep["results"]]],
         })
         raise typer.Exit(1 if report["critical_fails"] else 0)
+    if not report["packs"]:
+        console.print(Panel(
+            f"no compliance pack is written for this OS ({platforms.current_platform()}) yet.\n"
+            "[dim]`wrench comply list` shows every shipped pack; "
+            "`wrench comply --pack <name>` runs one anyway.[/dim]",
+            border_style="yellow", title="📋 wrench comply"))
+        return
     skips = 0
     for rep in report["packs"]:
         console.print(_render_comply_table(rep))
@@ -2820,6 +3133,26 @@ def _key_env(provider: str) -> str:
     return PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["meta"])["key_env"]
 
 
+def _own_executable() -> str | None:
+    """Absolute path of THIS wrench install's entry point.
+
+    The scheduler must run the same install the operator just configured — not
+    whichever `wrench` happens to be first on PATH (or none, when the venv was
+    never activated).
+    """
+    import shutil
+    cands = [Path(sys.argv[0])]
+    exe_dir = Path(sys.executable).parent
+    cands += [exe_dir / "wrench", exe_dir / "wrench.exe", exe_dir / "Scripts" / "wrench.exe"]
+    for c in cands:
+        try:
+            if c.name.lower().startswith("wrench") and c.is_file():
+                return str(c.resolve())
+        except OSError:
+            continue
+    return shutil.which("wrench")
+
+
 @app.command("install-service")
 def install_service(
     interval: int = typer.Option(15, "--interval", help="minutes between patrols"),
@@ -2831,7 +3164,6 @@ def install_service(
     fixxer_hour: int = typer.Option(4, "--fixxer-hour", help="hour of day for the auto-fixxer run"),
 ):
     """Schedule patrols natively: systemd (Linux), launchd (macOS), or Task Scheduler (Windows)."""
-    import shutil
 
     from . import scheduler
 
@@ -2842,9 +3174,9 @@ def install_service(
             console.print(Panel("\n".join(["[green]removed scheduled patrol[/green]", *lines]),
                                 border_style="green", title="🔧 wrench install-service"))
             return
-        wrench_bin = shutil.which("wrench")
+        wrench_bin = _own_executable()
         if not wrench_bin:
-            console.print("[red]couldn't find the wrench binary on PATH[/red]")
+            console.print("[red]couldn't find the wrench executable for this install[/red]")
             raise typer.Exit(1)
         plan = scheduler.plan_install(wrench_bin, interval)
         scheduler.apply_plan(plan)
@@ -2942,7 +3274,6 @@ def bundle_cmd(
             "offline": sections.get("offline.json", {}).get("offline", False),
         })
         return
-    files = ", ".join(sorted(sections.keys()))
     console.print(Panel(
         Text.assemble(
             ("wrote ", ""), (str(out_path), "bold white"),
@@ -2952,6 +3283,31 @@ def bundle_cmd(
             (f"tar xzf {out_path.name}", "bold cyan"),
         ),
         border_style="green", title="📦 wrench bundle"))
+
+
+def _doctor_facts(cfg, store) -> dict:
+    """Environment facts shared by `doctor` and `doctor --json`."""
+    import os as _os
+    from . import audit as _audit, fleet as _fleet
+    facts: dict = {"admin": platforms.is_admin(), "schema_version": store.schema_version}
+    try:
+        facts["data_dir_mode"] = (oct(cfg.data_dir.stat().st_mode & 0o777)
+                                  if _os.name == "posix" else None)
+    except OSError:
+        facts["data_dir_mode"] = None
+    v = _audit.verify(cfg.data_dir)
+    facts["audit"] = {"intact": v["intact"], "count": v["count"], "reason": v["reason"],
+                      "mac_checked": v.get("mac_checked", False)}
+    patrols = store.recent_patrols(1)
+    facts["last_patrol_age_s"] = (time.time() - patrols[0]["ts"]) if patrols else None
+    st = _fleet.settings_from(cfg)
+    roles = []
+    if st.node_enabled:
+        roles.append(f"node → {st.hub_url} (as {st.node_id})")
+    if _fleet.hub_active(store, st):
+        roles.append(f"hub ({len(store.fleet_nodes())} node(s) known)")
+    facts["fleet"] = " · ".join(roles)
+    return facts
 
 
 @app.command()
@@ -2986,11 +3342,19 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
             checks["sensor_os"] = {"ok": False, "error": str(e)}
         checks["sensor_docker"] = sensors.sample_docker() is not None
         checks["sensor_gpu"] = sensors.sample_gpu() is not None
-        client = LLMClient(cfg, store)
-        alive, detail = client.ping()
+        usable, why = agent_mod.brain_status(cfg)
+        checks["brain"] = {"configured": usable, "reason": why}
+        if usable:
+            client = LLMClient(cfg, store)
+            alive, detail = client.ping()
+        else:
+            # no brain is a supported mode (deterministic patrols), not a fault
+            alive, detail = True, f"deterministic mode — {why}"
         checks["provider_ping"] = {"ok": alive, "detail": detail}
-        jsonout.emit("doctor", {"healthy": bool(alive), "checks": checks})
-        if not alive:
+        checks.update(_doctor_facts(cfg, store))
+        jsonout.emit("doctor", {"healthy": bool(alive) and checks["audit"]["intact"],
+                                "checks": checks})
+        if not alive or not checks["audit"]["intact"]:
             raise typer.Exit(1)
         return
     t = Table(title="🔧 wrench doctor", border_style="bright_blue", show_header=False)
@@ -3013,8 +3377,13 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
     t.add_row("policy tier", Text(cfg.policy_tier,
                                   style="green" if cfg.policy_tier in ("observe", "suggest")
                                   else "yellow"))
-    t.add_row("api key", ok if cfg.api_key or cfg.provider in ("ollama", "lmstudio")
-              else Text(f"✖ missing (set {_key_env(cfg.provider)})", style="red"))
+    usable, why = agent_mod.brain_status(cfg)
+    if usable:
+        t.add_row("brain", Text("✔ configured", style="green"))
+    else:
+        t.add_row("brain", Text(f"— deterministic mode ({why}). Patrols, score, fleet and "
+                                "every check still run; `wrench init` adds a model for "
+                                "investigation and chat.", style="yellow"))
     # offline-awareness: on an air-gapped box, show what's disabled and verify
     # the brain endpoint is local/private (so doctor can still pass clean).
     from . import offline as _offline
@@ -3044,15 +3413,44 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
     t.add_row("sensor: gpu", ok if sensors.sample_gpu() is not None
               else Text("— not available", style="dim"))
 
-    # provider liveness
-    with console.status(f"[cyan]pinging {cfg.provider}..."):
-        client = LLMClient(cfg, store)
-        alive, detail = client.ping()
-    t.add_row("provider ping", Text(f"✔ {detail}", style="green") if alive
-              else Text(f"✖ {detail}", style="red"))
+    facts = _doctor_facts(cfg, store)
+    t.add_row("privileges", Text("administrator — full visibility", style="green")
+              if facts["admin"] else
+              Text("standard user — checks that need root are reported as skipped, "
+                   "never as passing", style="dim"))
+    perms = facts["data_dir_mode"]
+    t.add_row("data privacy", Text(f"✔ data dir {perms} (owner-only)", style="green")
+              if perms in ("0o700", None) else
+              Text(f"⚠ data dir is {perms} — expected 0o700", style="yellow"))
+    a = facts["audit"]
+    t.add_row("audit chain", Text(f"✔ intact — {a['count']} event(s)"
+                                  + (" · MAC verified" if a.get("mac_checked") else ""),
+                                  style="green") if a["intact"]
+              else Text(f"✖ {a['reason']}", style="bold red"))
+    lp = facts["last_patrol_age_s"]
+    if lp is None:
+        t.add_row("patrols", Text("— none yet (run `wrench patrol`, then "
+                                  "`wrench install-service`)", style="dim"))
+    else:
+        late = lp > max(cfg.patrol_interval_min * 60 * 4, 6 * 3600)
+        t.add_row("patrols", Text(f"last ran {lp / 3600:.1f}h ago"
+                                  + (" — not running on schedule? `wrench install-service`"
+                                     if late else ""), style="yellow" if late else "green"))
+    if facts["fleet"]:
+        t.add_row("fleet", Text(facts["fleet"], style="dim"))
+    t.add_row("schema", Text(f"v{facts['schema_version']}", style="dim"))
+
+    # provider liveness (only when there is a brain to reach)
+    alive = True
+    if usable:
+        with console.status(f"[cyan]pinging {cfg.provider}..."):
+            client = LLMClient(cfg, store)
+            alive, detail = client.ping()
+        t.add_row("provider ping", Text(f"✔ {detail}", style="green") if alive
+                  else Text(f"✖ {detail}", style="red"))
 
     console.print(t)
-    if not alive:
+    if not alive or not a["intact"]:
         raise typer.Exit(1)
 
 

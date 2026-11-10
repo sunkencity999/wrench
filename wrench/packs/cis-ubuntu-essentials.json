@@ -2,6 +2,9 @@
  "name": "cis-ubuntu-essentials",
  "title": "Ubuntu hardening essentials (inspired by CIS L1)",
  "description": "High-value Ubuntu 22.04/24.04 server checks inspired by CIS Level 1. Not certified CIS content - a practical essentials subset.",
+ "platforms": [
+  "linux"
+ ],
  "rules": [
   {
    "id": "sshd.permitrootlogin",

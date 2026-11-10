@@ -10,30 +10,34 @@ Honesty legend:
 
 - ✅ **tested** — exercised live on real hardware
 - 🟡 **implemented** — code-complete with unit-tested platform branches (mocked),
-  needs a native smoke test
+  not yet exercised natively
 - ➖ not available on that OS (wrench degrades gracefully and says so)
 
 | capability | Linux | macOS | Windows |
 |---|---|---|---|
-| sensors: CPU / memory / swap / load | ✅ | 🟡 psutil | 🟡 psutil (load emulated) |
-| sensors: disks / network / processes | ✅ | 🟡 psutil | 🟡 psutil |
-| sensors: Docker | ✅ | 🟡 docker CLI | 🟡 docker CLI |
-| sensors: NVIDIA GPU | ✅ | ➖ | 🟡 nvidia-smi |
-| drift: listening ports | ✅ `ss` (+psutil fallback) | 🟡 psutil | 🟡 psutil |
-| drift: running services | ✅ systemd | 🟡 `launchctl list` | 🟡 psutil Windows services |
-| drift: installed packages | ✅ dpkg / rpm / pacman / apk | 🟡 Homebrew | ➖ (no fast census) |
-| drift: user accounts | ✅ | 🟡 `pwd` (service accts filtered) | 🟡 `net user` |
-| drift: scheduled jobs | ✅ cron | 🟡 cron + LaunchAgents | 🟡 `schtasks` |
-| agent tool: read_logs | ✅ journald | 🟡 unified log (`log show`) | 🟡 `wevtutil` |
-| agent tool: service_status | ✅ systemctl | 🟡 `launchctl print` | 🟡 `sc query` |
-| agent tool: net_listeners | ✅ `ss` | 🟡 psutil | 🟡 psutil |
-| agent tool: proc_top | ✅ psutil | 🟡 psutil | 🟡 psutil |
-| agent tool: disk_tree | ✅ `du` | 🟡 `du` | 🟡 pure-Python walk |
-| diag/repair allowlists | ✅ | 🟡 launchctl/log/vm_stat/… | 🟡 sc/schtasks/tasklist/… |
-| `wrench install-service` | ✅ systemd user timer | 🟡 launchd agent plist | 🟡 Scheduled Task |
-| `wrench web` dashboard | ✅ | 🟡 stdlib http | 🟡 stdlib http |
-| config/data locations | ✅ XDG | 🟡 `~/Library/Application Support` | 🟡 `%APPDATA%` / `%LOCALAPPDATA%` |
-| LLM providers (all six) | ✅ | 🟡 pure requests | 🟡 pure requests |
+| sensors: CPU / memory / swap / load / processes | ✅ | ✅ | 🟡 psutil (load emulated) |
+| sensors: disks | ✅ real volumes only | ✅ APFS container fill; system/snapshot/DMG volumes ignored | 🟡 fixed drives |
+| sensors: Docker / NVIDIA GPU | ✅ | 🟡 docker CLI · ➖ GPU | 🟡 |
+| health score (`wrench score`) | ✅ | ✅ | 🟡 |
+| deterministic patrol (no model) | ✅ | ✅ | 🟡 |
+| drift: listening ports | ✅ `ss` | ✅ psutil → `lsof` (this user's sockets without root) | 🟡 psutil |
+| drift: running services | ✅ systemd | ✅ `launchctl list` (per-app labels filtered) | 🟡 Windows services |
+| drift: installed packages | ✅ dpkg / rpm / pacman / apk | ✅ Homebrew | ➖ (no fast census) |
+| drift: user accounts | ✅ | ✅ account database | 🟡 `net user` |
+| drift: scheduled jobs | ✅ cron | ✅ cron + LaunchAgents/Daemons | 🟡 `schtasks` |
+| security: auth-log watch | ✅ auth.log / journald | ➖ reported as "not watched" | ➖ reported as "not watched" |
+| security: privilege + `authorized_keys` drift | ✅ | ✅ | ➖ |
+| CVE matching (OS packages) | ✅ dpkg / rpm | ➖ (pip/npm via `wrench cve`) | ➖ (pip/npm via `wrench cve`) |
+| OS end-of-life | ✅ | ✅ | 🟡 |
+| compliance packs | ✅ `cis-ubuntu-essentials`, `wrench-baseline` | ✅ `macos-baseline` | 🟡 `windows-baseline` |
+| backups | ✅ cron + systemd timers | ✅ Time Machine (+ cron) | ➖ reported as "not checked" |
+| fixxer | ✅ apt · 🟡 dnf/pacman | 🟡 Homebrew (detection ✅, apply untested) | 🟡 winget |
+| agent tools: logs / service status / listeners / disk tree | ✅ | ✅ unified log · `launchctl` · `lsof` · `du -d` | 🟡 wevtutil · `sc` |
+| `wrench install-service` | ✅ systemd user timer | 🟡 launchd agent (PATH + log file) | 🟡 Scheduled Task |
+| `wrench web` dashboard + access control | ✅ | ✅ | 🟡 |
+| fleet node + hub | ✅ | ✅ | 🟡 |
+| owner-only data dir / config / tokens | ✅ | ✅ | ➖ relies on profile ACLs |
+| LLM providers | ✅ | 🟡 pure requests | 🟡 pure requests |
 
 Data directory per OS:
 
@@ -53,9 +57,19 @@ Both honor `WRENCH_CONFIG_DIR` / `WRENCH_DATA_DIR` env overrides.
 
 ## Current status
 
-Linux is the development platform and is tested end-to-end (real patrols, real
-timer, real dashboard). The macOS and Windows branches are implemented behind a
-single platform abstraction (`wrench/platforms.py`), unit-tested with mocked
-platforms (`tests/`), and **await native smoke tests** — if you run wrench on a
-Mac or Windows box, please open an issue with your `wrench doctor` output,
-good or bad.
+**Linux** is the original development platform and is tested end-to-end (real
+patrols, real timer, real dashboard).
+
+**macOS** had its first native pass for 3.0 on Apple Silicon (macOS 27): status,
+score, drift, security, comply, backups, cve, forecast, fixxer `--dry-run`,
+deterministic patrols, the dashboard, and a fleet hub + node were all run for
+real, and the failures that pass exposed are fixed — phantom APFS volumes, an
+empty listener inventory, invisible user accounts, Linux-only compliance packs,
+no Time Machine awareness, a patrol crash. Not yet run natively: `install-service`
+(the launchd plan is unit-tested), `fixxer` apply, and the LLM providers.
+
+**Windows** shares the platform abstraction (`wrench/platforms.py`), has its own
+compliance pack and probes, and runs the test suite and a CLI smoke in CI on
+every push — as a tracked, non-gating job until it is green. It has **not** had
+a hands-on native pass. If you run wrench on Windows, please open an issue with
+your `wrench doctor` output, good or bad.

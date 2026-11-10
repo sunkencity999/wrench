@@ -517,10 +517,11 @@ wrench install-service   <span class="cmt"># Scheduled Task, patrols every 15 mi
       your own server? The <strong><code>custom</code></strong> provider points wrench at any
       <strong>OpenAI-compatible endpoint</strong> (vLLM, llama.cpp, TGI, a FastAPI shim) — API key
       optional for keyless internal gateways.</p>
-    <p class="tabnote">Linux is tested end-to-end on real hardware; macOS/Windows branches are
-      implemented + unit-tested, pending native smoke tests —
+    <p class="tabnote">Linux and macOS are exercised end-to-end on real hardware; Windows is
+      implemented, unit-tested and runs in CI, pending a native hands-on pass —
       <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">full support matrix</a>.
-      No API key? Sensors, drift, and the dashboard still work — or go all-local with Ollama.</p>
+      No model at all? Patrols, the health score, compliance, backups and fleet reporting all
+      run in deterministic mode — or go all-local with Ollama.</p>
   </div>
 </div></section>
 

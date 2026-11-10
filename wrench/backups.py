@@ -79,7 +79,7 @@ def _run(argv: list[str], timeout: int = 20, env: dict | None = None) -> tuple[i
         full_env = dict(os.environ)
         if env:
             full_env.update(env)
-        p = subprocess.run(argv, capture_output=True, text=True,
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout, env=full_env)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except FileNotFoundError:
@@ -360,9 +360,93 @@ def _detect_systemd(user: bool = False) -> list[BackupJob]:
     return jobs
 
 
+TM_PLIST = "/Library/Preferences/com.apple.TimeMachine.plist"
+
+
+def parse_time_machine(prefs: dict, now: float | None = None) -> BackupJob | None:
+    """Time Machine preferences → a BackupJob with its verdicts filled in (pure).
+
+    Time Machine records, per destination, when snapshots completed and how the
+    last attempt ended. That is everything L1 (did it run?) and L2 (did it
+    succeed?) need, without mounting the backup disk.
+    """
+    dests = prefs.get("Destinations") or []
+    if not dests:
+        return None
+    import datetime as _dt
+
+    def _ts(v) -> float | None:
+        if isinstance(v, _dt.datetime):
+            if v.tzinfo is None:
+                v = v.replace(tzinfo=_dt.timezone.utc)   # plist dates are UTC
+            return v.timestamp()
+        return None
+
+    last, names, notes, failed = None, [], [], False
+    for d in dests:
+        if not isinstance(d, dict):
+            continue
+        names.append(str(d.get("LastKnownVolumeName") or d.get("DestinationID") or "destination"))
+        for snap in d.get("SnapshotDates") or []:
+            t = _ts(snap)
+            if t and (last is None or t > last):
+                last = t
+        result = d.get("RESULT")
+        if result not in (None, 0):
+            failed = True
+            why = "; ".join(str(m) for m in (d.get("MessageParameters") or [])[:2])
+            notes.append(f"last attempt on {names[-1]} did not complete"
+                         + (f" ({why})" if why else f" (result {result})"))
+    auto = bool(prefs.get("AutoBackup", True))
+    cadence = float(prefs.get("AutoBackupInterval") or 3600)
+    job = BackupJob(
+        name="timemachine:" + (names[0] if names else "backup"), tool="timemachine",
+        command="Time Machine", origin=TM_PLIST,
+        schedule=("automatic" if auto else "manual only"),
+        cadence_s=max(cadence, 3600.0) if auto else 7 * 86400.0,
+        source="/", dest=", ".join(names),
+        last_run_ts=last, last_run_evidence="time-machine" if last else "")
+    if last is None:
+        job.integrity, job.integrity_note = "unknown", "no completed snapshot recorded"
+    elif failed:
+        # the newest *attempt* failed, but an older snapshot exists: stale, not corrupt
+        job.integrity, job.integrity_note = "ok", "; ".join(notes)
+    else:
+        job.integrity, job.integrity_note = "ok", "last backup completed"
+    if not auto:
+        job.integrity_note = (job.integrity_note + " · automatic backups are OFF").strip(" ·")
+    return job
+
+
+def _detect_time_machine() -> list[BackupJob]:
+    from . import platforms
+    if not platforms.is_macos():
+        return []
+    try:
+        import plistlib
+        with open(TM_PLIST, "rb") as fh:
+            prefs = plistlib.load(fh)
+    except Exception:  # noqa: BLE001 — not configured, or needs Full Disk Access
+        return []
+    job = parse_time_machine(prefs) if isinstance(prefs, dict) else None
+    return [job] if job else []
+
+
+def detection_supported() -> bool:
+    """Can wrench find backup jobs on this OS at all?
+
+    "No jobs detected" is only a finding where detection actually looks. On
+    Windows there is no detector yet, so the honest answer is "not checked" —
+    not a warning that nothing protects the data.
+    """
+    from . import platforms
+    return not platforms.is_windows()
+
+
 def detect_jobs() -> list[BackupJob]:
-    """Find backup jobs across crontabs and systemd timers. Read-only."""
-    jobs = _detect_cron() + _detect_systemd(user=False) + _detect_systemd(user=True)
+    """Find backup jobs: crontabs, systemd timers, and Time Machine. Read-only."""
+    jobs = (_detect_cron() + _detect_systemd(user=False) + _detect_systemd(user=True)
+            + _detect_time_machine())
     seen: dict[str, BackupJob] = {}
     for j in jobs:                      # de-dupe by (tool, command)
         seen.setdefault(f"{j.tool}|{j.command}", j)
@@ -399,6 +483,31 @@ def _systemd_last_run(job: BackupJob) -> float | None:
     return _parse_systemd_ts(m2.group(1)) if m2 else None
 
 
+def _systemd_failed(job: BackupJob) -> str | None:
+    """Why the job's last systemd run failed, or None.
+
+    ExecMainExitTimestamp is set whether the run succeeded or not, so "it ran
+    recently" proved nothing about a backup that fails every night.
+    """
+    m = re.match(r"(user:)?(\S+\.timer)", job.origin or "")
+    if not m:
+        return None
+    scope = ["--user"] if m.group(1) else []
+    svc = m.group(2)[:-6] + ".service"
+    rc, out = _run(["systemctl", *scope, "show", svc,
+                    "--property=Result,ExecMainStatus", "--no-pager"], timeout=10)
+    if rc != 0:
+        return None
+    result = re.search(r"Result=(\S+)", out)
+    status = re.search(r"ExecMainStatus=(\d+)", out)
+    if result and result.group(1) not in ("success", ""):
+        return (f"last run of {svc} ended with result={result.group(1)}"
+                + (f", exit {status.group(1)}" if status else ""))
+    if status and status.group(1) != "0":
+        return f"last run of {svc} exited {status.group(1)}"
+    return None
+
+
 def _dest_mtime(job: BackupJob) -> float | None:
     dest = (job.dest or "").split("::")[0]
     if not dest:
@@ -425,8 +534,10 @@ def _dest_mtime(job: BackupJob) -> float | None:
 def check_freshness(job: BackupJob, now: float | None = None) -> None:
     """L1 — mutate job with last-run evidence + freshness verdict."""
     now = now or time.time()
-    ts = _systemd_last_run(job)
-    if ts:
+    ts = None if job.last_run_evidence else _systemd_last_run(job)
+    if job.last_run_evidence:
+        pass          # the detector already supplied first-hand evidence
+    elif ts:
         job.last_run_ts, job.last_run_evidence = ts, "systemd"
     else:
         ts = _dest_mtime(job)
@@ -442,6 +553,12 @@ def check_freshness(job: BackupJob, now: float | None = None) -> None:
 def check_integrity(job: BackupJob, timeout: int = 30) -> None:
     """L2 — cheap, read-only repository sanity. Mutates the job. Never raises."""
     try:
+        if job.tool == "timemachine":
+            return          # verdict came from Time Machine's own records
+        failed = _systemd_failed(job)
+        if failed:
+            job.integrity, job.integrity_note = "failed", failed
+            return
         if job.tool == "borg":
             repo = (job.dest or "").split("::")[0]
             if not repo:
@@ -573,18 +690,25 @@ def scan(cfg=None, store=None, persist: bool = True, on_step=None) -> dict:
         "jobs": [j.as_dict() for j in jobs],
         "count": len(jobs),
         "severity_counts": sev_counts,
-        "worst": worst if jobs else "warning",
-        "no_jobs": not jobs,
+        "worst": worst if jobs else ("warning" if detection_supported() else "none"),
+        "no_jobs": (not jobs) and detection_supported(),
+        "unsupported": not detection_supported(),
     }
     if store is not None and persist:
         store.add_snapshot(BACKUPS_KIND, report)
     return report
 
 
-def notify_scan(cfg, report: dict) -> dict | None:
+def notify_scan(cfg, report: dict, store=None) -> dict | None:
     """Fan a scan's worst finding out through the notification sinks."""
     from .notifications import emit_event
     if report.get("no_jobs"):
+        # this is a standing condition, not an event: say it once a day, not
+        # every time the hourly scan cache expires
+        if store is not None:
+            if store.cache_get("backups_nojobs_notified", 86400) is not None:
+                return None
+            store.cache_put("backups_nojobs_notified", {"ts": time.time()})
         return emit_event(cfg, "backups", "warning",
                           "no backup jobs detected on this box — nothing is "
                           "protecting this data (run `wrench backups`)")
@@ -605,7 +729,7 @@ def patrol_findings(cfg, store, cadence_s: int = 3600) -> list[dict]:
             report = cached[1]
         else:
             report = scan(cfg, store, persist=True)
-            notify_scan(cfg, report)
+            notify_scan(cfg, report, store)
         out = []
         if report.get("no_jobs"):
             out.append({"severity": "warning", "area": "backups",

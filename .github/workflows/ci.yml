@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check wrench tests
+
+  test:
+    # wrench promises every machine, so every OS is a first-class test target
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    # Linux and macOS gate merges. Windows runs on every push and is tracked,
+    # but does not gate yet — its branches have not had a native pass
+    # (see PLATFORMS.md). Remove this line once it is green.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+      - name: smoke — the CLI runs on this OS
+        shell: bash
+        env:
+          WRENCH_CONFIG_DIR: ${{ runner.temp }}/wrench-cfg
+          WRENCH_DATA_DIR: ${{ runner.temp }}/wrench-data
+        run: |
+          python -m wrench version
+          python -m wrench status --json > /dev/null
+          python -m wrench score --json || [ $? -le 2 ]
+          python -m wrench comply --json > /dev/null || [ $? -le 1 ]
+          python -m wrench patrol --no-llm --no-html --json || [ $? -le 2 ]
+          python -m wrench audit verify
+          python -m wrench doctor --json
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      - name: the wheel ships the dashboard pages and compliance packs
+        run: |
+          unzip -l dist/*.whl | grep -q "wrench/web/dashboard.html"
+          unzip -l dist/*.whl | grep -q "wrench/packs/macos-baseline.json"

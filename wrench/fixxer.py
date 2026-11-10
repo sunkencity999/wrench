@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat as stat_mod
 import platform as _platform
 import shutil
 import subprocess
@@ -51,16 +52,77 @@ def _run(argv: list[str], timeout: int = 300, env_extra: dict | None = None) -> 
     env = dict(os.environ)
     if env_extra:
         env.update(env_extra)
+    # stdin is closed (a package manager that asks a question gets EOF, not a
+    # hang) and the command leads its own process group, so a timeout kills
+    # the whole tree — `subprocess.run` alone would kill `sudo` and leave
+    # apt/dpkg running mid-transaction as an orphan.
+    popen_kw: dict = {"start_new_session": True} if os.name == "posix" else {}
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
-        out = (r.stdout or "") + (("\n[stderr] " + r.stderr.strip()) if r.stderr.strip() else "")
-        return r.returncode, out.strip()
-    except subprocess.TimeoutExpired:
-        return 124, f"(timed out after {timeout}s)"
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                errors="replace", env=env, **popen_kw)
     except FileNotFoundError:
         return 127, f"(command not found: {argv[0]})"
     except Exception as e:  # noqa: BLE001
         return 1, f"(error: {e.__class__.__name__}: {e})"
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        out = (stdout or "") + (("\n[stderr] " + stderr.strip()) if (stderr or "").strip() else "")
+        return proc.returncode, out.strip()
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        return 124, f"(timed out after {timeout}s — process group terminated)"
+    except FileNotFoundError:
+        return 127, f"(command not found: {argv[0]})"
+    except Exception as e:  # noqa: BLE001
+        return 1, f"(error: {e.__class__.__name__}: {e})"
+
+
+def _kill_tree(proc) -> None:
+    """Terminate a timed-out command and everything it spawned."""
+    import signal
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.communicate(timeout=10)
+                return
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+        proc.communicate(timeout=10)
+    except Exception:  # noqa: BLE001 — best effort; the caller reports the timeout
+        pass
+
+
+_APT_MUTATING = {"upgrade", "dist-upgrade", "full-upgrade", "install", "autoremove"}
+# keep the admin's edited config files and never stop to ask about them
+_DPKG_OPTS = ["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"]
+
+
+def build_command(argv: list[str], needs_sudo: bool, non_interactive: bool,
+                  env_extra: dict | None = None) -> list[str]:
+    """The exact argv to execute for one catalog command (pure given the host).
+
+    - apt mutations get the dpkg conffile options, so an unattended upgrade
+      never blocks on "keep your version?";
+    - environment for a privileged command is passed through `env` AFTER sudo:
+      sudo's default env_reset strips variables set in wrench's own process,
+      which is how DEBIAN_FRONTEND=noninteractive used to get lost;
+    - a `--user` systemd command is never elevated (root's user manager is not
+      the invoking user's).
+    """
+    argv = list(argv)
+    if argv and argv[0] == "apt-get" and len(argv) > 1 and argv[1] in _APT_MUTATING:
+        argv = [argv[0], *_DPKG_OPTS, *argv[1:]]
+    user_scope = argv[:2] == ["systemctl", "--user"]
+    if not needs_sudo or user_scope:
+        return argv
+    prefix = _sudo_prefix(non_interactive)
+    if prefix and env_extra:
+        prefix = prefix + ["env"] + [f"{k}={v}" for k, v in sorted(env_extra.items())]
+    return prefix + argv
 
 
 def _sudo_prefix(non_interactive: bool) -> list[str]:
@@ -154,17 +216,57 @@ def _detect_pkg_refresh(ctx: dict) -> Finding | None:
             "apt package list age unknown — refresh to get current update info",
             commands=[["apt-get", "update"]], needs_sudo=True,
             rollback_hint="none needed (metadata only)")
+    # A fix with no evidence is not a finding: without a measured age these
+    # used to be offered on every scan and re-run by auto mode every cycle.
     if mgr == "dnf":
+        age_h = _newest_age_hours([Path("/var/cache/dnf"), Path("/var/cache/libdnf5")])
+        if age_h is None or age_h < REFRESH_AFTER_H:
+            return None
         return Finding("pkg_refresh", "Refresh package metadata", "safe",
-                       "refresh dnf metadata cache",
+                       f"dnf metadata cache is {age_h:.0f}h old",
                        commands=[["dnf", "makecache", "--refresh", "-q"]], needs_sudo=True,
                        rollback_hint="none needed (metadata only)")
     if mgr == "brew":
+        age_h = _newest_age_hours(_brew_index_markers())
+        if age_h is None or age_h < REFRESH_AFTER_H:
+            return None
         return Finding("pkg_refresh", "Refresh package metadata", "safe",
-                       "refresh Homebrew formulae index",
+                       f"Homebrew's formula index was last updated {age_h / 24:.0f}d ago",
                        commands=[["brew", "update"]], needs_sudo=False,
                        rollback_hint="none needed (metadata only)")
     return None
+
+
+REFRESH_AFTER_H = 24 * 7      # brew/dnf refresh themselves on use; only flag real staleness
+
+
+def _newest_age_hours(paths: list[Path]) -> float | None:
+    """Hours since the most recently modified of ``paths`` (None if none exist)."""
+    newest = None
+    for p in paths:
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        newest = m if newest is None else max(newest, m)
+    return None if newest is None else (time.time() - newest) / 3600
+
+
+def _brew_cache_dir() -> Path:
+    env = os.environ.get("HOMEBREW_CACHE")
+    if env:
+        return Path(env)
+    if platforms.is_macos():
+        return Path.home() / "Library" / "Caches" / "Homebrew"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "Homebrew"
+
+
+def _brew_index_markers() -> list[Path]:
+    """Files Homebrew touches when it refreshes its index (API mode + git mode)."""
+    cache = _brew_cache_dir()
+    return [cache / "api" / "formula.jws.json", cache / "api" / "formula_names.txt",
+            Path("/opt/homebrew/.git/FETCH_HEAD"), Path("/usr/local/Homebrew/.git/FETCH_HEAD"),
+            Path("/home/linuxbrew/.linuxbrew/Homebrew/.git/FETCH_HEAD")]
 
 
 def _verify_pkg_refresh(ctx: dict, f: Finding) -> tuple[bool, str]:
@@ -333,9 +435,13 @@ def _dir_size_mb(path: Path) -> float:
         for root, _dirs, files in os.walk(path):
             for fn in files:
                 try:
-                    total += (Path(root) / fn).stat().st_size
+                    st = os.lstat(os.path.join(root, fn))
                 except OSError:
                     continue
+                # symlinks are not counted: Homebrew's cache links each download
+                # under two names, and following them doubled the figure
+                if not stat_mod.S_ISLNK(st.st_mode):
+                    total += st.st_size
     except OSError:
         return 0.0
     return total / 1024 / 1024
@@ -353,14 +459,23 @@ def _detect_cache_clean(ctx: dict) -> Finding | None:
                        commands=[["apt-get", "clean"]], needs_sudo=True,
                        rollback_hint="none needed (cached installers re-download on demand)")
     if mgr == "dnf":
+        size = max(_dir_size_mb(Path("/var/cache/dnf")), _dir_size_mb(Path("/var/cache/libdnf5")))
+        if size <= max_mb:
+            return None
         return Finding("cache_clean", "Clear package download cache", "safe",
-                       "clear dnf package cache",
+                       f"dnf package cache holds {size:.0f} MB",
                        commands=[["dnf", "clean", "packages"]], needs_sudo=True,
                        rollback_hint="none needed (re-download on demand)")
     if mgr == "brew":
+        size = _dir_size_mb(_brew_cache_dir())
+        if size <= max_mb:
+            return None
         return Finding("cache_clean", "Clear Homebrew caches", "safe",
-                       "brew cleanup removes old versions + stale downloads",
-                       commands=[["brew", "cleanup"]], needs_sudo=False,
+                       f"Homebrew's download cache holds {size:.0f} MB "
+                       "(old versions and stale downloads)",
+                       # --prune=all also drops cached downloads newer than the
+                       # default 120-day horizon, which is what holds the space
+                       commands=[["brew", "cleanup", "--prune=all"]], needs_sudo=False,
                        rollback_hint="none needed (re-download on demand)")
     return None
 
@@ -369,15 +484,34 @@ def _verify_cache_clean(ctx: dict, f: Finding) -> tuple[bool, str]:
     if ctx["pkg_manager"] == "apt":
         size = _dir_size_mb(Path("/var/cache/apt/archives"))
         return size < 50, f"apt cache now {size:.0f} MB"
+    if ctx["pkg_manager"] == "brew":
+        size = _dir_size_mb(_brew_cache_dir())
+        max_mb = float(ctx["cfg_fixxer"].get("cache_max_mb", 500))
+        return size <= max_mb, f"Homebrew cache now {size:.0f} MB"
     return True, "clean command exited 0"
+
+
+def _tmp_dir() -> str:
+    """The real temp directory (/tmp is a symlink to /private/tmp on macOS, and
+    `find /tmp` does not descend a symlinked start point)."""
+    return os.path.realpath("/tmp")
+
+
+def _tmp_age(ctx: dict) -> int:
+    try:
+        return max(1, int(ctx["cfg_fixxer"].get("tmp_age_days", 14)))
+    except (TypeError, ValueError):
+        return 14
 
 
 def _stale_tmp(age_days: int) -> tuple[int, float]:
     """(count, MB) of plain files in /tmp older than age_days (never follows symlinks)."""
-    cutoff = time.time() - age_days * 86400
+    # `find -mtime +N` means "more than N whole days", i.e. at least N+1 days —
+    # detect with the same boundary or the leftover never verifies as clean.
+    cutoff = time.time() - (age_days + 1) * 86400
     count, size = 0, 0
     try:
-        for entry in os.scandir("/tmp"):
+        for entry in os.scandir(_tmp_dir()):
             try:
                 if entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
                     count += 1
@@ -392,21 +526,21 @@ def _stale_tmp(age_days: int) -> tuple[int, float]:
 def _detect_tmp_clean(ctx: dict) -> Finding | None:
     if platforms.is_windows():
         return None
-    age = int(ctx["cfg_fixxer"].get("tmp_age_days", 14))
+    age = _tmp_age(ctx)
     count, mb = _stale_tmp(age)
     if count == 0 or mb < 10:
         return None
     return Finding("tmp_clean", "Delete stale /tmp files", "moderate",
                    f"{count} files older than {age} days in /tmp ({mb:.0f} MB) — "
                    "top-level plain files only, never directories or sockets",
-                   commands=[["find", "/tmp", "-xdev", "-mindepth", "1", "-maxdepth", "1",
+                   commands=[["find", _tmp_dir(), "-xdev", "-mindepth", "1", "-maxdepth", "1",
                               "-type", "f", "-mtime", f"+{age}", "-delete"]],
                    needs_sudo=True,
                    rollback_hint="none (deleted files are unrecoverable — hence 'moderate')")
 
 
 def _verify_tmp_clean(ctx: dict, f: Finding) -> tuple[bool, str]:
-    age = int(ctx["cfg_fixxer"].get("tmp_age_days", 14))
+    age = _tmp_age(ctx)
     count, mb = _stale_tmp(age)
     return count == 0, f"{count} stale files remain ({mb:.0f} MB)"
 
@@ -607,7 +741,8 @@ def apply_finding(cfg, store, ctx: dict, finding: Finding, mode: str,
     outputs: list[str] = []
     ok = True
     for argv in finding.commands:
-        full = (_sudo_prefix(non_interactive) + argv) if finding.needs_sudo else argv
+        full = build_command(argv, finding.needs_sudo, non_interactive,
+                             finding.env_extra or None)
         if on_step:
             on_step("run", " ".join(full))
         code, out = _run(full, timeout=1800, env_extra=finding.env_extra or None)
@@ -653,6 +788,11 @@ def load_consent(cfg) -> dict | None:
     try:
         data = json.loads(p.read_text())
         if isinstance(data, dict) and data.get("tiers"):
+            # consent is granted ON a machine, FOR that machine: a config dir
+            # synced or imaged onto another host must not carry auto mode along
+            host = data.get("host")
+            if host and host != (_platform.node() or "localhost"):
+                return None
             return data
     except (json.JSONDecodeError, OSError):
         pass
@@ -671,6 +811,8 @@ def write_consent(cfg, tiers: list[str]) -> Path:
                      "tiers without asking, and I understand every action is "
                      "logged to the audit file.",
     }, indent=2))
+    if os.name == "posix":
+        os.chmod(p, 0o600)
     return p
 
 

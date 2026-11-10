@@ -124,7 +124,7 @@ class Config:
 def _read_toml() -> dict:
     if CONFIG_PATH.exists():
         try:
-            return tomllib.loads(CONFIG_PATH.read_text())
+            return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except Exception as e:  # noqa: BLE001
             print(f"wrench: warning: could not parse {CONFIG_PATH}: {e}", file=sys.stderr)
     return {}
@@ -257,24 +257,43 @@ cadence_hours = 24
 # approval_webhook_url = "https://hooks.example.com/wrench"
 # ttl_minutes          = 60
 
+[web]
+# The dashboard (`wrench web`). On 127.0.0.1 it needs no sign-in. On any other
+# bind address every page and API call needs a token — if you set none, one is
+# generated and stored owner-only in the data dir.
+# bind         = "127.0.0.1"
+# auth_token   = "<long random string>"   # full access (or env WRENCH_WEB_TOKEN)
+# viewer_token = "<another>"              # read-only: no chat, no changes
+# allowed_hosts = ["wrench.example.com"]  # extra Host names to answer to
+# tls_cert = "/etc/wrench/tls/fullchain.pem"
+# tls_key  = "/etc/wrench/tls/privkey.pem"
+
 [fleet]
-# Fleet mode — many nodes, one view. Default OFF: no [fleet] = zero behavior
-# change. A NODE pushes a compact signed snapshot to a HUB after each patrol;
-# the HUB (`wrench fleet serve`) aggregates them into a dashboard + dead-man's
-# switch. Auth is an HMAC-SHA256 shared token (generate one with
-# `wrench fleet token`). Run the hub behind a TLS reverse proxy on the internet.
+# Fleet mode — many machines, one console. Default OFF.
 #
-# --- node side (this box reports TO a hub) ---
-# hub_url  = "http://hub.example:8788"
-# token    = "<paste a `wrench fleet token` value>"
+#   on the hub:   wrench fleet enroll          → prints a `wrench fleet join …` line
+#                 wrench fleet serve --host 0.0.0.0
+#   on each node: wrench fleet join <hub-url> <key>     (writes the lines below)
+#
+# Every report is HMAC-signed with a timestamp; the hub rejects replays, stale
+# clocks, revoked keys, and a node id claimed by a different key.
+#
+# --- node side (written by `wrench fleet join`) ---
+# hub_url  = "https://hub.example:8788"
+# token    = "wfl_…"
 # node_id  = "web-01"            # optional; defaults to hostname
+# tags     = ["prod", "web"]     # optional; searchable in the fleet console
+# ca_file  = "/etc/ssl/corp-ca.pem"   # optional; for a hub with a private cert
 #
-# --- hub side (this box RECEIVES reports) ---
+# --- hub side ---
 # listen_host       = "127.0.0.1"
 # listen_port       = 8788
-# authorized_tokens = ["<node token>", "<another node token>"]
-# silent_factor     = 2.0        # SILENT when last_seen > factor × cadence
+# tls_cert          = "/etc/wrench/tls/fullchain.pem"
+# tls_key           = "/etc/wrench/tls/privkey.pem"
+# silent_factor     = 2.0        # SILENT when last report > factor × cadence
+# max_skew_s        = 300        # accepted clock difference between node and hub
 # report_retention  = 200        # per-node report history cap
+# authorized_tokens = ["…"]      # legacy 2.x shared tokens (still accepted)
 """
 
 AZURE_SECTION_TOML = """\
@@ -323,7 +342,118 @@ def write_default_config(provider: str = "meta", interval: int = 15,
         head, _, tail = text.partition(f"[{provider}]")
         tail = tail.split("\n\n", 1)[1] if "\n\n" in tail else ""
         text = head + section + "\n" + tail
-    CONFIG_PATH.write_text(text)
-    if provider == "azure" and api_key:
-        CONFIG_PATH.chmod(0o600)  # key inside — owner-only
+    CONFIG_PATH.write_text(text, encoding="utf-8")
+    if os.name == "posix":
+        CONFIG_PATH.chmod(0o600)  # may hold an API key or a fleet key — owner-only
     return CONFIG_PATH
+
+
+def _toml_value(v) -> str:
+    """A scalar/list as TOML (strings are JSON-escaped, which is valid TOML)."""
+    import json as _json
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    # JSON string escaping is valid TOML, except that JSON writes astral
+    # characters as surrogate pairs — keep non-ASCII literal instead
+    return _json.dumps(str(v), ensure_ascii=False)
+
+
+def set_section_values(section: str, values: dict, path: Path | None = None) -> Path:
+    """Set keys in one ``[section]`` of config.toml, preserving everything else.
+
+    A line-level edit rather than a parse-and-rewrite, so the comments that
+    document the file survive. Existing (uncommented) keys are replaced in
+    place; new keys are inserted right under the section header; a missing
+    section (or file) is created. The file is made owner-only, because this is
+    how secrets such as a fleet enrollment key get written.
+    """
+    import os as _os
+    import re as _re
+    path = Path(path) if path is not None else CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    header = _re.compile(r"^\s*\[([^\[\]]+)\]\s*(#.*)?$")
+    # any table header ends a section — including [[array.of.tables]]
+    boundary = _re.compile(r"^\s*\[")
+    start = next((i for i, ln in enumerate(lines)
+                  if (m := header.match(ln)) and m.group(1).strip() == section), None)
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"[{section}]")
+        start = len(lines) - 1
+    def _is_boundary(i: int) -> bool:
+        # a "[" line is a table header unless it is the continuation of a
+        # multi-line array value (those are indented or follow an open bracket)
+        return bool(boundary.match(lines[i])) and not _in_multiline(lines, start + 1, i)
+
+    end = next((i for i in range(start + 1, len(lines)) if _is_boundary(i)), len(lines))
+    pending = dict(values)
+    i = start + 1
+    while i < end:
+        m = _re.match(r"^\s*([A-Za-z0-9_\-]+)\s*=", lines[i])
+        if m and m.group(1) in pending and not _in_multiline(lines, start + 1, i):
+            # replace the whole value, including any continuation lines of a
+            # multi-line array it used to span
+            span = 1
+            while i + span < end and _open_brackets("\n".join(lines[i:i + span])) > 0:
+                span += 1
+            lines[i:i + span] = [f"{m.group(1)} = {_toml_value(pending.pop(m.group(1)))}"]
+            end -= span - 1
+        i += 1
+    insert = [f"{k} = {_toml_value(v)}" for k, v in pending.items()]
+    lines[start + 1:start + 1] = insert
+    text = "\n".join(lines) + "\n"
+    try:
+        tomllib.loads(text)                   # never write a config we cannot read back
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"could not update [{section}] in {path} without breaking it "
+                         f"({e}) — edit the file by hand") from None
+    tmp = path.with_suffix(".toml.tmp")
+    # created owner-only from the first byte: this file may carry a secret
+    fd = _os.open(tmp, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+    with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    if _os.name == "posix":
+        _os.chmod(tmp, 0o600)
+    _os.replace(tmp, path)
+    return path
+
+
+def _open_brackets(text: str) -> int:
+    """Net unclosed '[' in TOML text, ignoring brackets inside strings/comments."""
+    depth, quote = 0, ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            nl = text.find("\n", i)
+            i = len(text) if nl < 0 else nl
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        i += 1
+    return depth
+
+
+def _in_multiline(lines: list[str], first: int, i: int) -> bool:
+    """Is line ``i`` inside a multi-line array value that began at/after ``first``?"""
+    depth = 0
+    for j in range(first, i):
+        ln = lines[j]
+        if depth == 0 and "=" not in ln.split("#", 1)[0]:
+            continue                      # header / comment / blank: not a value
+        depth = max(0, depth + _open_brackets(ln))
+    return depth > 0

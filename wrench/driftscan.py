@@ -12,6 +12,7 @@ degrade gracefully to an empty snapshot when absent.
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -25,43 +26,36 @@ SNAPSHOT_KINDS = ("ports", "services", "packages", "users", "cron")
 
 def _run(cmd: list[str], timeout: int = 20) -> str:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout).stdout
     except Exception:  # noqa: BLE001
         return ""
 
 
 # ---------------- collectors ----------------
 
-def _ports_psutil() -> dict:
-    """Listening sockets via psutil (cross-platform; proc names when permitted)."""
+def _ports_psutil() -> dict | None:
+    """Listening sockets off Linux (psutil, netstat fallback). None = census
+    unavailable — the caller must skip the diff rather than record "no ports"."""
+    from . import netinfo
+    rows, complete = netinfo.listeners()
+    if not complete:
+        return None
     ports: dict[str, str] = {}
-    try:
-        conns = psutil.net_connections(kind="inet")
-    except (psutil.AccessDenied, OSError):
-        return ports
-    for c in conns:
-        is_listener = (str(c.status) == "LISTEN") or (c.type == 2 and not c.raddr)  # 2 = UDP
-        if not is_listener or not c.laddr:
-            continue
-        proto = "tcp" if c.type == 1 else "udp"
-        key = f"{proto}/{c.laddr.port}"
-        proc = ""
-        if c.pid:
-            try:
-                proc = psutil.Process(c.pid).name()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                proc = ""
-        if key not in ports or (proc and not ports[key]):
-            ports[key] = proc
+    for r in rows:
+        key = f"{r['proto']}/{r['port']}"
+        if key not in ports or (r["process"] and not ports[key]):
+            ports[key] = r["process"]
     return ports
 
 
 def collect_ports() -> dict:
     """Listening TCP/UDP sockets -> {'tcp/8787': 'python3', ...}"""
     # Prefer ss on Linux (sees process names without root); psutil elsewhere.
+    from . import netinfo
     if platforms.is_linux() and platforms.has("ss"):
         out = _run(["ss", "-tulnpH"])
         ports: dict[str, str] = {}
+        floor = netinfo.ephemeral_floor()
         for line in out.splitlines():
             parts = line.split()
             if len(parts) < 5:
@@ -72,12 +66,33 @@ def collect_ports() -> dict:
             proc = ""
             if 'users:(("' in line:
                 proc = line.split('users:(("', 1)[1].split('"', 1)[0]
+            if port.isdigit() and netinfo.is_ephemeral_udp(proto, int(port), floor):
+                continue    # a client's source port, not a service
             key = f"{proto}/{port}"
             if key not in ports or (proc and not ports[key]):
                 ports[key] = proc
         if ports:
             return ports
     return _ports_psutil()
+
+
+_EPHEMERAL_LABEL = re.compile(r"^(application\.|com\.apple\.xpc\.launchd\.oneshot\.)|\.oneshot\.0x")
+
+
+def _stable_launchd_label(label: str) -> str | None:
+    """A launchd label worth tracking as a service, or None.
+
+    `launchctl list` mixes real agents with one label per running app instance
+    (`application.com.microsoft.Word.31977466.32034011`) and one-shot jobs.
+    Those change every time someone opens an app; they are not services.
+    Trailing numeric components (per-instance ids) are stripped.
+    """
+    if not label or _EPHEMERAL_LABEL.search(label):
+        return None
+    parts = label.split(".")
+    while len(parts) > 1 and parts[-1].isdigit():
+        parts.pop()
+    return ".".join(parts)
 
 
 def collect_services() -> dict:
@@ -102,8 +117,9 @@ def collect_services() -> dict:
             parts = line.split("\t")
             if len(parts) >= 3:
                 pid, _status, label = parts[0], parts[1], parts[2]
-                if pid.strip().isdigit():  # has a live process
-                    services[label.strip()] = "running"
+                name = _stable_launchd_label(label.strip())
+                if pid.strip().isdigit() and name:  # has a live process
+                    services[name] = "running"
         return services
     if plat == "windows" and hasattr(psutil, "win_service_iter"):
         try:
@@ -126,8 +142,12 @@ def _digest_entries(lines: list[str]) -> dict:
             "entries": {ln.split(" ")[0]: ln for ln in lines}}
 
 
-def collect_packages() -> dict:
-    """Installed package census (count + digest + entries). Empty when no known manager."""
+def collect_packages() -> dict | None:
+    """Installed package census (count + digest + entries).
+
+    None when this OS has a package manager we know but it could not be run
+    this time — "unknown", which the scan skips, is not "zero packages".
+    """
     candidates: list[list[str]] = []
     plat = platforms.current_platform()
     if plat == "linux":
@@ -142,12 +162,13 @@ def collect_packages() -> dict:
     elif plat == "windows":
         candidates = []  # no fast, reliable package census; drift still covers services/ports/tasks
     for cmd in candidates:
-        if not platforms.has(cmd[0]):
+        exe = platforms.find_tool(cmd[0])
+        if not exe:
             continue
-        out = _run(cmd, timeout=30)
+        out = _run([exe, *cmd[1:]], timeout=30)
         if out:
             return _digest_entries(out.splitlines())
-    return _digest_entries([])
+    return None if candidates else _digest_entries([])
 
 
 def collect_users() -> dict:
@@ -189,14 +210,17 @@ def collect_cron() -> dict:
     plat = platforms.current_platform()
     if plat in ("linux", "macos") and platforms.has("crontab"):
         out = _run(["crontab", "-l"])
-        for i, line in enumerate(out.splitlines()):
+        for line in out.splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                entries[f"user:{i}"] = line
+                # keyed by content, not line number: inserting one entry must
+                # not mark every later entry as "changed"
+                entries["user:" + hashlib.sha256(line.encode()).hexdigest()[:10]] = line
     if plat == "linux":
         dirs = ("/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly")
     elif plat == "macos":
-        dirs = (str(Path.home() / "Library" / "LaunchAgents"), "/Library/LaunchDaemons")
+        dirs = (str(Path.home() / "Library" / "LaunchAgents"), "/Library/LaunchAgents",
+                "/Library/LaunchDaemons")
     else:
         dirs = ()
     for d in dirs:
@@ -215,7 +239,9 @@ def collect_cron() -> dict:
             parts = line.split(",")
             if parts and parts[0].strip('"'):
                 name = parts[0].strip('"')
-                entries[name] = hashlib.sha256(line.encode()).hexdigest()[:12]
+                # the row also carries Next Run Time and Status, which change on
+                # every run — track the task's existence, not its clock
+                entries[name] = "present"
     return entries
 
 
@@ -279,6 +305,11 @@ def scan(store: Store, kinds: tuple[str, ...] = SNAPSHOT_KINDS) -> list[dict]:
         if collector is None:
             continue
         new = collector()
+        if new is None:
+            # the census could not be taken this run (no privilege, tool not on
+            # PATH under the scheduler). Recording "nothing" would report every
+            # item as removed now and re-added next time — skip instead.
+            continue
         prev = store.last_snapshot(kind)
         if prev is not None:
             changes = _diff_dicts(kind, prev[1], new)

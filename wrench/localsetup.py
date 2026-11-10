@@ -67,7 +67,7 @@ def detect_resources() -> Resources:
         try:
             out = subprocess.run(
                 [smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             )
             if out.returncode == 0:
                 vals = [float(x) for x in out.stdout.split() if x.strip().replace(".", "").isdigit()]
@@ -79,7 +79,7 @@ def detect_resources() -> Resources:
     if apple and ram_gb <= 0:  # pragma: no cover - paranoia
         try:
             out = subprocess.run(["sysctl", "-n", "hw.memsize"],
-                                 capture_output=True, text=True, timeout=5)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             ram_gb = int(out.stdout.strip()) / (1024**3)
         except (OSError, subprocess.SubprocessError, ValueError):
             pass

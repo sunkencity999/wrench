@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from wrench import fixxer as fx
 from wrench import scheduler
@@ -154,7 +153,7 @@ def test_tmp_clean_detect_and_verify(monkeypatch):
     monkeypatch.setattr(fx, "_stale_tmp", lambda age: (7, 250.0))
     f = fx._detect_tmp_clean({"cfg_fixxer": {"tmp_age_days": 14}})
     assert f is not None and f.risk == "moderate"
-    assert f.commands[0][:2] == ["find", "/tmp"]
+    assert f.commands[0][:2] == ["find", fx._tmp_dir()]
     assert "-maxdepth" in f.commands[0] and "-delete" in f.commands[0]
     monkeypatch.setattr(fx, "_stale_tmp", lambda age: (0, 0.0))
     assert fx._detect_tmp_clean({"cfg_fixxer": {}}) is None

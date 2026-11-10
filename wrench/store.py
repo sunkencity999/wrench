@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
+
+# Bump when a migration is added to ``_MIGRATIONS``. The value is persisted in
+# sqlite's ``PRAGMA user_version`` so an old database upgrades in place.
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -138,6 +143,16 @@ CREATE TABLE IF NOT EXISTS fleet_tokens (
     created REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS fleet_keys (
+    key_id TEXT PRIMARY KEY,
+    label TEXT,
+    hmac_key TEXT NOT NULL,
+    created REAL NOT NULL,
+    revoked REAL,
+    single_node INTEGER NOT NULL DEFAULT 0,
+    last_used REAL
+);
+
 CREATE TABLE IF NOT EXISTS tokens_spent (
     ts REAL NOT NULL,
     provider TEXT NOT NULL,
@@ -150,13 +165,132 @@ CREATE TABLE IF NOT EXISTS tokens_spent (
 """
 
 
+# Additive, idempotent migrations keyed by the version they produce. Each entry
+# is a list of (table, column, ddl) — applied only when the column is missing,
+# so a half-applied upgrade simply resumes.
+_MIGRATIONS: dict[int, list[tuple[str, str, str]]] = {
+    2: [
+        ("fleet_nodes", "meta", "ALTER TABLE fleet_nodes ADD COLUMN meta TEXT"),
+        ("fleet_nodes", "report_ts", "ALTER TABLE fleet_nodes ADD COLUMN report_ts REAL"),
+        ("fleet_nodes", "key_id", "ALTER TABLE fleet_nodes ADD COLUMN key_id TEXT"),
+    ],
+}
+
+# Rows that record what the box *did* (patrol reports, the action log, token
+# spend, approvals) outlive raw telemetry: they are the operational history.
+HISTORY_RETENTION_FLOOR_DAYS = 365
+
+
+def _max_number(mapping) -> float | None:
+    """Largest numeric value of a mapping; None for anything else (old rows may
+    hold whatever a node sent before reports were sanitized)."""
+    if not isinstance(mapping, dict):
+        return None
+    nums = [v for v in mapping.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return max(nums, default=None)
+
+
+def _harden_permissions(path: Path) -> None:
+    """Owner-only data dir + database on POSIX. Best-effort, never fatal.
+
+    The store holds telemetry, the action log and fleet signing keys; nothing
+    else on a shared host has any business reading it. (No-op on Windows, where
+    the per-user profile ACL already scopes %LOCALAPPDATA%.)
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.chmod(str(path) + suffix, 0o600)
+        except OSError:
+            pass
+
+
+class _Immediate:
+    """BEGIN IMMEDIATE … COMMIT/ROLLBACK around a block of Store calls.
+
+    Store methods call ``self.db.commit()`` as they go; inside this block those
+    are deferred to the single commit at exit, so the block is atomic.
+    """
+
+    def __init__(self, store: "Store"):
+        self.store = store
+
+    def __enter__(self):
+        self.real = self.store.db
+        self.real.commit()
+        self.real.execute("BEGIN IMMEDIATE")
+        self.store.db = _NoCommit(self.real)
+        return self.store
+
+    def __exit__(self, exc_type, exc, tb):
+        self.store.db = self.real
+        if exc_type is None:
+            self.real.commit()
+        else:
+            self.real.rollback()
+        return False
+
+
+class _NoCommit:
+    """A connection proxy whose commit() is a no-op (see _Immediate)."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def commit(self):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
 class Store:
     def __init__(self, path: Path | str):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(self.path))
+        # timeout = how long a writer waits on another process's lock. The
+        # dashboard sampler, a scheduled patrol and an interactive command all
+        # share this file, so "database is locked" must be a wait, not a crash.
+        self.db = sqlite3.connect(str(self.path), timeout=30)
+        try:
+            # WAL: readers never block the writer (and vice versa).
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.DatabaseError:
+            pass  # read-only media / network filesystems: stay on the default journal
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+        _harden_permissions(self.path)
+
+    def _columns(self, table: str) -> set[str]:
+        return {r[1] for r in self.db.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _migrate(self) -> None:
+        current = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if current >= SCHEMA_VERSION:
+            return
+        for version in sorted(_MIGRATIONS):
+            if version <= current:
+                continue
+            for table, column, ddl in _MIGRATIONS[version]:
+                if column not in self._columns(table):
+                    self.db.execute(ddl)
+        self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def immediate(self):
+        """``with store.immediate():`` — run a read-check-write as ONE transaction
+        holding the write lock from the start (BEGIN IMMEDIATE)."""
+        return _Immediate(self)
+
+    @property
+    def schema_version(self) -> int:
+        return self.db.execute("PRAGMA user_version").fetchone()[0]
 
     # ---- samples / baselines ----
     def add_sample(self, sensor: str, payload: dict, ts: float | None = None) -> None:
@@ -191,8 +325,12 @@ class Store:
             ewma, ewvar, n = value, 0.0, 1
         else:
             ewma, ewvar, n = row
-            sd = ewvar**0.5
-            if n >= 20 and sd > 1e-9:
+            # Floor the deviation. A metric that sat perfectly still has ~zero
+            # variance: without a floor a real jump scores z=0 (never flagged)
+            # or a 0.1-point tick scores z=60 (always flagged). The floor is
+            # 2% of the level, at least 1.0 — "normal jitter" for a percentage.
+            sd = max(ewvar**0.5, abs(ewma) * 0.02, 1.0)
+            if n >= 20:
                 z = (value - ewma) / sd
             delta = value - ewma
             ewma += alpha * delta
@@ -351,6 +489,28 @@ class Store:
         self.db.execute(f"UPDATE approvals SET {', '.join(sets)} WHERE token_hash=?", args)
         self.db.commit()
 
+    def approve_once(self, token_hash: str, now: float) -> bool:
+        """Atomically flip pending→approved. False if it was not pending+live."""
+        cur = self.db.execute(
+            "UPDATE approvals SET approved=1 WHERE token_hash=? AND approved=0 "
+            "AND claimed=0 AND expires>?", (token_hash, now))
+        self.db.commit()
+        return cur.rowcount == 1
+
+    def claim_once(self, action: str, now: float) -> bool:
+        """Atomically consume ONE approved, live approval for ``action``.
+
+        A single UPDATE — two runs racing for the same approval cannot both
+        win, so one approval is one execution.
+        """
+        cur = self.db.execute(
+            "UPDATE approvals SET claimed=1 WHERE token_hash = ("
+            " SELECT token_hash FROM approvals WHERE action=? AND approved=1 "
+            " AND claimed=0 AND expires>? ORDER BY created LIMIT 1) "
+            "AND approved=1 AND claimed=0", (action, now))
+        self.db.commit()
+        return cur.rowcount == 1
+
     def approved_unclaimed_for(self, action: str, now: float) -> dict | None:
         """Oldest approved, unclaimed, unexpired approval for an action, if any."""
         cur = self.db.execute(
@@ -463,7 +623,9 @@ class Store:
                           status: str, worst_severity: str, summary: str,
                           cadence_s: float | None, wrench_version: str,
                           findings: list | None, gauges: dict | None,
-                          now: float, silent: int = 0) -> dict:
+                          now: float, silent: int = 0, meta: dict | None = None,
+                          report_ts: float | None = None,
+                          key_id: str | None = None) -> dict:
         """Insert/update a node row from an ingested report. Returns the row.
 
         ``first_seen`` and ``report_count`` accumulate across reports; ``silent``
@@ -479,23 +641,26 @@ class Store:
         self.db.execute(
             "INSERT INTO fleet_nodes (node_id, hostname, token_hash, first_seen, "
             "last_seen, status, worst_severity, summary, cadence_s, wrench_version, "
-            "findings, gauges, report_count, silent) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "findings, gauges, report_count, silent, meta, report_ts, key_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(node_id) DO UPDATE SET hostname=excluded.hostname, "
             "token_hash=excluded.token_hash, last_seen=excluded.last_seen, "
             "status=excluded.status, worst_severity=excluded.worst_severity, "
             "summary=excluded.summary, cadence_s=excluded.cadence_s, "
             "wrench_version=excluded.wrench_version, findings=excluded.findings, "
-            "gauges=excluded.gauges, report_count=excluded.report_count",
+            "gauges=excluded.gauges, report_count=excluded.report_count, "
+            "meta=excluded.meta, report_ts=excluded.report_ts, key_id=excluded.key_id",
             (node_id, hostname, token_hash, first_seen, now, status, worst_severity,
              summary, cadence_s, wrench_version, json.dumps(findings or []),
-             json.dumps(gauges or {}), count, keep_silent),
+             json.dumps(gauges or {}), count, keep_silent,
+             json.dumps(meta or {}), report_ts, key_id),
         )
         self.db.execute(
             "INSERT INTO fleet_reports (node_id, ts, status, worst_severity, summary, payload) "
             "VALUES (?,?,?,?,?,?)",
             (node_id, now, status, worst_severity, summary,
-             json.dumps({"findings": findings or [], "gauges": gauges or {}})),
+             json.dumps({"findings": findings or [], "gauges": gauges or {},
+                         "score": (meta or {}).get("score")})),
         )
         self.db.commit()
         return self.get_fleet_node(node_id)
@@ -522,11 +687,12 @@ class Store:
             cadence_s=r[8], wrench_version=r[9],
             findings=json.loads(r[10] or "[]"), gauges=json.loads(r[11] or "{}"),
             report_count=r[12], silent=bool(r[13]),
+            meta=json.loads(r[14] or "{}"), report_ts=r[15], key_id=r[16],
         )
 
     _FLEET_COLS = ("node_id, hostname, token_hash, first_seen, last_seen, status, "
                    "worst_severity, summary, cadence_s, wrench_version, findings, "
-                   "gauges, report_count, silent")
+                   "gauges, report_count, silent, meta, report_ts, key_id")
 
     def get_fleet_node(self, node_id: str) -> dict | None:
         cur = self.db.execute(
@@ -546,10 +712,68 @@ class Store:
 
     def fleet_report_history(self, node_id: str, limit: int = 50) -> list[dict]:
         cur = self.db.execute(
-            "SELECT ts, status, worst_severity, summary FROM fleet_reports "
+            "SELECT ts, status, worst_severity, summary, payload FROM fleet_reports "
             "WHERE node_id=? ORDER BY ts DESC LIMIT ?", (node_id, limit))
-        return [dict(ts=r[0], status=r[1], worst_severity=r[2], summary=r[3])
-                for r in cur.fetchall()]
+        out = []
+        for r in cur.fetchall():
+            try:
+                payload = json.loads(r[4] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            gauges = payload.get("gauges") or {}
+            out.append(dict(ts=r[0], status=r[1], worst_severity=r[2], summary=r[3],
+                            score=payload.get("score"),
+                            mem_pct=gauges.get("mem_pct"),
+                            cpu_pct=gauges.get("cpu_pct"),
+                            disk_max_pct=_max_number(gauges.get("disk_pct"))))
+        return out
+
+    def delete_fleet_node(self, node_id: str) -> bool:
+        """Forget a node (decommissioned box): its row and its report history."""
+        cur = self.db.execute("DELETE FROM fleet_nodes WHERE node_id=?", (node_id,))
+        self.db.execute("DELETE FROM fleet_reports WHERE node_id=?", (node_id,))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    # ---- fleet enrollment keys (hub side) ----
+    _KEY_COLS = "key_id, label, hmac_key, created, revoked, single_node, last_used"
+
+    @staticmethod
+    def _key_row(r) -> dict:
+        return dict(key_id=r[0], label=r[1], hmac_key=r[2], created=r[3],
+                    revoked=r[4], single_node=bool(r[5]), last_used=r[6])
+
+    def add_fleet_key(self, key_id: str, label: str, hmac_key: str,
+                      created: float, single_node: bool = False) -> None:
+        self.db.execute(
+            "INSERT INTO fleet_keys (key_id, label, hmac_key, created, single_node) "
+            "VALUES (?,?,?,?,?)", (key_id, label, hmac_key, created, int(single_node)))
+        self.db.commit()
+
+    def get_fleet_key(self, key_id: str) -> dict | None:
+        r = self.db.execute(
+            f"SELECT {self._KEY_COLS} FROM fleet_keys WHERE key_id=?", (key_id,)).fetchone()
+        return self._key_row(r) if r else None
+
+    def fleet_keys(self) -> list[dict]:
+        cur = self.db.execute(
+            f"SELECT {self._KEY_COLS} FROM fleet_keys ORDER BY created DESC")
+        return [self._key_row(r) for r in cur.fetchall()]
+
+    def revoke_fleet_key(self, key_id: str, now: float) -> bool:
+        cur = self.db.execute(
+            "UPDATE fleet_keys SET revoked=? WHERE key_id=? AND revoked IS NULL",
+            (now, key_id))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def touch_fleet_key(self, key_id: str, now: float) -> None:
+        self.db.execute("UPDATE fleet_keys SET last_used=? WHERE key_id=?", (now, key_id))
+        self.db.commit()
+
+    def fleet_nodes_for_key(self, key_id: str) -> list[str]:
+        cur = self.db.execute("SELECT node_id FROM fleet_nodes WHERE key_id=?", (key_id,))
+        return [r[0] for r in cur.fetchall()]
 
     def add_fleet_token(self, token_hash: str, label: str, created: float) -> None:
         self.db.execute(
@@ -564,11 +788,52 @@ class Store:
         return [dict(token_hash=r[0], label=r[1], created=r[2]) for r in cur.fetchall()]
 
     # ---- housekeeping ----
-    def prune(self, retention_days: int = 30) -> None:
-        cutoff = time.time() - retention_days * 86400
-        for table in ("samples", "anomalies", "snapshots", "diffs"):
-            self.db.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+    def prune(self, retention_days: int = 30) -> dict:
+        """Apply retention. Returns {table: rows_deleted}.
+
+        - raw telemetry (samples, anomalies, diffs) ages out at ``retention_days``;
+        - snapshots age out too, EXCEPT the newest row of each kind — that row is
+          the live drift baseline / accepted security or compliance baseline, and
+          deleting it would silently un-bless the box;
+        - operational history (patrols, actions, token spend, spent approvals)
+          is kept for at least a year.
+        """
+        now = time.time()
+        retention_days = max(1, int(retention_days))
+        cutoff = now - retention_days * 86400
+        history_cutoff = now - max(retention_days, HISTORY_RETENTION_FLOOR_DAYS) * 86400
+        deleted: dict[str, int] = {}
+        for table in ("samples", "anomalies", "diffs"):
+            cur = self.db.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+            deleted[table] = cur.rowcount
+        cur = self.db.execute(
+            "DELETE FROM snapshots WHERE ts < ? AND rowid NOT IN "
+            "(SELECT rowid FROM snapshots s WHERE s.ts = "
+            " (SELECT MAX(ts) FROM snapshots WHERE kind = s.kind))", (cutoff,))
+        deleted["snapshots"] = cur.rowcount
+        for table in ("patrols", "actions", "tokens_spent"):
+            cur = self.db.execute(f"DELETE FROM {table} WHERE ts < ?", (history_cutoff,))
+            deleted[table] = cur.rowcount
+        cur = self.db.execute("DELETE FROM approvals WHERE expires < ?", (history_cutoff,))
+        deleted["approvals"] = cur.rowcount
         self.db.commit()
+        return deleted
+
+    def maybe_prune(self, retention_days: int = 30, every_s: float = 6 * 3600) -> dict | None:
+        """Prune at most once per ``every_s`` — cheap enough to call on every patrol."""
+        last = self.cache_get("_last_prune", every_s)
+        if last is not None:
+            return None
+        deleted = self.prune(retention_days)
+        self.cache_put("_last_prune", {"deleted": deleted})
+        return deleted
+
+    def table_counts(self) -> dict[str, int]:
+        out = {}
+        for table in ("samples", "anomalies", "snapshots", "diffs", "patrols",
+                      "actions", "fleet_nodes", "fleet_reports"):
+            out[table] = self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return out
 
     def close(self) -> None:
         self.db.close()

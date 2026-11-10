@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wrench — overview</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%233987e5' d='M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z'/%3E%3C/svg%3E">
+<style>__BASE_CSS__</style></head>
+<body>
+<div class="topbar">
+  <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z"/></svg>wrench</span>
+  <span class="hostchip"><span class="live" id="live"></span><b id="host">…</b><span id="oslabel" class="dim"></span></span>
+  <nav class="nav" aria-label="sections"><a class="on" href="/">Overview</a><a id="nav-fleet" href="/fleet" hidden>Fleet</a></nav>
+  <span class="spacer"></span>
+  <span class="dim" id="updated" style="font-size:12px"></span>
+  <span class="seg" role="group" aria-label="time range" id="range">
+    <button data-h="1" aria-pressed="false">1h</button><button data-h="6" aria-pressed="false">6h</button>
+    <button data-h="24" aria-pressed="true">24h</button><button data-h="168" aria-pressed="false">7d</button></span>
+  <button class="iconbtn" id="bell" title="notifications (n)" aria-label="notifications">
+    <svg viewBox="0 0 16 16"><path d="M8 1.8a4 4 0 00-4 4v2.4L2.7 11h10.6L12 8.2V5.8a4 4 0 00-4-4zM6.5 13a1.6 1.6 0 003 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span class="count" id="bell-count" hidden></span></button>
+  <button class="iconbtn" id="chat-btn" title="ask wrench (c)" hidden>
+    <svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Ask</button>
+  <button class="iconbtn" id="theme-btn" title="toggle theme (t)" aria-label="toggle theme">
+    <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2.5v11a5.5 5.5 0 000-11z" fill="currentColor"/></svg></button>
+  <span class="rolechip" id="role" hidden></span>
+  <button class="iconbtn" id="signout" title="sign out" hidden>Sign out</button>
+</div>
+
+<main class="page">
+  <div class="row hero">
+    <section class="card health" aria-labelledby="h-health">
+      <header><h2 id="h-health">Health</h2><span class="meta" id="coverage"></span></header>
+      <div class="ringwrap">
+        <svg class="ring" viewBox="0 0 128 128" role="img" id="ring" aria-label="health score">
+          <circle class="track" cx="64" cy="64" r="54" fill="none" stroke-width="9"/>
+          <circle class="value" id="ring-val" cx="64" cy="64" r="54" fill="none" stroke-width="9"
+            stroke-linecap="round" transform="rotate(-90 64 64)" stroke-dasharray="339.3" stroke-dashoffset="339.3"/>
+          <text class="score" id="score" x="64" y="70" text-anchor="middle">–</text>
+          <text class="of" x="64" y="88" text-anchor="middle">out of 100</text>
+        </svg>
+        <div><div class="grade"><b id="grade">–</b>grade</div><div id="state" style="margin-top:6px"></div>
+          <p class="dim" style="font-size:12.5px;margin-top:8px" id="health-note"></p></div>
+      </div>
+      <dl class="kv" id="health-facts" style="margin-top:auto;padding-top:12px;border-top:1px solid var(--line-soft)"></dl>
+    </section>
+    <section class="card" aria-labelledby="h-pillars">
+      <header><h2 id="h-pillars">Posture</h2><span class="meta">what the score is made of</span></header>
+      <div class="pillars" id="pillars"></div>
+      <div class="subhead" id="issues-head">Next steps</div>
+      <div class="issues" id="issues"></div>
+    </section>
+  </div>
+
+  <section class="card" aria-labelledby="h-vitals">
+    <header><h2 id="h-vitals">Vitals</h2><span class="meta" id="range-label"></span></header>
+    <div class="tiles" id="tiles"></div>
+    <div class="charts">
+      <div class="chart" id="c-cpu"></div><div class="chart" id="c-mem"></div>
+      <div class="chart" id="c-load"></div><div class="chart" id="c-net"></div>
+    </div>
+  </section>
+
+  <div class="row two">
+    <section class="card" aria-labelledby="h-patrol">
+      <header><h2 id="h-patrol">Patrols</h2><span class="meta" id="patrol-meta"></span></header>
+      <div class="feed" id="patrols"></div>
+    </section>
+    <div class="row" style="align-content:start">
+      <section class="card" aria-labelledby="h-disks">
+        <header><h2 id="h-disks">Storage</h2><span class="meta">used, per volume</span></header>
+        <div class="disks" id="disks"></div>
+      </section>
+      <section class="card" aria-labelledby="h-procs">
+        <header><h2 id="h-procs">Top processes</h2><span class="meta">at last sample</span></header>
+        <div class="row two" style="gap:18px"><dl class="kv" id="top-cpu"></dl><dl class="kv" id="top-mem"></dl></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row three">
+    <section class="card" aria-labelledby="h-drift">
+      <header><h2 id="h-drift">What changed</h2><span class="meta">last 7 days</span></header>
+      <div class="feed" id="drift"></div>
+    </section>
+    <section class="card" aria-labelledby="h-intel">
+      <header><h2 id="h-intel">Vulnerabilities &amp; end of life</h2><span class="meta" id="intel-meta"></span></header>
+      <div class="feed" id="intel"></div>
+    </section>
+    <section class="card" aria-labelledby="h-trust">
+      <header><h2 id="h-trust">Trust &amp; activity</h2><span class="meta" id="audit-state"></span></header>
+      <dl class="kv" id="trust" style="margin-bottom:12px"></dl>
+      <div class="feed" id="actions" style="max-height:230px"></div>
+    </section>
+  </div>
+  <footer class="foot">wrench <span id="version"></span> · press <code>?</code> for shortcuts</footer>
+</main>
+
+<div id="toasts" aria-live="polite"></div>
+<div class="scrim" id="scrim"></div>
+
+<aside class="drawer" id="chat" role="dialog" aria-label="ask wrench">
+  <header><h2>Ask wrench</h2><span class="dim" id="chat-model" style="font-size:12px"></span>
+    <button class="iconbtn" data-close aria-label="close">✕</button></header>
+  <div class="content" id="chat-log"></div>
+  <form class="chatform" id="chat-form"><input class="input" id="chat-input" data-autofocus autocomplete="off"
+    maxlength="2000" placeholder="What's using the memory? What changed overnight?">
+    <button class="btn primary" id="chat-send" type="submit">Send</button></form>
+</aside>
+
+<aside class="drawer" id="notifs" role="dialog" aria-label="notifications">
+  <header><h2>Notifications</h2><button class="btn" id="mark-all" hidden>Mark all read</button>
+    <button class="iconbtn" data-close aria-label="close">✕</button></header>
+  <div class="content"><div class="feed" id="notif-list" style="max-height:none"></div></div>
+</aside>
+
+<aside class="drawer" id="help" role="dialog" aria-label="keyboard shortcuts">
+  <header><h2>Keyboard shortcuts</h2><button class="iconbtn" data-close aria-label="close">✕</button></header>
+  <div class="content"><dl class="kv">
+    <dt>Ask wrench</dt><dd><code>c</code></dd><dt>Notifications</dt><dd><code>n</code></dd>
+    <dt>Refresh now</dt><dd><code>r</code></dd><dt>Toggle theme</dt><dd><code>t</code></dd>
+    <dt>Fleet console</dt><dd><code>f</code></dd><dt>Close panel</dt><dd><code>Esc</code></dd></dl></div>
+</aside>
+
+<script nonce="__NONCE__">__BASE_JS__</script>
+<script nonce="__NONCE__">
+let hours = 24, me = { role: 'viewer' }, seenNotif = new Set(), firstLoad = true;
+
+function renderHealth(p) {
+  const s = p.score, C = 339.3;
+  $('score').textContent = s == null ? '–' : Math.round(s);
+  $('grade').textContent = p.grade;
+  $('ring').setAttribute('aria-label', s == null ? 'health score: no data yet' : `health score ${Math.round(s)} of 100, grade ${p.grade}`);
+  const v = $('ring-val');
+  v.style.stroke = `var(--${p.state === 'ok' ? 'good' : p.state === 'attention' ? 'warning' : p.state === 'critical' ? 'critical' : 'unknown'})`;
+  v.style.strokeDashoffset = s == null ? C : C * (1 - s / 100);
+  $('state').innerHTML = badge(p.state);
+  $('coverage').textContent = `${p.coverage.measured} of ${p.coverage.total} pillars measured`;
+  $('health-note').textContent = p.coverage.measured < p.coverage.total
+    ? 'Unmeasured pillars are left out of the score, not counted as healthy.' : 'Every pillar is measured.';
+  $('issues').innerHTML = (p.top_issues || []).map((i) => `
+    <div class="issue"><span class="dot ${esc(p.pillars.find((x) => x.key === i.pillar).state)}"></span>
+      <span><b>${esc(i.label)}</b> — ${esc(i.detail)}</span><small>next step: <code>${esc(i.command)}</code></small></div>`).join('')
+    || (s == null ? '<div class="empty">Run <code>wrench patrol</code> to take the first measurements.</div>'
+      : '<div class="empty">Nothing needs attention.</div>');
+  $('issues-head').hidden = !(p.top_issues || []).length;
+  $('pillars').innerHTML = p.pillars.map((x) => `
+    <div class="pillar" title="run: ${esc(x.command)}">
+      <div class="top">${badge(x.state)}<span class="name">${esc(x.label)}</span>
+        <span class="val num">${x.score == null ? '—' : Math.round(x.score)}</span></div>
+      <div class="meter ${esc(x.state)}"><i style="width:${x.score ?? 0}%"></i></div>
+      <div class="detail">${esc(x.detail)}${x.score == null ? ` · <code>${esc(x.command)}</code>` : ''}</div>
+    </div>`).join('');
+}
+
+function renderVitals(o, tl) {
+  const os = o.os || {};
+  const tile = (k, v, unit) => `<div class="tile"><div class="k">${k}</div><div class="v num">${v}${unit ? `<small>${unit}</small>` : ''}</div></div>`;
+  const n = (v, d = 0) => (v == null ? '—' : Number(v).toFixed(d));
+  $('tiles').innerHTML = tile('CPU', n(os.cpu_pct), '%') + tile('Memory', n(os.mem_pct), '%')
+    + tile('Swap', n(os.swap_pct), '%') + tile('Load 1m', n(os.load_1m, 2))
+    + tile('Processes', os.n_procs ?? '—') + tile('Uptime', dur(os.uptime_s));
+  const series = (k) => tl.filter((s) => s[k] != null).map((s) => [s.ts, s[k]]);
+  lineChart($('c-cpu'), { title: 'CPU', points: series('cpu_pct'), unit: '%', max: 100 });
+  lineChart($('c-mem'), { title: 'Memory', points: series('mem_pct'), unit: '%', max: 100 });
+  lineChart($('c-load'), { title: 'Load (1 min)', points: series('load_1m'), fmt: (v) => v.toFixed(2) });
+  lineChart($('c-net'), { title: 'Network in', points: series('net_recv_rate_kbs'), unit: ' KB/s' });
+  $('range-label').textContent = hours === 168 ? 'last 7 days' : `last ${hours} hour${hours > 1 ? 's' : ''}`;
+  const disks = Object.entries(os.disk_pct || {}).map(([m, v]) => [m, Number(v)])
+    .filter((e) => Number.isFinite(e[1])).sort((a, b) => b[1] - a[1]);
+  $('disks').innerHTML = disks.length ? disks.map(([m, p]) => `
+    <div class="disk"><span class="mount" title="${esc(m)}">${esc(m)}</span>
+      <div class="meter ${stateOf(p)}" role="img" aria-label="${esc(m)} ${p}% used"><i style="width:${p}%"></i></div>
+      <span class="num"><b>${p.toFixed(0)}%</b></span></div>`).join('') : '<div class="empty">No volumes sampled yet.</div>';
+  const procs = (rows, key, head) => `<dt class="dim">${head}</dt><dd></dd>` + (rows || []).map((r) =>
+    `<dt style="color:var(--text)">${esc(r.name)}</dt><dd class="num">${Number(r[key]).toFixed(1)}%</dd>`).join('');
+  $('top-cpu').innerHTML = procs(os.top_cpu, 'cpu_pct', 'by CPU');
+  $('top-mem').innerHTML = procs(os.top_mem, 'mem_pct', 'by memory');
+}
+
+function renderPatrols(list) {
+  $('patrol-meta').textContent = list.length ? 'last ' + ago(list[0].ts) : '';
+  $('patrols').innerHTML = list.length ? list.map((p, i) => {
+    const fs = (p.findings || []).filter((f) => f.severity !== 'recommendation');
+    const recs = (p.findings || []).filter((f) => f.severity === 'recommendation');
+    return `<div class="item" data-ts="${p.ts}">
+      <div class="head">${badge(p.status)}${p.model === 'deterministic' ? '<span class="tag" title="No model was consulted; every finding is a code check.">deterministic</span>' : ''}
+        <span class="when">${ago(p.ts)}</span></div>
+      <div class="body">${esc(p.summary)}</div>
+      ${i === 0 && fs.length ? `<div class="findings">${fs.slice(0, 8).map((f) =>
+        `<div class="finding">${badge(f.severity)}<span>${esc(f.text)}</span></div>`).join('')}
+        ${fs.length > 8 ? `<div class="sub">…and ${fs.length - 8} more in the full report</div>` : ''}</div>` : ''}
+      ${i === 0 && recs.length ? `<div class="sub">Recommended: ${recs.slice(0, 3).map((r) => `<code>${esc(r.text)}</code>`).join(' ')}</div>` : ''}
+      <details><summary>Full report${i ? ` · ${fs.length} finding(s)` : ''}</summary><pre>${esc(p.report_md)}</pre></details>
+      <div class="sub">${esc(p.model || '')}${p.tokens ? ` · ${p.tokens.toLocaleString()} tokens` : ''}</div></div>`;
+  }).join('') : '<div class="empty">No patrols yet. Run <code>wrench patrol</code>, or schedule them with <code>wrench install-service</code>.</div>';
+}
+
+function renderFeeds(drift, wi, actions, o) {
+  $('drift').innerHTML = drift.length ? drift.map((d) => `
+    <div class="item"><div class="head"><span class="tag">${esc(d.kind)}</span><span class="when">${ago(d.ts)}</span></div>
+      <div class="body">${esc(d.summary)}</div>
+      ${Array.isArray(d.details) && d.details.length > 1 ? `<details><summary>${d.details.length} changes</summary><pre>${esc(d.details.join('\n'))}</pre></details>` : ''}</div>`).join('')
+    : '<div class="empty">No changes recorded — ports, services, packages, users and scheduled jobs match the last scan.</div>';
+  if (wi && wi.ts) {
+    const v = wi.vulns || [], eol = (wi.eol || []);
+    $('intel-meta').textContent = `scanned ${ago(wi.ts)}${wi.online === false ? ' · cached' : ''}`;
+    $('intel').innerHTML = v.slice(0, 10).map((x) => `
+      <div class="item"><div class="head">${badge('critical', 'CVE')}<b>${esc(x.package)}</b> <span class="dim mono">${esc(x.version)}</span></div>
+        <div class="body">${esc((x.aliases || []).join(', ') || x.vuln_id)}${x.fixed ? ` · fixed in <code>${esc(x.fixed)}</code>` : ''}</div>
+        <div class="sub">${esc(x.summary || '')}</div></div>`).join('')
+      + (v.length > 10 ? `<div class="item sub">…and ${v.length - 10} more — <code>wrench cve</code></div>` : '')
+      + eol.map((e) => `<div class="item"><div class="head">${badge(e.is_eol ? 'attention' : 'ok', e.is_eol ? 'End of life' : 'Supported')}<span>${esc(e.label)}</span></div></div>`).join('')
+      + (!v.length ? `<div class="item sub">No known CVEs in ${wi.packages_checked} checked packages.</div>` : '');
+  } else {
+    $('intel').innerHTML = o.offline ? '<div class="empty">Offline mode — public vulnerability lookups are disabled.</div>'
+      : '<div class="empty">No scan yet. Run <code>wrench cve</code>.</div>';
+  }
+  const a = o.audit || {};
+  $('audit-state').innerHTML = a.count == null ? '' : badge(a.intact ? 'ok' : 'critical', a.intact ? 'Audit chain intact' : 'Audit chain broken');
+  const b = o.brain || {};
+  $('trust').innerHTML = `
+    <dt>Policy tier</dt><dd><b>${esc(o.policy_tier)}</b></dd>
+    <dt>Brain</dt><dd>${b.usable ? `${esc(b.provider)} · <span class="mono">${esc(b.model)}</span>` : `<span class="dim">deterministic — ${esc(b.reason || 'not configured')}</span>`}</dd>
+    <dt>Network</dt><dd>${o.offline ? 'offline mode (zero egress)' : 'normal'}</dd>
+    <dt>Audit events</dt><dd class="num">${a.count ?? '—'}${a.reason && !a.intact ? ` · <span style="color:var(--critical-ink)">${esc(a.reason)}</span>` : ''}</dd>
+    <dt>Tokens spent</dt><dd class="num">${(o.tokens_total || 0).toLocaleString()}</dd>`;
+  $('actions').innerHTML = actions.length ? actions.slice(0, 30).map((x) => `
+    <div class="item"><div class="head"><span class="tag">${esc(x.kind)}</span>${x.approved ? '' : badge('attention', 'blocked')}<span class="when">${ago(x.ts)}</span></div>
+      <div class="body mono" style="font-size:12.5px">${esc(x.command)}</div></div>`).join('')
+    : '<div class="empty">No agent actions recorded yet.</div>';
+}
+
+function renderNotifs(list) {
+  const unread = list.filter((n) => !n.read);
+  const c = $('bell-count'); c.hidden = !unread.length; c.textContent = unread.length > 99 ? '99+' : unread.length;
+  $('mark-all').hidden = !unread.length || me.role !== 'admin';
+  $('notif-list').innerHTML = list.length ? list.slice().reverse().map((n) => `
+    <div class="item" style="${n.read ? 'opacity:.6' : ''}"><div class="head">${badge(n.severity)}<span class="tag">${esc(n.kind || 'patrol')}</span><span class="when">${ago(n.ts)}</span></div>
+      <div class="body">${esc(n.summary)}</div></div>`).join('') : '<div class="empty">Nothing here — the box is quiet.</div>';
+  if (!firstLoad) for (const n of unread) {
+    if (seenNotif.has(n.id)) continue;
+    const t = document.createElement('div'); t.className = 'toast ' + esc(n.severity);
+    t.innerHTML = `<div class="t">${esc(LABEL[n.severity] || n.severity)} · ${esc(n.kind || 'patrol')}</div>${esc(n.summary)}`;
+    t.addEventListener('click', () => { t.remove(); openDrawer('notifs'); });
+    $('toasts').appendChild(t); setTimeout(() => t.remove(), 20000);
+  }
+  unread.forEach((n) => seenNotif.add(n.id));
+}
+
+async function refresh() {
+  try {
+    const [o, tl, drift, patrols, actions, wi, notifs] = await Promise.all([
+      api('/api/overview'), api('/api/timeline?hours=' + hours), api('/api/drift'),
+      api('/api/patrols'), api('/api/actions'), api('/api/webintel'), api('/api/notifications?all=1')]);
+    me = o;
+    $('host').textContent = o.host; $('oslabel').textContent = o.os_label || '';
+    $('version').textContent = 'v' + o.version;
+    document.title = `${o.posture.score == null ? '' : Math.round(o.posture.score) + ' · '}${o.host} — wrench`;
+    $('nav-fleet').hidden = !o.fleet_hub;
+    $('chat-btn').hidden = o.role !== 'admin' || !o.brain.usable;
+    $('chat-model').textContent = o.brain.usable ? `${o.brain.provider} · ${o.brain.model}` : '';
+    $('role').hidden = $('signout').hidden = !o.auth_required; $('role').textContent = o.role;
+    const fresh = o.ts && (Date.now() / 1000 - o.ts) < 300;
+    $('live').classList.toggle('stale', !fresh);
+    $('updated').textContent = o.ts ? 'sampled ' + ago(o.ts) : 'no samples yet';
+    renderHealth(o.posture); renderVitals(o, tl); renderPatrols(patrols);
+    const lp = patrols[0], unread = notifs.filter((n) => !n.read).length;
+    const hot = Object.values((o.os || {}).disk_pct || {}).filter((p) => p >= 90).length;
+    $('health-facts').innerHTML = `
+      <dt>Last patrol</dt><dd>${lp ? `${badge(lp.status)} <span class="dim">${ago(lp.ts)}</span>` : '<span class="dim">none yet</span>'}</dd>
+      <dt>Unread notifications</dt><dd class="num">${unread}</dd>
+      <dt>Volumes at 90% or more</dt><dd class="num">${hot}</dd>`;
+    renderFeeds(drift, wi, actions, o); renderNotifs(notifs);
+    firstLoad = false;
+  } catch (e) { if (e.message !== 'auth') { $('updated').textContent = 'connection lost — retrying'; $('live').classList.add('stale'); } }
+}
+
+/* ---- interactions ---- */
+wireChrome();
+$('range').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  hours = Number(b.dataset.h);
+  $('range').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b));
+  refresh();
+});
+$('bell').addEventListener('click', () => openDrawer('notifs'));
+$('mark-all').addEventListener('click', async () => { await post('/api/notifications/read'); refresh(); });
+let greeted = false, busy = false;
+function addMsg(cls, text, meta) {
+  const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;
+  if (meta) { const m = document.createElement('span'); m.className = 'meta'; m.textContent = meta; d.appendChild(m); }
+  $('chat-log').appendChild(d); $('chat-log').scrollTop = $('chat-log').scrollHeight; return d;
+}
+function openChat() {
+  if (me.role !== 'admin' || !me.brain || !me.brain.usable) return;
+  if (!greeted) { greeted = true; addMsg('bot', "I'm wrench — I live on this machine. Ask me what's using the memory, what changed overnight, or whether that port should be open. I investigate with read-only diagnostics and cite what I find."); }
+  openDrawer('chat');
+}
+$('chat-btn').addEventListener('click', openChat);
+$('chat-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $('chat-input').value.trim(); if (!q || busy) return;
+  $('chat-input').value = ''; addMsg('you', q); busy = true; $('chat-send').disabled = true;
+  const t = document.createElement('div'); t.className = 'typing'; t.textContent = 'investigating…';
+  $('chat-log').appendChild(t);
+  try {
+    const d = await post('/api/chat', { message: q });
+    addMsg('bot', d.reply, `${d.tokens.toLocaleString()} tokens · ${d.steps} diagnostic${d.steps === 1 ? '' : 's'} run`);
+  } catch (err) { addMsg('bot', 'I could not answer that: ' + err.message); }
+  t.remove(); busy = false; $('chat-send').disabled = false; $('chat-input').focus();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'c') openChat(); else if (e.key === 'n') openDrawer('notifs');
+  else if (e.key === 'r') refresh(); else if (e.key === 't') toggleTheme();
+  else if (e.key === '?') openDrawer('help'); else if (e.key === 'f' && me.fleet_hub) location.href = '/fleet';
+  else return;
+  e.preventDefault();
+});
+let resizeTimer;
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(refresh, 200); });
+refresh(); setInterval(refresh, 15000);
+</script></body></html>

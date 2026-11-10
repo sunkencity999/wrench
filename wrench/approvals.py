@@ -54,8 +54,19 @@ def settings_from(cfg) -> ApprovalSettings:
         sec = {}
     return ApprovalSettings(
         approval_webhook_url=str(sec.get("approval_webhook_url", "") or ""),
-        ttl_s=max(60.0, float(sec.get("ttl_minutes", 60)) * 60.0),
+        ttl_s=_ttl_seconds(sec.get("ttl_minutes", 60)),
     )
+
+
+MAX_TTL_S = 7 * 86400.0    # an approval that never expires is a standing permission
+
+
+def _ttl_seconds(minutes) -> float:
+    try:
+        ttl = float(minutes) * 60.0
+    except (TypeError, ValueError):
+        return DEFAULT_TTL_S
+    return min(max(60.0, ttl), MAX_TTL_S)
 
 
 def hash_token(token: str) -> str:
@@ -134,7 +145,9 @@ def approve(store, token: str, now: float | None = None) -> dict:
     if now > row["expires"]:
         return {"status": "expired", "action": row["action"],
                 "detail": row["detail"]}
-    store.set_approval_flags(th, approved=True)
+    if not store.approve_once(th, now):
+        return {"status": "already_used", "action": row["action"],
+                "detail": row["detail"]}
     return {"status": "approved", "action": row["action"], "detail": row["detail"]}
 
 
@@ -147,11 +160,18 @@ def is_approved(store, action: str, now: float | None = None) -> bool:
 def claim_approval(store, action: str, now: float | None = None) -> bool:
     """Consume one approved, unexpired approval for action (single execution)."""
     now = now if now is not None else time.time()
-    row = store.approved_unclaimed_for(action, now)
-    if not row:
-        return False
-    store.set_approval_flags(row["token_hash"], claimed=True)
-    return True
+    return store.claim_once(action, now)
+
+
+def bound_action(action: str, detail: str) -> str:
+    """The approval key for one specific request.
+
+    An approval is for *this* change, not for the next thing that happens to
+    share a command name: the key carries a digest of the request detail, so
+    "blueprint --execute" approved for one intent cannot be claimed by another.
+    """
+    digest = hashlib.sha256((detail or "").encode("utf-8")).hexdigest()[:16]
+    return f"{action}#{digest}"
 
 
 def create_and_notify(cfg, store, action: str, detail: str,

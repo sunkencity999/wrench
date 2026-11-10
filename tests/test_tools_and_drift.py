@@ -1,7 +1,5 @@
 """Cross-platform tools + driftscan: run real on the host OS, mock the others."""
 
-import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -75,9 +73,14 @@ def test_collect_users_posix():
 
 
 def test_collect_packages_graceful_when_no_manager(monkeypatch):
-    monkeypatch.setattr(platforms, "has", lambda c: False)
+    monkeypatch.setattr(platforms, "find_tool", lambda c: None)
     out = driftscan.collect_packages()
-    assert out["count"] == 0 and "digest" in out
+    if platforms.current_platform() == "windows":
+        assert out["count"] == 0 and "digest" in out
+    else:
+        # a known manager that could not be run is "unknown" (skip the diff),
+        # never "zero packages" (which would report everything as removed)
+        assert out is None
 
 
 def test_diff_engine_pure():

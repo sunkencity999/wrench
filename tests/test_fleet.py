@@ -13,7 +13,6 @@ import json
 import time
 from pathlib import Path
 
-import pytest
 
 from wrench import fleet
 from wrench.store import Store
@@ -39,8 +38,13 @@ def _store(tmp_path) -> Store:
     return Store(tmp_path / "wrench.db")
 
 
+_ts_counter = iter(range(100, 10_000_000))
+
+
 def _report(node_id="web-01", status="attention", worst="warning",
-            cadence=600, findings=None, gauges=None, ts=100.0):
+            cadence=600, findings=None, gauges=None, ts=None):
+    # every report is newer than the last: the hub rejects replays
+    ts = float(next(_ts_counter)) if ts is None else ts
     return {
         "node_id": node_id, "hostname": node_id, "wrench_version": "2.0.0",
         "ts": ts, "status": status, "worst_severity": worst, "cadence_s": cadence,
@@ -165,7 +169,7 @@ def test_build_report_folds_cert_worst(tmp_path):
 
 def test_ingest_upserts_and_counts(tmp_path):
     st = _store(tmp_path)
-    s = fleet.FleetSettings(authorized_tokens=["tok"])
+    s = fleet.FleetSettings(authorized_tokens=["tok"], max_skew_s=0)
     row1 = fleet.ingest(st, s, _report(), "tok", now=1000.0)
     assert row1["report_count"] == 1 and row1["status"] == "attention"
     assert row1["token_hash"] == fleet.token_fingerprint("tok")
@@ -178,9 +182,9 @@ def test_ingest_upserts_and_counts(tmp_path):
 
 def test_ingest_prunes_report_history(tmp_path):
     st = _store(tmp_path)
-    s = fleet.FleetSettings(authorized_tokens=["tok"], report_retention=5)
+    s = fleet.FleetSettings(authorized_tokens=["tok"], report_retention=5, max_skew_s=0)
     for i in range(12):
-        fleet.ingest(st, s, _report(ts=float(i)), "tok", now=1000.0 + i)
+        fleet.ingest(st, s, _report(ts=float(i + 1)), "tok", now=1000.0 + i)
     hist = st.fleet_report_history("web-01", limit=100)
     assert len(hist) == 5           # capped
     st.close()
@@ -206,14 +210,14 @@ def test_parse_report_rejects_malformed():
 # ---------------- dead-man's switch (injected clock) ----------------
 
 def test_is_silent_with_injected_clock(tmp_path):
-    s = fleet.FleetSettings(authorized_tokens=["t"], silent_factor=2.0)
+    s = fleet.FleetSettings(authorized_tokens=["t"], silent_factor=2.0, max_skew_s=0)
     node = {"last_seen": 1000.0, "cadence_s": 600}
     assert not fleet.is_silent(node, now=1000.0 + 1100, settings=s)   # < 1200
     assert fleet.is_silent(node, now=1000.0 + 1300, settings=s)       # > 1200
 
 
 def test_node_color_ladder(tmp_path):
-    s = fleet.FleetSettings(authorized_tokens=["t"])
+    s = fleet.FleetSettings(authorized_tokens=["t"], max_skew_s=0)
     base = {"last_seen": 1000.0, "cadence_s": 600}
     fresh = 1000.0 + 10
     assert fleet.node_color({**base, "status": "ok"}, fresh, s) == "green"
@@ -224,7 +228,7 @@ def test_node_color_ladder(tmp_path):
 
 def test_node_states_and_summary(tmp_path):
     st = _store(tmp_path)
-    s = fleet.FleetSettings(authorized_tokens=["t"], silent_factor=2.0)
+    s = fleet.FleetSettings(authorized_tokens=["t"], silent_factor=2.0, max_skew_s=0)
     fleet.ingest(st, s, _report(node_id="a", status="ok", worst="ok"), "t", now=1000.0)
     fleet.ingest(st, s, _report(node_id="b", status="critical", worst="critical"),
                  "t", now=1000.0)
@@ -241,7 +245,7 @@ def test_node_states_and_summary(tmp_path):
 
 def test_check_silent_nodes_transition_and_idempotent(tmp_path, monkeypatch):
     st = _store(tmp_path)
-    cfg = _Cfg(tmp_path, {"authorized_tokens": ["t"]})
+    cfg = _Cfg(tmp_path, {"authorized_tokens": ["t"], "max_skew_s": 0})
     s = fleet.settings_from(cfg)
     fleet.ingest(st, s, _report(node_id="n1"), "t", now=1000.0)
 
@@ -265,7 +269,7 @@ def test_check_silent_nodes_transition_and_idempotent(tmp_path, monkeypatch):
 
 def test_silent_then_recovered_transition(tmp_path, monkeypatch):
     st = _store(tmp_path)
-    cfg = _Cfg(tmp_path, {"authorized_tokens": ["t"]})
+    cfg = _Cfg(tmp_path, {"authorized_tokens": ["t"], "max_skew_s": 0})
     s = fleet.settings_from(cfg)
     monkeypatch.setattr("wrench.notifications.emit_event", lambda *a, **k: None)
     monkeypatch.setattr("wrench.audit.log_event", lambda *a, **k: None)
@@ -282,7 +286,7 @@ def test_silent_then_recovered_transition(tmp_path, monkeypatch):
 
 def test_audit_registration_only_on_first_report(tmp_path, monkeypatch):
     st = _store(tmp_path)
-    cfg = _Cfg(tmp_path, {"authorized_tokens": ["t"]})
+    cfg = _Cfg(tmp_path, {"authorized_tokens": ["t"], "max_skew_s": 0})
     s = fleet.settings_from(cfg)
     monkeypatch.setattr("wrench.notifications.emit_event", lambda *a, **k: None)
     sealed = []
@@ -368,7 +372,7 @@ def test_cli_status_json_schema(tmp_path, monkeypatch):
     _isolate_config(monkeypatch, tmp_path)
     # seed a node into the data-dir db the CLI will open
     st = Store(tmp_path / "wrench.db")
-    s = fleet.FleetSettings(authorized_tokens=["t"])
+    s = fleet.FleetSettings(authorized_tokens=["t"], max_skew_s=0)
     fleet.ingest(st, s, _report(node_id="web-01"), "t", now=time.time())
     st.close()
 

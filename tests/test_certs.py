@@ -404,6 +404,27 @@ def _cert(path="/etc/letsencrypt/live/example.com/cert.pem", cn="example.com"):
     return certs.CertInfo(path=path, subject=f"CN={cn}", sans=[cn])
 
 
+def _renewed(path):
+    """Stand-in for re-parsing the certificate after a real renewal."""
+    return certs.CertInfo(path=path, subject="CN=example.com", sans=["example.com"],
+                          fingerprint_sha256="AA:BB:NEW", days_left=89)
+
+
+def test_renew_noop_is_not_reported_as_success():
+    # the ACME client exits 0 for "not due yet": same fingerprint → not a renewal
+    same = lambda path: certs.CertInfo(path=path, subject="CN=example.com")  # noqa: E731
+    res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                  run=lambda argv, timeout=30, **k: (0, "ok"),
+                                  reparse=same)
+    assert not res.ok and "nothing was renewed" in res.message
+
+
+def test_certbot_without_lineage_is_refused():
+    # no --cert-name would renew EVERY lineage on the box
+    assert certs.renewer_commands("certbot", _cert(path="/etc/ssl/certs/site.pem")) == {}
+    assert certs.certbot_lineage("/etc/letsencrypt/archive/example.com/cert3.pem") == "example.com"
+
+
 def test_detect_renewer(monkeypatch):
     monkeypatch.setattr(certs.shutil, "which",
                         lambda b: "/usr/bin/certbot" if b == "certbot" else None)
@@ -428,7 +449,8 @@ def test_renewer_commands_certbot():
 
 def test_renewer_commands_acme():
     cmds = certs.renewer_commands("acme.sh", _cert(cn="svc.local"))
-    assert cmds["renew"] == ["acme.sh", "--renew", "-d", "svc.local", "--force"]
+    # never --force: acme.sh renews when due, forcing burns the CA rate limit
+    assert cmds["renew"] == ["acme.sh", "--renew", "-d", "svc.local"]
     assert cmds["dry_run"][0] == "acme.sh" and "--info" in cmds["dry_run"]
 
 
@@ -478,13 +500,15 @@ def test_orchestrate_full_success_with_reload():
     m.verify_chain = lambda path, untrusted=None: (True, "chain ok")
     try:
         res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                      reparse=_renewed,
                                       reload_service="nginx", probe_host="localhost",
                                       run=run, prober=prober)
     finally:
         m.verify_chain = monkeypatchverify
     assert res.ok and not res.rolled_back
     names = [s.name for s in res.steps]
-    assert names == ["dry_run", "renew", "validate_chain", "reload_test", "reload", "probe"]
+    assert names == ["dry_run", "renew", "new_certificate", "validate_chain",
+                     "reload_test", "reload", "probe"]
     # nginx -t ran before the reload
     assert any(s.startswith("nginx -t") for s in seq)
 
@@ -497,12 +521,14 @@ def test_orchestrate_bad_chain_does_not_reload():
     m.verify_chain = lambda path, untrusted=None: (False, "missing issuer")
     try:
         res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                      reparse=_renewed,
                                       reload_service="nginx", run=run)
     finally:
         m.verify_chain = saved
-    assert not res.ok and res.rolled_back
+    assert not res.ok and not res.rolled_back   # nothing was rolled back: the old cert keeps serving
     assert "NOT reloading" in res.message
-    assert [s.name for s in res.steps] == ["dry_run", "renew", "validate_chain"]
+    assert [s.name for s in res.steps] == ["dry_run", "renew", "new_certificate",
+                                            "validate_chain"]
 
 
 def test_orchestrate_reload_test_failure_leaves_service():
@@ -516,6 +542,7 @@ def test_orchestrate_reload_test_failure_leaves_service():
     m.verify_chain = lambda path, untrusted=None: (True, "ok")
     try:
         res = certs.orchestrate_renew(_cert(), "certbot", dry_run=False,
+                                      reparse=_renewed,
                                       reload_service="nginx", run=run)
     finally:
         m.verify_chain = saved

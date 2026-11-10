@@ -79,7 +79,7 @@ def test_parse_auth_events_classifies_all_kinds():
 def test_analyze_auth_brute_force_burst():
     # 9 failures from one IP inside the window → warning burst
     lines = [_syslog(f"Nov  5 12:0{i//10}{i%10}:00",
-                     f"sshd[1]: Failed password for root from 10.0.0.66 port 1 ssh2")
+                     "sshd[1]: Failed password for root from 10.0.0.66 port 1 ssh2")
              for i in range(9)]
     ev = sec.parse_auth_events(lines, NOW)
     findings, observed = sec.analyze_auth(ev, None, SecuritySettings(), NOW)
@@ -344,8 +344,9 @@ def test_severity_bucket_variants():
     assert sec._severity_bucket("") == "unknown"
     assert sec._severity_bucket("CRITICAL") == "critical"
     assert sec._severity_bucket("moderate") == "medium"
-    # CVSS vector with a high impact flag
-    assert sec._severity_bucket("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") == "high"
+    # CVSS vectors are scored with the real base-score formula (this one is 9.8)
+    assert sec._severity_bucket("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") == "critical"
+    assert sec._severity_bucket("CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N") == "low"
 
 
 def _wire_cve(monkeypatch, ids_per_pkg, detail=None):

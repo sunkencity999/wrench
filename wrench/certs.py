@@ -39,7 +39,7 @@ def _run(argv: list[str], timeout: int = 30, env_extra: dict | None = None) -> t
     if env_extra:
         env.update(env_extra)
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
         out = (r.stdout or "") + (("\n[stderr] " + r.stderr.strip()) if r.stderr.strip() else "")
         return r.returncode, out.strip()
     except subprocess.TimeoutExpired:
@@ -201,6 +201,25 @@ def _read_text(p: Path) -> str:
         return ""
 
 
+_FAMILY_BINARIES = {"nginx": ("nginx",), "apache": ("apache2", "httpd"),
+                    "caddy": ("caddy",), "haproxy": ("haproxy",)}
+
+
+def _family_in_use(family: str) -> bool:
+    """Is this web server installed (Linux) / actually running (macOS)?"""
+    from . import platforms
+    names = _FAMILY_BINARIES.get(family, (family,))
+    if platforms.is_macos():
+        try:
+            import psutil
+            running = {(p.info.get("name") or "").lower()
+                       for p in psutil.process_iter(["name"])}
+            return any(n in running for n in names)
+        except Exception:  # noqa: BLE001
+            return False
+    return any(platforms.has(n) for n in names) or platforms.is_windows()
+
+
 def scan_config_certs(roots: list[tuple[str, Path]] | None = None
                       ) -> tuple[list[tuple[str, str, str]], list[ConfigWeakness]]:
     """Scan web-server configs.
@@ -209,7 +228,10 @@ def scan_config_certs(roots: list[tuple[str, Path]] | None = None
     (server_family, cert_path, source_config_file) and weaknesses is a list of
     ConfigWeakness found in the same files.
     """
-    roots = roots if roots is not None else CONFIG_ROOTS
+    if roots is None:
+        # only audit servers this box actually runs — macOS ships a sample
+        # /etc/apache2 tree whether or not httpd has ever been started
+        roots = [(fam, root) for fam, root in CONFIG_ROOTS if _family_in_use(fam)]
     refs: list[tuple[str, str, str]] = []
     weaknesses: list[ConfigWeakness] = []
     seen: set[tuple[str, str]] = set()
@@ -231,7 +253,11 @@ def scan_config_certs(roots: list[tuple[str, Path]] | None = None
                             seen.add(key)
                             refs.append((family, cert_path, str(cf)))
             weaknesses.extend(_config_weaknesses(family, cf, text))
-    return refs, weaknesses
+    # the same advisory from five vhost files is one finding, not five
+    uniq: dict[tuple, ConfigWeakness] = {}
+    for w in weaknesses:
+        uniq.setdefault((w.kind, w.severity, w.detail), w)
+    return refs, list(uniq.values())
 
 
 def _config_weaknesses(family: str, cf: Path, text: str) -> list[ConfigWeakness]:
@@ -428,10 +454,10 @@ def verify_chain(path: str, untrusted: str | None = None) -> tuple[bool | None, 
     """
     if not shutil.which("openssl"):
         return None, "openssl not available"
-    argv = ["openssl", "verify"]
-    if untrusted:
-        argv += ["-untrusted", untrusted]
-    argv.append(path)
+    # `openssl verify FILE` checks only the FIRST certificate in the file. An
+    # ACME fullchain.pem carries its intermediates after the leaf, so they must
+    # be offered as -untrusted or every normal chain reads as "incomplete".
+    argv = ["openssl", "verify", "-untrusted", untrusted or path, path]
     code, out = _run(argv, timeout=20)
     if code == 0 and out.strip().endswith("OK"):
         return True, "chain verified against system trust store"
@@ -444,6 +470,22 @@ def verify_chain(path: str, untrusted: str | None = None) -> tuple[bool | None, 
 
 
 # ---------------- live TLS probe (read-only) ----------------
+
+def _days_left_from_der(der: bytes) -> int | None:
+    """Days until a DER certificate expires (via openssl; None if unknown)."""
+    import tempfile
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as fh:
+            fh.write(ssl.DER_cert_to_PEM_cert(der))
+            tmp = fh.name
+        try:
+            info = parse_cert(tmp, source="probe")
+            return info.days_left if info.ok else None
+        finally:
+            os.unlink(tmp)
+    except Exception:  # noqa: BLE001
+        return None
+
 
 def probe_tls(host: str, port: int = 443, timeout: float = 5.0) -> dict:
     """Open a TLS connection and report negotiated protocol + peer cert expiry.
@@ -462,10 +504,11 @@ def probe_tls(host: str, port: int = 443, timeout: float = 5.0) -> dict:
                 res["protocol"] = ss.version() or ""
                 c = ss.cipher()
                 res["cipher"] = c[0] if c else ""
-                cert = ss.getpeercert()
-                if cert and cert.get("notAfter"):
-                    exp = ssl.cert_time_to_seconds(cert["notAfter"])
-                    res["days_left"] = int((exp - time.time()) // 86400)
+                # with verification off getpeercert() returns {} — take the DER
+                # and read the expiry out of it ourselves
+                der = ss.getpeercert(binary_form=True)
+                if der:
+                    res["days_left"] = _days_left_from_der(der)
                 res["ok"] = True
     except Exception as e:  # noqa: BLE001 — probe is best-effort
         res["error"] = f"{e.__class__.__name__}: {e}"
@@ -683,8 +726,26 @@ def detect_renewer() -> str | None:
 
 def certbot_lineage(cert_path: str) -> str | None:
     """Derive the certbot --cert-name (lineage) from a live-dir path."""
-    m = re.search(r"/etc/letsencrypt/live/([^/]+)/", cert_path + "/")
+    # the inventory stores RESOLVED paths, and live/<name>/cert.pem is a symlink
+    # into archive/<name>/certN.pem — both spell the lineage
+    m = re.search(r"/letsencrypt/(?:live|archive)/([^/]+)/", cert_path + "/")
     return m.group(1) if m else None
+
+
+def live_path_for(cert_path: str) -> str:
+    """Where the CURRENT certificate of this lineage lives after a renewal.
+
+    For certbot that is live/<name>/fullchain.pem (the archive file the
+    inventory resolved to is the *old* certN.pem and never changes). For any
+    other layout the file is renewed in place.
+    """
+    name = certbot_lineage(cert_path)
+    if name:
+        root = cert_path.split("/letsencrypt/", 1)[0] + "/letsencrypt/live/" + name
+        for leaf in ("fullchain.pem", "cert.pem"):
+            if os.path.exists(os.path.join(root, leaf)):
+                return os.path.join(root, leaf)
+    return cert_path
 
 
 def renewer_commands(tool: str, cert: CertInfo) -> dict:
@@ -696,16 +757,22 @@ def renewer_commands(tool: str, cert: CertInfo) -> dict:
     domain = cert.common_name
     if tool == "certbot":
         name = certbot_lineage(cert.path)
-        target = ["--cert-name", name] if name else []
+        if not name:
+            # `certbot renew` with no --cert-name renews EVERY lineage on the
+            # box. Without a known lineage there is no safe command to run.
+            return {}
+        target = ["--cert-name", name]
         return {
             "dry_run": ["certbot", "renew", *target, "--dry-run", "--non-interactive"],
             "renew": ["certbot", "renew", *target, "--non-interactive"],
             "dry_run_is_real": True,
         }
     if tool == "acme.sh":
+        # no --force: acme.sh renews when due; forcing every run burns the
+        # CA's rate limit
         return {
             "dry_run": ["acme.sh", "--info", "-d", domain],
-            "renew": ["acme.sh", "--renew", "-d", domain, "--force"],
+            "renew": ["acme.sh", "--renew", "-d", domain],
             "dry_run_is_real": False,
         }
     return {}
@@ -726,7 +793,8 @@ def _validate_argv(argv: list[str]) -> bool:
 
 def orchestrate_renew(cert: CertInfo, tool: str, *, dry_run: bool = True,
                       reload_service: str | None = None, probe_host: str | None = None,
-                      probe_port: int = 443, run=None, prober=None) -> RenewResult:
+                      probe_port: int = 443, run=None, prober=None,
+                      reparse=None) -> RenewResult:
     """Run the renewal pipeline for one cert. Pure of policy — the CLI gates it.
 
     Order: dry-run → (stop if dry_run) → renew → validate chain → reload (test
@@ -767,13 +835,29 @@ def orchestrate_renew(cert: CertInfo, tool: str, *, dry_run: bool = True,
                        "untouched on disk. No service was reloaded.")
         return res
 
-    # 3. validate chain
-    complete, note = verify_chain(cert.path)
+    # 3. did anything actually change? An ACME client exits 0 for "not due
+    # yet" — that is not a renewal, and saying "renewal complete" would be a lie.
+    new_path = live_path_for(cert.path)
+    renewed = (reparse or (lambda path: parse_cert(path, source=cert.source)))(new_path)
+    changed = bool(renewed.ok and renewed.fingerprint_sha256
+                   and renewed.fingerprint_sha256 != cert.fingerprint_sha256)
+    res.steps.append(RenewStep(
+        "new_certificate", changed,
+        (f"new certificate in place, valid {renewed.days_left}d" if changed else
+         "the ACME client exited 0 but the certificate on disk is unchanged "
+         "(not yet due for renewal?)")))
+    if not changed:
+        res.message = ("nothing was renewed — the certificate on disk is the same one. "
+                       "No service was reloaded.")
+        return res
+
+    # 4. validate the NEW chain
+    complete, note = verify_chain(new_path)
     res.steps.append(RenewStep("validate_chain", complete is not False, note))
     if complete is False:
-        res.rolled_back = True
         res.message = ("renewed cert failed chain validation — NOT reloading the "
-                       f"service. {note}. Investigate before serving it.")
+                       f"service (it keeps serving the certificate it has loaded). {note}. "
+                       "Investigate before reloading.")
         return res
 
     # 4. reload the consuming service (test config first)
@@ -803,8 +887,11 @@ def orchestrate_renew(cert: CertInfo, tool: str, *, dry_run: bool = True,
                                    if pr.get("ok") else pr.get("error", "probe failed")))
 
     res.ok = True
+    probe_failed = any(s.name == "probe" and not s.ok for s in res.steps)
     res.message = "renewal complete, chain validated" + (
-        f", {reload_service} reloaded" if reload_service else "")
+        f", {reload_service} reloaded" if reload_service else "") + (
+        " — but the live TLS probe failed; confirm the service is serving the new certificate"
+        if probe_failed else "")
     return res
 
 
@@ -824,7 +911,13 @@ def load_renew_consent(cfg) -> dict | None:
         return None
     try:
         data = _json.loads(p.read_text())
-        return data if isinstance(data, dict) and data.get("granted") else None
+        if not (isinstance(data, dict) and data.get("granted")):
+            return None
+        import platform as _pfm
+        host = data.get("host")
+        if host and host != (_pfm.node() or "localhost"):
+            return None      # consent recorded on a different machine
+        return data
     except (ValueError, OSError):
         return None
 

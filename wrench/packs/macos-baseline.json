@@ -1,0 +1,151 @@
+{
+ "name": "macos-baseline",
+ "title": "macOS endpoint baseline",
+ "platforms": [
+  "macos"
+ ],
+ "description": "The settings every managed Mac owes its owner: encrypted disk, intact platform protections, a firewall, automatic security updates, and a locked screen. Read-only checks; inspired by the CIS macOS Benchmark and Apple Platform Security guidance, not certified CIS content.",
+ "rules": [
+  {
+   "id": "mac.filevault",
+   "title": "FileVault full-disk encryption is on",
+   "severity": "critical",
+   "rationale": "A lost or stolen laptop with an unencrypted disk is a data breach; with FileVault it is a hardware loss.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.filevault",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.sip",
+   "title": "System Integrity Protection is enabled",
+   "severity": "critical",
+   "rationale": "SIP stops even root from modifying system files and injecting into protected processes. Disabled SIP removes the floor every other control stands on.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.sip",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.gatekeeper",
+   "title": "Gatekeeper is enabled",
+   "severity": "high",
+   "rationale": "Gatekeeper blocks unsigned and un-notarized software from running on first launch \u2014 the most common malware delivery path on macOS.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.gatekeeper",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.firewall",
+   "title": "application firewall is on",
+   "severity": "high",
+   "rationale": "Laptops join networks you do not control. The firewall keeps listening services from being reachable on them.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.firewall",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.firewall.stealth",
+   "title": "firewall stealth mode is on",
+   "severity": "low",
+   "rationale": "Stealth mode drops probes instead of answering them, so the machine is harder to enumerate on hostile networks.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.firewall_stealth",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.update.check",
+   "title": "automatic update checks are on",
+   "severity": "high",
+   "rationale": "A Mac that never checks for updates never learns a fix exists.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.auto_update_check",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.update.download",
+   "title": "updates download automatically",
+   "severity": "medium",
+   "rationale": "Pre-downloaded updates shorten the window between a fix shipping and it being installed.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.auto_update_download",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.update.security",
+   "title": "security responses install automatically",
+   "severity": "high",
+   "rationale": "Rapid Security Responses and XProtect data patch actively exploited bugs; waiting for a human defeats their purpose.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.auto_security_updates",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "mac.guest",
+   "title": "guest account is disabled",
+   "severity": "medium",
+   "rationale": "The guest account gives anyone with physical access a session on the machine and its network position.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.guest_account",
+    "expect": "off"
+   }
+  },
+  {
+   "id": "mac.autologin",
+   "title": "automatic login is disabled",
+   "severity": "high",
+   "rationale": "Automatic login hands a full user session to whoever opens the lid, and stores the password recoverably on disk.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.auto_login",
+    "expect": "off"
+   }
+  },
+  {
+   "id": "mac.screenlock",
+   "title": "screen locks within 5 minutes of sleep or screensaver",
+   "severity": "medium",
+   "rationale": "An unlocked, unattended session bypasses every authentication control on the machine.",
+   "check": {
+    "kind": "probe",
+    "name": "macos.screen_lock_delay",
+    "max": 300
+   }
+  },
+  {
+   "id": "mac.sudoers.mode",
+   "title": "/etc/sudoers is 0440",
+   "severity": "critical",
+   "rationale": "A writable sudoers file is a one-line path to root.",
+   "check": {
+    "kind": "file_mode",
+    "path": "/etc/sudoers",
+    "max_mode": "0440"
+   }
+  },
+  {
+   "id": "mac.singleuid0",
+   "title": "root is the only UID-0 account",
+   "severity": "critical",
+   "rationale": "A second UID-0 account is a classic persistence mechanism.",
+   "check": {
+    "kind": "single_uid0"
+   }
+  }
+ ]
+}

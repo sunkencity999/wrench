@@ -56,7 +56,35 @@ DENY_PATTERNS = (
     "/etc/ssh/ssh_host_*",       # host private keys
     "*.key", "*.pem",            # never rewrite key material via diff
     "/etc/machine-id",
+    "/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d/*",   # loader hijack
+    "/etc/pam.d/*", "/etc/pam.conf", "/etc/security/*",                # auth stack
+    "/etc/nsswitch.conf",
+    "/etc/ssh/sshd_config.d/../*",
+    "/etc/sudoers.d/../*",
 )
+
+# Files that are *executed* by root (cron, shell profiles, unit files, hooks).
+# A diff here is root code execution, not configuration — so it is never a
+# target unless the operator opts the directory in explicitly with
+# `[blueprint] allow_exec_paths = true`, and even then never with --yes.
+EXEC_VECTOR_PATTERNS = (
+    "/etc/cron.d/*", "/etc/cron.daily/*", "/etc/cron.hourly/*", "/etc/cron.weekly/*",
+    "/etc/cron.monthly/*", "/etc/crontab", "/etc/anacrontab",
+    "/etc/profile", "/etc/profile.d/*", "/etc/bash.bashrc", "/etc/bashrc",
+    "/etc/zshrc", "/etc/zshenv", "/etc/zprofile", "/etc/environment",
+    "/etc/systemd/system/*", "/etc/systemd/user/*", "/etc/init.d/*", "/etc/rc.local",
+    "/etc/rc*.d/*", "/etc/udev/rules.d/*", "/etc/NetworkManager/dispatcher.d/*",
+    "/etc/update-motd.d/*", "/etc/apt/apt.conf.d/*", "/etc/dpkg/dpkg.cfg.d/*",
+    "/etc/logrotate.d/../*", "/etc/xdg/autostart/*", "/etc/periodic/*",
+    "/Library/LaunchDaemons/*", "/Library/LaunchAgents/*",
+)
+
+
+def is_exec_vector(path: str) -> bool:
+    """True when writing this path means code runs as root later."""
+    norm = os.path.normpath(str(path))
+    cmp = norm.casefold()
+    return any(fnmatch.fnmatchcase(cmp, pat.casefold()) for pat in EXEC_VECTOR_PATTERNS)
 
 
 class BlueprintError(Exception):
@@ -68,7 +96,7 @@ class BlueprintError(Exception):
 def _run(argv: list[str], timeout: int = 120) -> tuple[int, str]:
     """Run argv with no shell. Returns (exit_code, combined_output)."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         out = (r.stdout or "") + (("\n[stderr] " + r.stderr.strip()) if r.stderr.strip() else "")
         return r.returncode, out.strip()
     except subprocess.TimeoutExpired:
@@ -99,15 +127,37 @@ def path_allowed(cfg, path: str) -> tuple[bool, str]:
     p = str(path)
     if not p.startswith("/") or "/../" in p + "/" or "\x00" in p:
         return False, "target must be an absolute, normalized path"
+    if p.startswith("//"):
+        return False, "target must be an absolute, normalized path"
     norm = os.path.normpath(p)
     if norm != p.rstrip("/") and norm != p:
         return False, f"non-normalized path (did you mean {norm}?)"
-    for pat in DENY_PATTERNS:
-        if fnmatch.fnmatch(norm, pat):
-            return False, f"denylisted target ({pat}) — wrench never edits this via blueprint"
+    # Confinement is decided on where the write would really land: resolve
+    # symlinks in the parent chain (and the file itself, if it is one). A link
+    # inside /etc pointing at /root/.ssh must not smuggle a write out.
+    real = os.path.realpath(norm)
+    for cand in dict.fromkeys((norm, real)):
+        # deny rules compare case-insensitively: on APFS/NTFS "/etc/Sudoers"
+        # IS /etc/sudoers, and on Linux nothing legitimate differs only by case
+        low = cand.casefold()
+        for pat in DENY_PATTERNS:
+            if fnmatch.fnmatchcase(low, pat.casefold()):
+                return False, f"denylisted target ({pat}) — wrench never edits this via blueprint"
+        if is_exec_vector(cand) and not bool(_bp_cfg(cfg).get("allow_exec_paths", False)):
+            return False, ("this path is executed by root (cron / profile / unit file) — a "
+                           "blueprint there is code execution, not configuration. Set "
+                           "[blueprint] allow_exec_paths = true to permit it deliberately")
     for root in allowed_roots(cfg):
-        if norm == root or norm.startswith(root + "/"):
+        real_root = os.path.realpath(root)
+        inside = (real == real_root or real.startswith(real_root.rstrip("/") + "/")
+                  or (real_root == "/" and real.startswith("/")))
+        lexical = (norm == root or norm.startswith(root.rstrip("/") + "/")
+                   or (root == "/" and norm.startswith("/")))
+        if lexical and inside:
             return True, f"within allowed root {root}"
+        if lexical and not inside:
+            return False, (f"{norm} resolves to {real}, outside allowed root {root} "
+                           "(symlink escape)")
     return False, (f"outside allowed roots {allowed_roots(cfg)} — "
                    "add to [blueprint] allowed_roots in config.toml to permit")
 
@@ -231,9 +281,17 @@ def _find_hunk_pos(src: list[str], h: Hunk) -> int:
         for cand in (want - delta, want + delta):
             if matches(cand):
                 return cand
-    for cand in range(0, max(1, len(src) - len(old_side) + 1)):
-        if matches(cand):
-            return cand
+    # Beyond the fuzz window, accept a match only if it is the ONLY one. Short
+    # context (a lone "}" or "PasswordAuthentication no") matches in many
+    # blocks; landing in the wrong server{}/Match block still passes a syntax
+    # check, so ambiguity is an error, not a guess.
+    hits = [cand for cand in range(0, max(1, len(src) - len(old_side) + 1)) if matches(cand)]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise BlueprintError(
+            f"hunk near line {h.old_start} matches {len(hits)} places in the file — "
+            "ambiguous context; redraft the diff with more surrounding lines")
     ctx = old_side[0][:60] if old_side else ""
     raise BlueprintError(
         f"hunk context not found near line {h.old_start} (looking for {ctx!r}) — "
@@ -244,7 +302,12 @@ def apply_patch_text(original: str, patch: FilePatch) -> str:
     """Apply one FilePatch to original content. Raises BlueprintError on any
     context mismatch. Preserves a trailing newline if the original had one."""
     had_nl = original.endswith("\n") or original == ""
-    src = original.splitlines()
+    # split on "\n" ONLY. str.splitlines() also breaks on \r, form feed, NEL and
+    # U+2028, silently rewriting lines the diff never touched (CRLF configs
+    # became LF; a form feed became a line break).
+    src = original.split("\n")
+    if had_nl and src and src[-1] == "":
+        src.pop()
     out: list[str] = []
     pos = 0
     for h in patch.hunks:
@@ -282,7 +345,14 @@ def _read_target(path: str) -> str:
     raw = p.read_bytes()
     if b"\x00" in raw:
         raise BlueprintError(f"{path} looks binary — blueprints only edit text configs")
-    return raw.decode("utf-8", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # decoding with replacement would write U+FFFD over every non-UTF-8
+        # byte in the file (a Latin-1 comment, say) on apply — refuse instead
+        raise BlueprintError(
+            f"{path} is not valid UTF-8 — refusing to rewrite it (bytes would be corrupted)"
+        ) from None
 
 
 @dataclass
@@ -410,7 +480,13 @@ def load_consent(cfg) -> dict | None:
         return None
     try:
         data = json.loads(p.read_text())
-        return data if isinstance(data, dict) and data.get("granted") else None
+        if not (isinstance(data, dict) and data.get("granted")):
+            return None
+        import platform as _pfm
+        host = data.get("host")
+        if host and host != (_pfm.node() or "localhost"):
+            return None      # consent recorded on a different machine
+        return data
     except (ValueError, OSError):
         return None
 
@@ -475,15 +551,33 @@ class ApplyOutcome:
 
 
 def _write_file(path: str, content: str) -> None:
-    """Atomic same-directory write; preserves existing mode."""
-    p = Path(path)
+    """Atomic same-directory write that leaves the file's identity alone.
+
+    Preserves mode AND owner/group (a `root:bind 0640` zone file that comes
+    back `root:root` passes the syntax check and then the daemon can't read
+    it). A symlinked target is written through to the file it points at, so
+    `sites-enabled/x → sites-available/x` stays a link. New sudoers drop-ins
+    are created 0440 — visudo rejects anything looser.
+    """
+    p = Path(os.path.realpath(path))
     p.parent.mkdir(parents=True, exist_ok=True)
-    mode = p.stat().st_mode & 0o7777 if p.exists() else 0o644
+    st = p.stat() if p.exists() else None
+    if st is not None:
+        mode = st.st_mode & 0o7777
+    else:
+        mode = 0o440 if str(p).startswith("/etc/sudoers.d/") else 0o644
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.bp-")
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.chmod(tmp, mode)
+        if st is not None and hasattr(os, "chown"):
+            try:
+                os.chown(tmp, st.st_uid, st.st_gid)
+            except OSError:
+                pass    # not root: the file keeps the writer's ownership
         os.replace(tmp, str(p))
     except BaseException:
         try:
@@ -505,7 +599,10 @@ def make_backup(cfg, plan: BlueprintPlan, now: float | None = None) -> Path:
             dst = bdir / p.path.lstrip("/")
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
-            manifest["files"][p.path] = {"backed_up": True, "new_file": False}
+            st = src.stat()
+            manifest["files"][p.path] = {"backed_up": True, "new_file": False,
+                                         "uid": st.st_uid, "gid": st.st_gid,
+                                         "mode": st.st_mode & 0o7777}
         else:
             manifest["files"][p.path] = {"backed_up": False, "new_file": True}
     (bdir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -525,7 +622,17 @@ def rollback_from_backup(backup_dir: Path) -> list[str]:
         try:
             if info.get("backed_up"):
                 src = backup_dir / path.lstrip("/")
-                shutil.copy2(str(src), path)
+                # restore content through the same identity-preserving write,
+                # then put the recorded mode/owner back explicitly
+                _write_file(path, src.read_bytes().decode("utf-8"))
+                real = os.path.realpath(path)
+                if info.get("mode") is not None:
+                    os.chmod(real, int(info["mode"]))
+                if info.get("uid") is not None and hasattr(os, "chown"):
+                    try:
+                        os.chown(real, int(info["uid"]), int(info["gid"]))
+                    except OSError:
+                        pass
                 notes.append(f"restored {path}")
             elif info.get("new_file") and Path(path).exists():
                 Path(path).unlink()
@@ -536,9 +643,25 @@ def rollback_from_backup(backup_dir: Path) -> list[str]:
 
 
 def _reload_cmd_allowed(cfg, argv: list[str]) -> bool:
-    """Reload commands must pass the policy repair allowlist at this tier."""
-    decision = policy.check_repair(" ".join(argv), getattr(cfg, "policy_tier", "suggest"))
-    return decision.allowed
+    """May this reload run?
+
+    The command must be on the policy repair allowlist (shape + protected
+    units). The *tier* requirement is satisfied either by repair/autonomous or
+    by the recorded blueprint consent — the same two doors that permit the
+    apply itself. (Before 3.0 consent permitted the write but not the reload,
+    so every daemon blueprint at the default tier was applied and then rolled
+    back.)
+    """
+    tier = getattr(cfg, "policy_tier", "suggest")
+    if tier not in APPLY_ALLOWED_TIERS:
+        try:
+            consented = bool(load_consent(cfg))
+        except Exception:  # noqa: BLE001
+            consented = False
+        if not consented:
+            return False
+        tier = "repair"
+    return policy.check_repair(" ".join(argv), tier).allowed
 
 
 def apply_plan(cfg, store, plan: BlueprintPlan, *, execute: bool = False,
@@ -626,82 +749,90 @@ def apply_plan(cfg, store, plan: BlueprintPlan, *, execute: bool = False,
         _audit(cfg, store, plan, res)
         return res
 
-    # 4. apply writes
-    for p in plan.patches:
-        try:
-            _write_file(p.path, plan.new_contents[p.path])
-            step("apply", True, p.path)
-        except OSError as e:
-            step("apply", False, f"{p.path}: {e}")
-            return fail_and_rollback(f"write failed for {p.path}: {e}")
+    # Steps 4-7 mutate the box. Anything that escapes them — Ctrl-C during a
+    # 60s `nginx -t`, SIGTERM, an unexpected exception — must still put the
+    # old config back and leave an audit record before propagating.
+    try:
+        # 4. apply writes
+        for p in plan.patches:
+            try:
+                _write_file(p.path, plan.new_contents[p.path])
+                step("apply", True, p.path)
+            except OSError as e:
+                step("apply", False, f"{p.path}: {e}")
+                return fail_and_rollback(f"write failed for {p.path}: {e}")
 
-    # 5. post-apply live validation (the daemon checks its own full config)
-    done_live: set[tuple] = set()
-    for p in plan.patches:
-        spec = checkers.get(p.path)
-        if not spec or not spec.live_argv or spec.live_argv in done_live:
-            continue
-        done_live.add(spec.live_argv)
-        code, out = run(list(spec.live_argv), timeout=60)
-        if code == 127:  # checker binary not installed — skip w/ warning
-            step("check_live", True,
-                 f"{spec.live_argv[0]} not installed — live validation skipped (warning)")
-            continue
-        ok = code == 0
-        step("check_live", ok, f"{' '.join(spec.live_argv)} → exit {code} {out[:200]}")
-        if not ok:
-            return fail_and_rollback(
-                f"{spec.id} rejected the applied config ({out[:200]})")
+        # 5. post-apply live validation (the daemon checks its own full config)
+        done_live: set[tuple] = set()
+        for p in plan.patches:
+            spec = checkers.get(p.path)
+            if not spec or not spec.live_argv or spec.live_argv in done_live:
+                continue
+            done_live.add(spec.live_argv)
+            code, out = run(list(spec.live_argv), timeout=60)
+            if code == 127:  # checker binary not installed — skip w/ warning
+                step("check_live", True,
+                     f"{spec.live_argv[0]} not installed — live validation skipped (warning)")
+                continue
+            ok = code == 0
+            step("check_live", ok, f"{' '.join(spec.live_argv)} → exit {code} {out[:200]}")
+            if not ok:
+                return fail_and_rollback(
+                    f"{spec.id} rejected the applied config ({out[:200]})")
 
-    # 6. service reload — allowlisted systemctl verbs only, active units only
-    reloaded: list[str] = []
-    done_units: set[str] = set()
-    for p in plan.patches:
-        spec = checkers.get(p.path)
-        if not spec or not spec.reload_units:
-            continue
-        unit = None
-        for cand in spec.reload_units:
-            if cand in done_units:
-                unit = ""
-                break
-            code, _ = run(["systemctl", "is-active", "--quiet", cand], timeout=15)
-            if code == 0:
-                unit = cand
-                break
-        if unit == "":
-            continue
-        if unit is None:
-            step("reload", True, f"{spec.id}: no active unit among "
-                                 f"{spec.reload_units} — reload skipped")
-            continue
-        done_units.add(unit)
-        argv = ["systemctl", "reload", unit]
-        if not _reload_cmd_allowed(cfg, argv):
-            return fail_and_rollback(
-                f"reload command not permitted at tier "
-                f"'{getattr(cfg, 'policy_tier', 'suggest')}': {' '.join(argv)}")
-        code, out = run(argv, timeout=60)
-        step("reload", code == 0, f"{' '.join(argv)} → exit {code} {out[:200]}")
-        if code != 0:
-            out2 = fail_and_rollback(f"reload of {unit} failed ({out[:200]})")
-            # after restoring old config, try to reload again so the daemon
-            # returns to its previous (known-good) state
-            rcode, rout = run(argv, timeout=60)
-            step("reload_after_rollback", rcode == 0, f"exit {rcode} {rout[:150]}")
-            return out2
-        reloaded.append(unit)
+        # 6. service reload — allowlisted systemctl verbs only, active units only
+        reloaded: list[str] = []
+        done_units: set[str] = set()
+        for p in plan.patches:
+            spec = checkers.get(p.path)
+            if not spec or not spec.reload_units:
+                continue
+            unit = None
+            for cand in spec.reload_units:
+                if cand in done_units:
+                    unit = ""
+                    break
+                code, _ = run(["systemctl", "is-active", "--quiet", cand], timeout=15)
+                if code == 0:
+                    unit = cand
+                    break
+            if unit == "":
+                continue
+            if unit is None:
+                step("reload", True, f"{spec.id}: no active unit among "
+                                     f"{spec.reload_units} — reload skipped")
+                continue
+            done_units.add(unit)
+            argv = ["systemctl", "reload", unit]
+            if not _reload_cmd_allowed(cfg, argv):
+                return fail_and_rollback(
+                    f"reload command not permitted at tier "
+                    f"'{getattr(cfg, 'policy_tier', 'suggest')}': {' '.join(argv)}")
+            code, out = run(argv, timeout=60)
+            step("reload", code == 0, f"{' '.join(argv)} → exit {code} {out[:200]}")
+            if code != 0:
+                out2 = fail_and_rollback(f"reload of {unit} failed ({out[:200]})")
+                # after restoring old config, try to reload again so the daemon
+                # returns to its previous (known-good) state
+                rcode, rout = run(argv, timeout=60)
+                step("reload_after_rollback", rcode == 0, f"exit {rcode} {rout[:150]}")
+                return out2
+            reloaded.append(unit)
 
-    # 7. health probe
-    for unit in reloaded:
-        code, out = run(["systemctl", "is-active", unit], timeout=15)
-        ok = code == 0
-        step("probe", ok, f"{unit}: {'active' if ok else out[:120]}")
-        if not ok:
-            out2 = fail_and_rollback(f"{unit} unhealthy after reload ({out[:120]})")
-            rcode, rout = run(["systemctl", "reload", unit], timeout=60)
-            step("reload_after_rollback", rcode == 0, f"exit {rcode} {rout[:150]}")
-            return out2
+        # 7. health probe
+        for unit in reloaded:
+            code, out = run(["systemctl", "is-active", unit], timeout=15)
+            ok = code == 0
+            step("probe", ok, f"{unit}: {'active' if ok else out[:120]}")
+            if not ok:
+                out2 = fail_and_rollback(f"{unit} unhealthy after reload ({out[:120]})")
+                rcode, rout = run(["systemctl", "reload", unit], timeout=60)
+                step("reload_after_rollback", rcode == 0, f"exit {rcode} {rout[:150]}")
+                return out2
+
+    except BaseException as e:  # noqa: BLE001 — includes KeyboardInterrupt/SystemExit
+        fail_and_rollback(f"interrupted during apply ({e.__class__.__name__})")
+        raise
 
     res.ok = True
     res.message = ("applied " + ", ".join(plan.files)

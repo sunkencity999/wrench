@@ -50,6 +50,7 @@ class MaintenanceSettings:
     windows: list[Window] = field(default_factory=list)
     timezone: str = ""
     raw_specs: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)   # unparseable specs / tz
 
     @property
     def restricted(self) -> bool:
@@ -116,11 +117,20 @@ def settings_from(cfg) -> MaintenanceSettings:
     specs = sec.get("windows", []) or []
     if isinstance(specs, str):
         specs = [specs]
-    windows, _errs = parse_windows(list(specs))
+    windows, errs = parse_windows(list(specs))
+    tz = str(sec.get("timezone", "") or "")
+    if tz:
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(tz)
+        except Exception:  # noqa: BLE001
+            errs.append(f"timezone {tz!r} could not be loaded "
+                        "(on Windows: pip install tzdata)")
     return MaintenanceSettings(
         windows=windows,
-        timezone=str(sec.get("timezone", "") or ""),
+        timezone=tz,
         raw_specs=[str(s) for s in specs],
+        errors=errs,
     )
 
 
@@ -200,6 +210,14 @@ def gate(cfg, operation: str, override: bool, has_consent: bool,
     - Outside, --override-window WITH consent → allowed + overridden (audit it).
     """
     settings = settings_from(cfg)
+    if settings.errors:
+        # A change-control rule the operator wrote but wrench could not parse
+        # must fail CLOSED: silently treating a typo as "no restriction" turns
+        # a safety control off. No override — fix the config.
+        return WindowDecision(
+            False, False,
+            f"{operation} blocked: the [maintenance] config has errors, so no "
+            "window can be trusted — " + "; ".join(settings.errors), True)
     if not settings.restricted:
         return WindowDecision(True, False, "no maintenance windows configured", False)
     dt = now_for(settings, now)

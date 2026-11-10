@@ -8,7 +8,7 @@ import time
 import pytest
 
 from wrench import comply as cm
-from wrench.comply import Pack, Rule, Result
+from wrench.comply import Rule
 
 
 # ---- fixtures ----------------------------------------------------------------
@@ -113,6 +113,15 @@ def test_sshd_default_when_unset(tmp_path):
 
 
 # ---- sysctl / login_defs ------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _fake_sysctl_tree(monkeypatch, tmp_path_factory):
+    """A tiny /proc/sys stand-in so sysctl rules behave the same on every OS."""
+    root = tmp_path_factory.mktemp("procsys")
+    (root / "kernel").mkdir()
+    (root / "kernel" / "pid_max").write_text("4194304\n")
+    monkeypatch.setattr(cm, "_SYSCTL_ROOT", str(root))
 
 
 def test_sysctl_live_read():
@@ -257,7 +266,8 @@ class _FakeStore:
 def _mini_pack(monkeypatch, tmp_path, rules):
     monkeypatch.setattr(cm, "_PACK_DIR", tmp_path)
     (tmp_path / "mini.json").write_text(json.dumps(
-        {"name": "mini", "title": "Mini", "rules": rules}))
+        {"name": "mini", "title": "Mini",
+         "platforms": ["linux", "macos", "windows"], "rules": rules}))
 
 
 def test_scoring_ignores_skips(monkeypatch, tmp_path):
@@ -389,6 +399,6 @@ def test_cli_comply_accept_and_metrics(tmp_path):
     from wrench.store import Store
     store = Store(tmp_path / "wrench.db")
     text = render(store, tmp_path)
-    assert 'wrench_comply_score{pack="wrench-baseline"}' in text
+    assert 'wrench_comply_score{pack="' in text    # whichever pack applies to this OS
     assert "wrench_comply_baseline_accepted 1" in text
     store.close()

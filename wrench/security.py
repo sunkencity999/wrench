@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import json
 import os
 import re
 import shutil
@@ -93,7 +92,7 @@ def worst_severity(findings: list[Finding | dict]) -> str:
 
 def _run(argv: list[str], timeout: int = 20) -> tuple[int, str]:
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, p.stdout
     except Exception:  # noqa: BLE001
         return 1, ""
@@ -390,6 +389,18 @@ def sudoers_state(main: str = _SUDOERS_MAIN, dropin_dir: str = _SUDOERS_DIR) -> 
 
 def _passwd_entries(passwd_path: str = "/etc/passwd") -> list[dict]:
     out = []
+    if passwd_path == "/etc/passwd":
+        # Ask the account database, not the file: on macOS real users live in
+        # Directory Services and /etc/passwd lists only system accounts, so a
+        # planted authorized_keys in a human's home was invisible.
+        try:
+            import pwd
+            return [{"user": u.pw_name, "uid": u.pw_uid, "home": u.pw_dir,
+                     "shell": u.pw_shell} for u in pwd.getpwall()]
+        except ImportError:
+            return out          # Windows: no POSIX account database
+        except Exception:  # noqa: BLE001 — fall through to the file
+            pass
     try:
         with open(passwd_path, errors="replace") as fh:
             for line in fh:
@@ -479,6 +490,7 @@ def collect_access_state(st: SecuritySettings | None = None) -> dict:
         "uid0": uid0_accounts(),
         "empty_passwords": empties if shadow_readable else None,
         "shadow_readable": shadow_readable,
+        "shadow_exists": os.path.exists("/etc/shadow"),   # macOS/Windows have none
         "world_writable": world_writable_files(st.ww_paths),
     }
 
@@ -542,7 +554,7 @@ def analyze_access(current: dict, baseline: dict | None) -> tuple[list[Finding],
 
     empties = current.get("empty_passwords")
     if empties is None:
-        if not current.get("shadow_readable", False):
+        if not current.get("shadow_readable", False) and current.get("shadow_exists", True):
             findings.append(Finding(
                 "info", "access", "shadow file unreadable — empty-password check skipped",
                 "run wrench as root to audit password hashes", {}))
@@ -617,29 +629,17 @@ def listener_inventory() -> list[dict]:
                 "ownerless": not proc,
             })
         return sorted(rows, key=lambda r: (r["proto"], r["port"]))
-    # psutil fallback (non-Linux / no ss)
-    try:
-        import psutil
-        for c in psutil.net_connections(kind="inet"):
-            is_listener = (str(c.status) == "LISTEN") or (c.type == 2 and not c.raddr)
-            if not is_listener or not c.laddr:
-                continue
-            proto = "tcp" if c.type == 1 else "udp"
-            key = f"{proto}/{c.laddr.port}"
-            if key in seen:
-                continue
-            seen.add(key)
-            proc = ""
-            if c.pid:
-                try:
-                    proc = psutil.Process(c.pid).name()
-                except Exception:  # noqa: BLE001
-                    proc = ""
-            rows.append({"key": key, "proto": proto, "port": c.laddr.port,
-                         "addr": str(c.laddr.ip), "process": proc,
-                         "pid": c.pid or 0, "unit": "", "ownerless": not proc})
-    except Exception:  # noqa: BLE001
-        pass
+    # non-Linux / no ss: psutil, falling back to netstat where psutil is denied
+    from . import netinfo
+    census, _complete = netinfo.listeners()
+    for r in census:
+        key = f"{r['proto']}/{r['port']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"key": key, "proto": r["proto"], "port": r["port"],
+                     "addr": str(r["addr"]), "process": r["process"],
+                     "pid": r["pid"], "unit": "", "ownerless": not r["process"]})
     return sorted(rows, key=lambda r: (r["proto"], r["port"]))
 
 
@@ -756,10 +756,14 @@ def _severity_bucket(score: str) -> str:
         if word in low and "/" not in s:
             return "medium" if word == "moderate" else word
     if s.upper().startswith("CVSS:"):
-        # OSV hands us a vector, not a number — rank by impact flags
-        if "/C:H" in s or "/I:H" in s or "/A:H" in s:
-            return "high"
-        return "medium"
+        # OSV hands us a vector, not a number — compute the real base score
+        from . import webintel
+        val = webintel.cvss3_base_score(s)
+        if val is None:      # v2/v4 vector we don't score: fall back to impact flags
+            if "/C:H" in s or "/I:H" in s or "/A:H" in s or "/VC:H" in s or "/VI:H" in s:
+                return "high"
+            return "medium"
+        s = str(val)
     try:
         val = float(s)
     except ValueError:
@@ -826,18 +830,27 @@ def cve_scan(cfg, store, st: SecuritySettings | None = None,
     detail_budget = webintel.DETAIL_CAP
     for pkg, ids in zip(pkgs, hits):
         for vid in ids:
-            sev_score, fixed = "", ""
-            if detail_budget > 0:
-                try:
-                    detail = webintel.osv_vuln_detail(store, vid, st.cve_ttl_s)
+            sev_score, fixed, scored = "", "", False
+            try:
+                # cached details cost nothing, so they never count against the
+                # network budget — every scan scores more of the list until
+                # all of it is covered
+                detail = webintel.cached_vuln_detail(store, vid, st.cve_ttl_s)
+                if detail is None and detail_budget > 0:
                     detail_budget -= 1
-                    sev_score = webintel._severity_of(detail)  # noqa: SLF001
+                    detail = webintel.osv_vuln_detail(store, vid, st.cve_ttl_s)
+                if detail is not None:
+                    sev_score = detail.get("severity")
+                    if not isinstance(sev_score, str):
+                        sev_score = webintel._severity_of(detail)  # noqa: SLF001
                     fixed = webintel._fixed_of(detail, pkg["name"])  # noqa: SLF001
-                except Exception:  # noqa: BLE001
-                    pass
+                    scored = True
+            except Exception:  # noqa: BLE001
+                pass
             vulns.append({"package": pkg["name"], "version": pkg["version"],
                           "id": vid, "severity": sev_score,
-                          "bucket": _severity_bucket(sev_score), "fixed": fixed})
+                          "bucket": _severity_bucket(sev_score) if scored else "unscored",
+                          "fixed": fixed})
 
     seen_before = set(store.cache_get(CVE_SEEN_KEY, 365 * 86400) or [])
     new_serious = [v for v in vulns
@@ -937,6 +950,12 @@ def scan(cfg, store, include_cve: bool = True, force_cve: bool = False,
     events = parse_auth_events(lines)
     f_auth, auth_obs = analyze_auth(events, b_auth, st)
     findings += f_auth
+    if auth_source == "unavailable":
+        # say so — an empty auth section must not read as "no brute force"
+        findings.append(Finding(
+            "info", "auth", "login events are not being watched on this machine",
+            "no readable auth log (auth.log / secure / journald) — brute-force and "
+            "new-source-IP detection are inactive here", {}))
     components["auth"] = {"source": auth_source, "events": len(events),
                           "findings": len(f_auth)}
 

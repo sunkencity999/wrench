@@ -32,7 +32,7 @@ OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{id}"
 EOL_URL = "https://endoflife.date/api/{product}.json"
 
 HTTP_TIMEOUT = 8          # seconds per request — webintel is a guest, not a hostage
-DETAIL_CAP = 25           # max per-vuln detail fetches per scan
+DETAIL_CAP = 150          # max NETWORK detail fetches per scan (cached ones are free)
 BATCH_CHUNK = 100         # OSV querybatch page size
 DEFAULT_TTL_HOURS = 24
 
@@ -76,7 +76,7 @@ class EolStatus:
 
 def _run(argv: list[str], timeout: int = 15) -> tuple[int, str]:
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.returncode, (r.stdout or "").strip()
     except Exception as e:  # noqa: BLE001
         return 1, f"(error: {e})"
@@ -98,7 +98,11 @@ def _os_release() -> dict:
 
 
 def pip_packages() -> list[dict]:
-    code, out = _run(["python3", "-m", "pip", "list", "--format=json",
+    # inventory the interpreter wrench itself runs under — "python3 on PATH"
+    # is the Microsoft Store stub on Windows and some unrelated Homebrew
+    # python on a Mac
+    import sys as _sys
+    code, out = _run([_sys.executable, "-m", "pip", "list", "--format=json",
                       "--disable-pip-version-check"])
     if code != 0 or not out:
         return []
@@ -111,9 +115,10 @@ def pip_packages() -> list[dict]:
 
 
 def npm_packages() -> list[dict]:
-    if not shutil.which("npm"):
+    npm = shutil.which("npm")     # resolved path: on Windows it is npm.cmd,
+    if not npm:                    # which a bare "npm" argv cannot launch
         return []
-    code, out = _run(["npm", "ls", "-g", "--depth=0", "--json"], timeout=20)
+    code, out = _run([npm, "ls", "-g", "--depth=0", "--json"], timeout=20)
     if not out:
         return []
     try:
@@ -196,6 +201,51 @@ def _fixed_of(detail: dict, package: str) -> str:
     return ""
 
 
+_CVSS3_W = {
+    "AV": {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2},
+    "AC": {"L": 0.77, "H": 0.44},
+    "UI": {"N": 0.85, "R": 0.62},
+    "C": {"H": 0.56, "L": 0.22, "N": 0.0},
+    "I": {"H": 0.56, "L": 0.22, "N": 0.0},
+    "A": {"H": 0.56, "L": 0.22, "N": 0.0},
+}
+
+
+def cvss3_base_score(vector: str) -> float | None:
+    """CVSS v3.x base score from a vector string (FIRST.org formula). None if
+    the vector is not a parseable v3 vector.
+
+    OSV publishes vectors, not numbers. Ranking by "any High impact flag"
+    could never produce *critical* (a 10.0 scored "high") and called a
+    local, high-complexity bug as urgent as a remote one.
+    """
+    import math
+    if not vector or not vector.upper().startswith("CVSS:3"):
+        return None
+    try:
+        m = dict(part.split(":", 1) for part in vector.split("/")[1:])
+        scope_changed = m["S"] == "C"
+        pr = {"N": 0.85, "L": 0.68 if scope_changed else 0.62,
+              "H": 0.5 if scope_changed else 0.27}[m["PR"]]
+        iss = 1 - (1 - _CVSS3_W["C"][m["C"]]) * (1 - _CVSS3_W["I"][m["I"]]) \
+            * (1 - _CVSS3_W["A"][m["A"]])
+        impact = (7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15) if scope_changed \
+            else 6.42 * iss
+        expl = 8.22 * _CVSS3_W["AV"][m["AV"]] * _CVSS3_W["AC"][m["AC"]] * pr \
+            * _CVSS3_W["UI"][m["UI"]]
+    except (KeyError, ValueError):
+        return None
+    if impact <= 0:
+        return 0.0
+    raw = min(1.08 * (impact + expl), 10) if scope_changed else min(impact + expl, 10)
+    return math.ceil(raw * 10 - 1e-9) / 10     # CVSS "round up to one decimal"
+
+
+def cached_vuln_detail(store, vuln_id: str, ttl_s: float) -> dict | None:
+    """A previously fetched detail record, or None — never touches the network."""
+    return store.cache_get(f"osv_vuln:{vuln_id}", ttl_s)
+
+
 def osv_vuln_detail(store, vuln_id: str, ttl_s: float) -> dict:
     key = f"osv_vuln:{vuln_id}"
     cached = store.cache_get(key, ttl_s)
@@ -223,10 +273,22 @@ def _local_versions() -> dict[str, tuple[str, str]]:
     osrel = _os_release()
     if osrel.get("ID") and osrel.get("VERSION_ID"):
         out["os"] = (osrel["ID"].lower(), osrel["VERSION_ID"])
-    rel = platform.release()                      # e.g. 7.0.0-38-generic
-    parts = rel.split(".")
-    if len(parts) >= 2 and parts[0].isdigit():
-        out["linux-kernel"] = ("linux", f"{parts[0]}.{parts[1]}")
+    system = platform.system()
+    if system == "Linux":
+        rel = platform.release()                  # e.g. 7.0.0-38-generic
+        parts = rel.split(".")
+        if len(parts) >= 2 and parts[0].isdigit():
+            out["linux-kernel"] = ("linux", f"{parts[0]}.{parts[1]}")
+    elif system == "Darwin":
+        ver = platform.mac_ver()[0]               # e.g. 15.1 → cycle "15"
+        if ver:
+            major = ver.split(".")[0]
+            # endoflife.date keys macOS 10.x by minor ("10.15"), 11+ by major
+            out["os"] = ("macos", ".".join(ver.split(".")[:2]) if major == "10" else major)
+    elif system == "Windows":
+        cyc = _windows_cycle()
+        if cyc:
+            out["os"] = cyc
     pv = platform.python_version_tuple()
     out["python"] = ("python", f"{pv[0]}.{pv[1]}")
     if shutil.which("node"):
@@ -234,6 +296,30 @@ def _local_versions() -> dict[str, tuple[str, str]]:
         if code == 0 and v.startswith("v"):
             out["nodejs"] = ("nodejs", v[1:].split(".")[0])
     return out
+
+
+def _windows_cycle() -> tuple[str, str] | None:
+    """(product, cycle) for this Windows install on endoflife.date, or None.
+
+    Client cycles look like "11-24h2-w" / "10-22h2"; servers like "2022".
+    """
+    try:
+        edition = platform.win32_edition() or ""
+        build = int(platform.version().split(".")[-1])
+    except (AttributeError, ValueError, IndexError):
+        return None
+    if "Server" in edition:
+        for floor, year in ((26100, "2025"), (20348, "2022"), (17763, "2019"), (14393, "2016")):
+            if build >= floor:
+                return ("windows-server", year)
+        return None
+    releases = ((26200, "11-25h2"), (26100, "11-24h2"), (22631, "11-23h2"), (22621, "11-22h2"),
+                (22000, "11-21h2"), (19045, "10-22h2"), (19044, "10-21h2"))
+    for floor, cyc in releases:
+        if build >= floor:
+            suffix = "-e" if "Enterprise" in edition or "Education" in edition else "-w"
+            return ("windows", cyc + (suffix if cyc.startswith("11") else ""))
+    return None
 
 
 def eol_check(store, ttl_s: float) -> list[EolStatus]:
@@ -257,6 +343,10 @@ def eol_check(store, ttl_s: float) -> list[EolStatus]:
         if eol is False or eol is None:
             statuses.append(EolStatus(label, cycle, "false", False,
                                       f"{label} {cycle}: supported (no EOL date)"))
+        elif eol is True:
+            # the API uses a bare `true` for "end of life, date not recorded"
+            statuses.append(EolStatus(label, cycle, "true", True,
+                                      f"{label} {cycle}: REACHED EOL"))
         else:
             is_eol = str(eol) <= today
             verb = "REACHED EOL" if is_eol else "supported until"

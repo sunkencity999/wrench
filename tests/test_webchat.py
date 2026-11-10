@@ -14,8 +14,13 @@ from wrench.store import Store
 
 
 class FakeCfg:
+    provider = "ollama"            # a keyless provider: the brain counts as configured
     model = "stub-model"
+    base_url = "http://127.0.0.1:11434/v1"
+    api_key = ""
     policy_tier = "suggest"
+    offline = False
+    patrol_interval_min = 15
     raw: dict = {}
 
 
@@ -116,7 +121,10 @@ def test_dashboard_serves_chat_ui(server):
     url, _ = server
     with urllib.request.urlopen(url + "/", timeout=10) as r:
         html = r.read().decode()
-    assert "chat-fab" in html and "chat-panel" in html
-    assert "keyboard shortcuts" in html
-    assert "I'm wrench. I live here." in html
-    assert "/api/webintel" in html
+    assert 'id="chat"' in html and 'id="chat-form"' in html
+    assert "Keyboard shortcuts" in html
+    assert "I'm wrench" in html
+    assert "/api/webintel" in html and "/api/overview" in html
+    # templates are fully rendered: no placeholder survives, scripts carry a nonce
+    assert "__NONCE__" not in html and "__BASE_" not in html
+    assert 'script nonce="' in html

@@ -2,6 +2,9 @@
  "name": "wrench-baseline",
  "title": "Wrench opinionated baseline",
  "description": "The basics wrench believes every box owes itself. Small, loud, and honest.",
+ "platforms": [
+  "linux"
+ ],
  "rules": [
   {
    "id": "wb.unattended",

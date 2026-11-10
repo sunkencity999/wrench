@@ -33,7 +33,9 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
 
 | command | schema | fields | exit code |
 |---|---|---|---|
-| `wrench status --json` | `wrench.status.v1` | `os` (cpu_pct, mem_pct, swap_pct, disk_pct{mount: pct}, load_1m/5m/15m, n_procs, uptime_s, net rates, top_cpu/top_mem), `docker`, `gpu` (null when absent), `anomalies_24h[]`, `unread_notifications` | 0 |
+| `wrench status --json` | `wrench.status.v1` | `os` (cpu_pct, mem_pct, swap_pct, disk_pct{mount: pct}, load_1m/5m/15m, n_procs, uptime_s, net rates, top_cpu/top_mem), `docker`, `gpu` (null when absent), `anomalies_24h[]`, `unread_notifications`, `posture{score, grade, state, measured, total}` | 0 |
+| `wrench score --json` | `wrench.score.v1` | `score`, `grade`, `state`, `coverage{measured,total}`, `pillars[]`, `top_issues[]` — see below | **1 attention · 2 critical** |
+| `wrench patrol --json [--no-llm]` | `wrench.patrol.v1` | `status`, `summary`, `findings[]`, `model`, `deterministic`, `tokens`, `duration_s`, `ts` | **1 attention · 2 critical/error** |
 | `wrench report --json [-n N]` | `wrench.report.v1` | `count`, `patrols[]` — ts, status (`ok\|attention\|critical`), summary, model, tokens, findings[] | 0 |
 | `wrench drift --json` | `wrench.drift.v1` | `baseline_recorded` (true on first scan), `change_count`, `changes[]` — kind (`ports\|services\|packages\|users\|cron`), changes[] (English lines) | 0 |
 | `wrench certs --json` | `wrench.certs.v1` | `count`, `needing_attention`, `certs[]` — path, source, subject, common_name, issuer, days_left, expiry_severity (`info\|warning\|critical\|null`), sans[], key_type, key_bits, weak_key, is_ca, self_signed, chain_complete, fingerprint_sha256, error; `weaknesses[]` | 0 |
@@ -43,9 +45,9 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
 | `wrench forecast --json` | `wrench.forecast.v1` | `count`, `worst`, `incidents[]` — kind (`capacity\|cert`), what, current, growth_per_day, threshold, eta_days, eta_date, severity, confidence, r2, samples | 0 |
 | `wrench backups --json` | `wrench.backups.v1` | `count`, `worst`, `no_jobs`, `severity_counts{}`, `jobs[]` — name, tool, command, origin, schedule, cadence_s, source, dest, last_run_ts, last_run_evidence, age_s, freshness (`fresh\|stale\|unknown`), integrity (`ok\|locked\|failed\|unknown\|skipped`), integrity_note, restore_test | **1 when worst is critical** |
 | `wrench notifications --json [--all]` | `wrench.notifications.v1` | `count`, `unread_count`, `notifications[]` — id, ts, severity, summary, kind, report_id, read | 0 |
-| `wrench comply --json [--pack N]` | `wrench.comply.v1` | `packs[]` — pack, title, score, counts{pass,fail,skip}, severity_fails{}; `critical_fails`; `results[]` — pack, id, title, severity, status (`pass\|fail\|skip`), detail | **1 when any critical rule fails** |
+| `wrench comply --json [--pack N]` | `wrench.comply.v1` | `packs[]` — pack, title, score (`null` when nothing could be graded), platforms[], counts{pass,fail,skip}, severity_fails{}; `critical_fails`; `results[]` — pack, id, title, severity, status (`pass\|fail\|skip`), detail | **1 when any critical rule fails** |
 | `wrench bundle --json [--out PATH]` | `wrench.bundle.v1` | `path`, `bytes`, `files[]` (SUMMARY.md + per-section JSON), `offline` — writes a portable tar.gz evidence bundle; no secrets (config redacted) | 0 |
-| `wrench doctor --json` | `wrench.doctor.v1` | `healthy`, `checks{}` — platform, scheduler, log_backend, provider, base_url, model, policy_tier, api_key_present, db_path, sensor_os/docker/gpu, provider_ping{ok, detail}, `offline{offline, egress, disabled[], still_allowed[], brain_is_local}` | **1 when the provider is unreachable** |
+| `wrench doctor --json` | `wrench.doctor.v1` | `healthy`, `checks{}` — platform, scheduler, log_backend, provider, base_url, model, policy_tier, api_key_present, db_path, sensor_os/docker/gpu, `brain{configured, reason}`, provider_ping{ok, detail}, `admin`, `data_dir_mode`, `schema_version`, `audit{intact, count, reason, mac_checked}`, `last_patrol_age_s`, `fleet`, `offline{offline, egress, disabled[], still_allowed[], brain_is_local}` | **1 when a configured provider is unreachable or the audit chain is broken** (no brain configured is healthy: deterministic mode) |
 | `wrench version --json` | `wrench.version.v1` | envelope only | 0 |
 
 Examples:
@@ -278,3 +280,88 @@ New Prometheus gauges (hub side): `wrench_fleet_nodes`,
 `wrench_fleet_nodes_silent`, `wrench_fleet_nodes_by_color{color=…}`, and per-node
 `wrench_fleet_node_status` (0 ok, 1 attention, 2 critical, 3 silent),
 `wrench_fleet_node_last_seen_timestamp_seconds`, `wrench_fleet_node_reports_total`.
+
+## `wrench score` → `wrench.score.v1`
+
+The deterministic health score. Exit code `0` ok / unmeasured, `1` attention,
+`2` critical — usable directly as a CI or cron gate.
+
+```json
+{
+  "schema": "wrench.score.v1",
+  "score": 87.0,
+  "grade": "B",
+  "state": "ok",
+  "coverage": {"measured": 7, "total": 8},
+  "pillars": [
+    {"key": "capacity", "label": "Capacity", "weight": 20, "score": 100.0,
+     "state": "ok", "detail": "fullest disk / at 25%, memory 62%",
+     "command": "wrench status"},
+    {"key": "certificates", "label": "Certificates", "weight": 8, "score": null,
+     "state": "unknown", "detail": "no certificates tracked", "command": "wrench certs"}
+  ],
+  "top_issues": [
+    {"pillar": "backups", "label": "Backups",
+     "detail": "1 job(s): 0 failing integrity, 1 stale or unverified",
+     "command": "wrench backups"}
+  ]
+}
+```
+
+`score` is `null` until at least one pillar has data. A pillar with `score:
+null` is **unmeasured** and excluded from the weighted average. Any pillar in
+the `critical` state caps the total at 69.
+
+```bash
+wrench score --json | jq -e '.score >= 80'          # gate
+wrench score --json | jq -r '.top_issues[].command'  # what to run next
+```
+
+## `wrench patrol --json` → `wrench.patrol.v1`
+
+Runs one patrol and prints its verdict. Exit `0` ok, `1` attention, `2`
+critical. `deterministic: true` means no model was consulted (none configured,
+`--no-llm`, or the provider was unreachable) — every finding is a code check.
+
+```json
+{
+  "schema": "wrench.patrol.v1",
+  "status": "attention",
+  "summary": "disk /var is 91% full",
+  "findings": [{"severity": "warning", "text": "disk /var is 91% full"}],
+  "model": "deterministic",
+  "deterministic": true,
+  "tokens": 0,
+  "duration_s": 2.6,
+  "ts": 1794296991.19
+}
+```
+
+## Fleet enrollment → `wrench.fleet.enroll.v1` / `wrench.fleet.keys.v1`
+
+`wrench fleet enroll --json` returns `{key_id, token, label, single_node,
+join_command}` — the only time the token is ever available. `wrench fleet keys
+--json` returns `{keys: [{key_id, label, created, revoked, single_node,
+last_used, nodes: [...]}]}`; it never contains a token or signing key.
+
+## Health metrics
+
+| metric | meaning |
+|---|---|
+| `wrench_health_score` | overall score, 0–100 (absent until something is measured) |
+| `wrench_health_pillar_score{pillar}` | per-pillar score (absent when unmeasured) |
+| `wrench_health_pillars_measured` | how many of the eight pillars have data |
+
+```promql
+wrench_health_score < 70                      # page-worthy posture
+wrench_health_pillars_measured < 6            # this box is not being fully checked
+```
+
+When the dashboard has access control on, scrape with a bearer token:
+
+```yaml
+scrape_configs:
+  - job_name: wrench
+    authorization: {type: Bearer, credentials_file: /etc/prometheus/wrench.token}
+    static_configs: [{targets: ["host:8787"]}]
+```

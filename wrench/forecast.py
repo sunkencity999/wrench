@@ -23,7 +23,7 @@ courtesy, not a tripwire that can wedge the sweep.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ---- thresholds & ladders -------------------------------------------------
 
@@ -272,6 +272,31 @@ def log_series(samples: list[tuple[float, dict]]) -> dict[str, list[tuple[float,
 # ---- capacity incident builders -------------------------------------------
 
 
+MIN_SPAN_DAYS_TO_PAGE = 1.0
+# Memory and swap are elastic — caches fill, a job ramps after boot, macOS grows
+# its swapfile on demand. A straight line through that is not a prediction, so
+# these never page on a projection alone (the live anomaly detector and the
+# patrol cover real pressure).
+VOLATILE_KINDS = {"memory", "swap"}
+
+
+def cap_severity(sev: str, confidence_label: str, span_days: float,
+                 kind: str = "") -> str:
+    """How loudly a projection may speak, given how much it actually knows.
+
+    A page-worthy forecast needs a believable trend: at least medium
+    confidence over at least a day of history. Anything weaker is still shown
+    (as info) so the trend is visible, but it does not wake anyone.
+    """
+    if sev not in ("warning", "critical"):
+        return sev
+    if kind in VOLATILE_KINDS:
+        return "info"
+    if confidence_label == "low" or span_days < MIN_SPAN_DAYS_TO_PAGE:
+        return "info"
+    return sev
+
+
 def _pct_incident(kind: str, resource: str, metric: str,
                   series: list[tuple[float, float]], threshold: float,
                   now: float | None = None) -> Incident | None:
@@ -280,7 +305,7 @@ def _pct_incident(kind: str, resource: str, metric: str,
         return None
     label, score = confidence(trend)
     eta = project_eta_days(trend, threshold, flat_eps=FLAT_EPS_PCT)
-    sev = severity_for_eta(eta)
+    sev = cap_severity(severity_for_eta(eta), label, trend.span_days, kind)
     growth = round(trend.slope_per_day, 4)
     if eta is not None:
         detail = (f"{trend.current:.1f}% now, +{growth:.2f}%/day → {threshold:.0f}% "

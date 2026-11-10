@@ -267,8 +267,8 @@ def render(store, data_dir: Path) -> str:
             b.metric("wrench_comply_fails",
                      "Failing compliance rules per pack and severity.", "gauge")
             for p in rep.get("packs", []):
-                b.sample("wrench_comply_score", p.get("score", 0),
-                         {"pack": p["pack"]})
+                if p.get("score") is not None:      # an ungradable pack has no score
+                    b.sample("wrench_comply_score", p["score"], {"pack": p["pack"]})
                 for sev, n in (p.get("severity_fails") or {}).items():
                     b.sample("wrench_comply_fails", n,
                              {"pack": p["pack"], "severity": sev})
@@ -395,6 +395,26 @@ def render(store, data_dir: Path) -> str:
                 b.sample("wrench_fleet_node_reports_total",
                          n.get("report_count", 0), lab)
     except Exception:  # noqa: BLE001 — a scrape never dies on one family
+        pass
+
+    # ---- posture: the health score and its pillars ----
+    try:
+        from . import posture
+        from .config import load_config
+        pos = posture.compute(load_config(), store)
+        if pos.get("score") is not None:
+            b.metric("wrench_health_score", "Overall health score, 0-100.", "gauge")
+            b.sample("wrench_health_score", pos["score"])
+        b.metric("wrench_health_pillar_score",
+                 "Health score per pillar, 0-100 (absent when the pillar is unmeasured).",
+                 "gauge")
+        for pl in pos["pillars"]:
+            if pl["score"] is not None:
+                b.sample("wrench_health_pillar_score", pl["score"], {"pillar": pl["key"]})
+        b.metric("wrench_health_pillars_measured",
+                 "How many posture pillars have data.", "gauge")
+        b.sample("wrench_health_pillars_measured", pos["coverage"]["measured"])
+    except Exception:  # noqa: BLE001 — metrics never fail the scrape
         pass
 
     b.metric("wrench_scrape_timestamp_seconds", "Unix time of this scrape.", "gauge")

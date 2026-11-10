@@ -1,5 +1,40 @@
 # wrench — build progress
 
+## 2026-11-09 — v3.0.0: ENTERPRISE PASS (branch `enterprise-v3`)
+
+Goal: a tool an IT infrastructure team would install on every machine. Full
+detail in CHANGELOG.md; the short version:
+
+- **First native macOS pass** (Apple Silicon, macOS 27). Running every command
+  for real exposed, and this pass fixed: a patrol crash, phantom APFS volumes,
+  an empty listener inventory, invisible user accounts, Linux-only compliance
+  packs, no Time Machine awareness, `du --max-depth`, Darwin-as-Linux-kernel.
+- **Two code reviews** (mutating paths; cross-platform sensing) → ~60 verified
+  findings, the security-relevant ones all fixed: diagnostic allowlist that
+  permitted log deletion / file truncation, repair allowlist that could power
+  off the box, agent fixes ignoring maintenance windows, blueprint path
+  bypasses, approval reuse, audit truncation, apt hangs under sudo, cert
+  renewal targeting every lineage.
+- **New**: `wrench score` (deterministic health score), brain-optional
+  deterministic patrols, dashboard access control (token/session, roles, Host
+  + CSRF checks, CSP, TLS), fleet v2 (enroll/join/keys/revoke/forget, replay
+  protection, node binding), fleet console, redesigned dashboard,
+  `macos-baseline` + `windows-baseline` packs on a closed probe registry,
+  CI on three OSes.
+- **Tests: 780 pass on macOS** (was 667 pass / 5 fail on this platform).
+
+### Honest status
+- Linux was NOT re-run on real hardware in this pass (macOS box only); the
+  Linux suite runs in CI.
+- Windows: implemented + unit-tested + CI smoke (non-gating). No native pass.
+- Not run natively on macOS: `install-service` (it would schedule patrols
+  against the operator's real data), `fixxer` apply, any LLM provider.
+- Known gaps left open: no macOS/Windows auth-log reader (reported as "not
+  watched"), `net user` parsing on localized Windows, Windows toast AppID,
+  Task Scheduler battery/visibility defaults, blueprint approvals are bound to
+  the intent text rather than the drafted diff, interactive TTY runs skip the
+  out-of-band approval gate by design.
+
 ## 2026-11-04 ~12:00 — v1.0.0: WEB INTEL + LIVE CHAT + BEAUTY (final pass)
 
 Christopher's 1.0 directive, three workstreams, all shipped + live-tested:

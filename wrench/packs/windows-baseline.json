@@ -1,0 +1,109 @@
+{
+ "name": "windows-baseline",
+ "title": "Windows endpoint & server baseline",
+ "platforms": [
+  "windows"
+ ],
+ "description": "High-value Windows hardening checks: Defender, firewall, BitLocker, UAC, legacy protocols, RDP, accounts and updates. Read-only registry and PowerShell reads; inspired by the Microsoft Security Baselines and CIS Windows Benchmarks, not certified content.",
+ "rules": [
+  {
+   "id": "win.defender.realtime",
+   "title": "Defender real-time protection is on",
+   "severity": "critical",
+   "rationale": "Real-time protection is the control that stops known malware at execution time.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.defender_realtime",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "win.firewall",
+   "title": "Windows Firewall is on for every profile",
+   "severity": "high",
+   "rationale": "A disabled profile exposes every listening service on networks of that type.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.firewall",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "win.bitlocker",
+   "title": "BitLocker protects the system drive",
+   "severity": "critical",
+   "rationale": "Without disk encryption, physical access to the device is access to its data and cached credentials.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.bitlocker",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "win.uac",
+   "title": "User Account Control is enabled",
+   "severity": "high",
+   "rationale": "UAC separates administrative actions from the everyday session; disabling it makes every process an admin process.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.uac",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "win.smb1",
+   "title": "SMBv1 server protocol is disabled",
+   "severity": "high",
+   "rationale": "SMBv1 is the protocol behind EternalBlue/WannaCry and has no supported use.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.smb1",
+    "expect": "off"
+   }
+  },
+  {
+   "id": "win.rdp.nla",
+   "title": "Remote Desktop requires Network Level Authentication",
+   "severity": "high",
+   "rationale": "Without NLA an unauthenticated client reaches the full logon stack \u2014 the surface BlueKeep-class bugs live in.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.rdp_nla",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "win.guest",
+   "title": "Guest account is disabled",
+   "severity": "medium",
+   "rationale": "An enabled Guest account is an unauthenticated foothold.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.guest_account",
+    "expect": "off"
+   }
+  },
+  {
+   "id": "win.update",
+   "title": "automatic updates are not disabled by policy",
+   "severity": "high",
+   "rationale": "Patches that wait for a human do not happen.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.auto_update",
+    "expect": "on"
+   }
+  },
+  {
+   "id": "win.lsa",
+   "title": "LSA protection (RunAsPPL) is enabled",
+   "severity": "medium",
+   "rationale": "LSA protection blocks credential-dumping tools from reading LSASS memory.",
+   "check": {
+    "kind": "probe",
+    "name": "windows.lsa_protection",
+    "expect": "on"
+   }
+  }
+ ]
+}

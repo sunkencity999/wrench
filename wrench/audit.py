@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import getpass
 import hashlib
+import hmac
 import json
 import os
 import time
 from pathlib import Path
 
 from . import __version__
+from .filelock import FileLock
 
 AUDIT_NAME = "audit.jsonl"
 GENESIS_PREV = "0" * 64
@@ -79,6 +81,15 @@ def record_hash(prev_hash: str, record: dict) -> str:
 def make_record(prev_hash: str, kind: str, detail, actor: str | None = None,
                 ts: float | None = None) -> dict:
     """Build a fully-sealed record (with its ``hash``) chained to ``prev_hash``."""
+    # A record must fit comfortably inside the tail window read on append;
+    # an oversized detail is replaced by a bounded preview rather than written.
+    try:
+        encoded = json.dumps(detail, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        encoded = repr(detail)
+    if len(encoded) > MAX_DETAIL_CHARS:
+        detail = {"truncated": True, "chars": len(encoded),
+                  "preview": encoded[:MAX_DETAIL_CHARS // 2]}
     rec = {
         "ts": round(ts if ts is not None else time.time(), 6),
         "actor": actor or default_actor(),
@@ -124,7 +135,7 @@ def read_records(data_dir: Path | str) -> list[dict]:
     if not p.exists():
         return []
     out: list[dict] = []
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -143,10 +154,163 @@ def last_hash(data_dir: Path | str) -> str | None:
     return None
 
 
+MAX_DETAIL_CHARS = 16000
+HEAD_NAME = "audit.head"
+KEY_ENV = "WRENCH_AUDIT_KEY_FILE"
+
+
+def head_path(data_dir: Path | str) -> Path:
+    return Path(data_dir) / HEAD_NAME
+
+
+def _mac_key() -> bytes | None:
+    """Optional HMAC key for the chain, read from a file OUTSIDE the data dir.
+
+    A bare hash chain proves internal consistency; anyone who can write the log
+    can also recompute every hash. With a key the log's writer does not hold at
+    verify time (root-owned file, a secrets mount), each record carries a MAC
+    that a rewrite cannot reproduce. Set WRENCH_AUDIT_KEY_FILE to enable.
+    """
+    path = os.environ.get(KEY_ENV)
+    if not path:
+        return None
+    try:
+        key = Path(path).expanduser().read_bytes().strip()
+        return key or None
+    except OSError:
+        return None
+
+
+def record_mac(key: bytes, rec: dict) -> str:
+    return hmac.new(key, str(rec.get("hash", "")).encode("ascii", "replace"),
+                    hashlib.sha256).hexdigest()
+
+
+def _head_mac(key: bytes, count, last: str) -> str:
+    return hmac.new(key, f"head|{count}|{last}".encode("utf-8", "replace"),
+                    hashlib.sha256).hexdigest()
+
+
+def _read_head(data_dir: Path | str) -> dict | None:
+    try:
+        obj = json.loads(head_path(data_dir).read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) and "hash" in obj and "count" in obj else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_head(data_dir: Path | str, count: int, last: str) -> None:
+    p = head_path(data_dir)
+    tmp = p.with_suffix(".head.tmp")
+    head = {"count": count, "hash": last, "ts": time.time()}
+    key = _mac_key()
+    if key:
+        head["mac"] = _head_mac(key, count, last)
+    tmp.write_text(json.dumps(head), encoding="utf-8")
+    os.replace(tmp, p)
+    _owner_only(p)
+
+
+def _owner_only(p: Path) -> None:
+    if os.name == "posix":
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
+
+
+def _tail_hash(path: Path) -> str | None:
+    """Hash of the last sealed record, reading only the file's tail."""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 65536))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            rec = json.loads(line)
+            if isinstance(rec, dict) and rec.get("hash"):
+                return rec["hash"]
+        except ValueError:
+            continue
+    return None
+
+
 def _write_record(path: Path, rec: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
+    new = not path.exists()
+    with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError:
+            pass
+    if new:
+        _owner_only(path)
+
+
+def _seal(data_dir: Path | str, kind: str, detail, actor: str | None,
+          ts: float | None) -> dict:
+    """Append one record. Caller holds the lock."""
+    p = audit_path(data_dir)
+    prev = _tail_hash(p) if p.exists() else None
+    head = _read_head(data_dir)
+    if prev is None:
+        gen = make_record(GENESIS_PREV, "genesis",
+                          {"msg": "audit chain initialized", "version": __version__},
+                          actor="wrench")
+        key = _mac_key()
+        if key:
+            gen["mac"] = record_mac(key, gen)
+        _write_record(p, gen)
+        prev, count = gen["hash"], 1
+        if head and int(head.get("count") or 0) > 0:
+            # the head says events were sealed, yet the log is gone: someone
+            # deleted or emptied it. Starting a clean chain silently would
+            # erase that — the new chain opens by recording it.
+            gap = make_record(prev, "audit.discontinuity", {
+                "sealed_count": head.get("count"), "sealed_hash": head.get("hash"),
+                "found_count": 0, "found_hash": None,
+                "msg": "audit log was missing or empty although events had been sealed",
+            }, actor="wrench")
+            if key:
+                gap["mac"] = record_mac(key, gap)
+            _write_record(p, gap)
+            prev, count = gap["hash"], 2
+        if kind == "genesis":
+            _write_head(data_dir, count, prev)
+            return gen
+    elif head and head.get("hash") == prev:
+        count = int(head["count"])
+    else:
+        # no head yet (pre-3.0 log) or it disagrees with the file — recount
+        count = sum(1 for r in read_records(data_dir)
+                    if isinstance(r, dict) and r.get("hash"))
+        if head:
+            # The file is not what was sealed (truncated, replaced, restored
+            # from an older copy). Appending would otherwise re-seal the head
+            # and erase that fact, so the discontinuity itself goes on record.
+            gap = make_record(prev, "audit.discontinuity", {
+                "sealed_count": head.get("count"), "sealed_hash": head.get("hash"),
+                "found_count": count, "found_hash": prev,
+                "msg": "audit log did not match its sealed head when this event was written",
+            }, actor="wrench")
+            key = _mac_key()
+            if key:
+                gap["mac"] = record_mac(key, gap)
+            _write_record(p, gap)
+            prev, count = gap["hash"], count + 1
+    rec = make_record(prev, kind, detail, actor=actor, ts=ts)
+    key = _mac_key()
+    if key:
+        rec["mac"] = record_mac(key, rec)
+    _write_record(p, rec)
+    _write_head(data_dir, count + 1, rec["hash"])
+    return rec
 
 
 def ensure_genesis(data_dir: Path | str) -> dict | None:
@@ -154,13 +318,10 @@ def ensure_genesis(data_dir: Path | str) -> dict | None:
     the chain already exists. Never raises."""
     try:
         p = audit_path(data_dir)
-        if p.exists() and any(line.strip() for line in p.read_text().splitlines()):
-            return None
-        gen = make_record(GENESIS_PREV, "genesis",
-                          {"msg": "audit chain initialized", "version": __version__},
-                          actor="wrench")
-        _write_record(p, gen)
-        return gen
+        with FileLock(p):
+            if p.exists() and _tail_hash(p):
+                return None
+            return _seal(data_dir, "genesis", None, None, None)
     except OSError:
         return None
 
@@ -169,22 +330,105 @@ def append(data_dir: Path | str, kind: str, detail, actor: str | None = None,
            ts: float | None = None) -> dict | None:
     """Seal one event onto the chain. Seeds genesis on first write.
 
+    The read-last-hash → write step runs under a cross-process lock: two
+    writers that both chained onto the same record would fork the chain and
+    leave a permanent false "tamper" verdict.
+
     Returns the written record, or None on I/O failure (auditing never breaks
     its caller)."""
     try:
-        p = audit_path(data_dir)
-        ensure_genesis(data_dir)
-        prev = last_hash(data_dir) or GENESIS_PREV
-        rec = make_record(prev, kind, detail, actor=actor, ts=ts)
-        _write_record(p, rec)
-        return rec
+        with FileLock(audit_path(data_dir)):
+            return _seal(data_dir, kind, detail, actor, ts)
     except Exception:  # noqa: BLE001 — a broken audit must not break the action
         return None
 
 
 def verify(data_dir: Path | str) -> dict:
-    """Re-walk the on-disk chain. See ``verify_records``."""
-    return verify_records(read_records(data_dir))
+    """Re-walk the on-disk chain, then check it against the sealed head.
+
+    The chain alone cannot see its own tail being cut off — every remaining
+    link still verifies. The head file records how many events were sealed and
+    the last hash, so a truncated (or wholesale replaced) log is caught; a log
+    written by 3.x with no head at all has had its head removed. With a MAC key
+    configured, every record from the first MAC'd one onward — and the head —
+    must carry a valid MAC, so a rewrite without the key cannot pass.
+
+    Never raises: a log that cannot be verified is reported as not intact.
+    """
+    try:
+        with FileLock(audit_path(data_dir)):      # a consistent log + head pair
+            return _verify_locked(data_dir)
+    except Exception as e:  # noqa: BLE001
+        return {"intact": False, "count": 0, "broken_index": None, "head": None,
+                "mac_checked": False, "discontinuities": 0,
+                "reason": f"audit log could not be verified ({e.__class__.__name__}: {e})"}
+
+
+def _sealed_by_3x(records: list[dict]) -> bool:
+    """Was this chain started by a version that always writes a head?"""
+    if not records or not isinstance(records[0], dict):
+        return False
+    ver = str((records[0].get("detail") or {}).get("version", "")) \
+        if isinstance(records[0].get("detail"), dict) else ""
+    return ver.split(".")[0].isdigit() and int(ver.split(".")[0]) >= 3
+
+
+def _verify_locked(data_dir: Path | str) -> dict:
+    head = _read_head(data_dir)
+    records = read_records(data_dir)
+    res = verify_records(records)
+    res["head"] = None
+    res["mac_checked"] = False
+    res["discontinuities"] = sum(1 for r in records
+                                 if isinstance(r, dict) and r.get("kind") == "audit.discontinuity")
+    if not res["intact"]:
+        return res
+    key = _mac_key()
+    if head:
+        res["head"] = {"count": head["count"]}
+        try:
+            n = int(head["count"])
+        except (TypeError, ValueError):
+            return {**res, "intact": False, "reason": "sealed head is malformed"}
+        if len(records) < n:
+            return {**res, "intact": False, "broken_index": len(records),
+                    "reason": (f"log truncated: {n} event(s) were sealed but only "
+                               f"{len(records)} remain")}
+        if n >= 1 and records[n - 1].get("hash") != head["hash"]:
+            return {**res, "intact": False, "broken_index": n - 1,
+                    "reason": "log does not match the sealed head (it was replaced or rewritten)"}
+        if key and head.get("mac") is not None and not hmac.compare_digest(
+                str(head["mac"]).encode("utf-8", "replace"),
+                _head_mac(key, head["count"], head["hash"]).encode()):
+            return {**res, "intact": False,
+                    "reason": "sealed head MAC does not verify (rewritten without the audit key)"}
+    elif _sealed_by_3x(records):
+        return {**res, "intact": False,
+                "reason": "the sealed head file is missing — it was removed, so truncation "
+                          "can no longer be ruled out"}
+    if key:
+        res["mac_checked"] = True
+        seen_mac = False
+        for i, rec in enumerate(records):
+            mac = rec.get("mac")
+            if mac is None:
+                if seen_mac:
+                    # once records are MAC'd, an un-MAC'd one was written (or
+                    # rewritten) by someone without the key
+                    return {**res, "intact": False, "broken_index": i,
+                            "reason": "record has no MAC although earlier records do "
+                                      "(rewritten without the audit key)"}
+                continue     # sealed before a key was configured
+            seen_mac = True
+            if not hmac.compare_digest(str(mac).encode("utf-8", "replace"),
+                                       record_mac(key, rec).encode()):
+                return {**res, "intact": False, "broken_index": i,
+                        "reason": "record MAC does not verify (rewritten without the audit key)"}
+        if seen_mac and head and head.get("mac") is None:
+            return {**res, "intact": False,
+                    "reason": "sealed head has no MAC although records do "
+                              "(rewritten without the audit key)"}
+    return res
 
 
 def recent(data_dir: Path | str, limit: int = 20) -> list[dict]:

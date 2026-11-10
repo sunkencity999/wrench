@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wrench-agent"
-version = "2.2.0"
+version = "3.0.0"
 description = "An intentional local sysadmin agent: watches, diagnoses, explains, and (with permission) fixes."
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,10 +18,11 @@ dependencies = [
     "psutil>=5.9",
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
+    "tzdata>=2024.1; sys_platform == 'win32'",   # zoneinfo has no system tz database on Windows
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/sunkencity999/wrench"
@@ -33,4 +34,16 @@ wrench = "wrench.cli:app"
 [tool.setuptools.packages.find]
 include = ["wrench*"]
 [tool.setuptools.package-data]
-wrench = ["packs/*.json"]
+wrench = ["packs/*.json", "web/*.html", "web/*.css", "web/*.js"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+# real defects only: syntax errors, undefined names, unused imports/variables,
+# mutable defaults, exceptions that lose their cause
+select = ["E9", "F", "B006", "B904"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

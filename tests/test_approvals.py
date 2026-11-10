@@ -157,9 +157,12 @@ def test_approval_gate_claims_when_approved(tmp_path, store, monkeypatch):
     cfg = FakeCfg(raw={"approvals": {"approval_webhook_url": "https://h/x"}},
                   data_dir=tmp_path)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
-    token, _ = approvals.create_pending(store, "fixxer apply", "d")  # real clock
+    key = approvals.bound_action("fixxer apply", "d")   # approvals bind to the request
+    token, _ = approvals.create_pending(store, key, "d")  # real clock
     approvals.approve(store, token)
+    # an approval for a DIFFERENT request detail must not be claimable
+    assert approvals.bound_action("fixxer apply", "other") != key
     # already approved → gate claims and returns (no Exit)
     cli._approval_gate(cfg, store, "fixxer apply", "d")
-    assert not approvals.is_approved(store, "fixxer apply")  # consumed
+    assert not approvals.is_approved(store, key)  # consumed
     assert any(r["kind"] == "approval.claimed" for r in audit.recent(tmp_path, 10))

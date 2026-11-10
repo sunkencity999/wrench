@@ -176,20 +176,34 @@ def test_notifications_json_and_mark_read(tmp_env):
 def test_doctor_json_exit_codes(tmp_env, monkeypatch):
     from wrench import providers
 
+    monkeypatch.delenv("META_API_KEY", raising=False)
+    monkeypatch.delenv("WRENCH_API_KEY", raising=False)
     monkeypatch.setattr(providers.LLMClient, "ping",
                         lambda self: (True, "200 in 12ms"))
-    doc = _parse(runner.invoke(app, ["doctor", "--json"]))
+    # a configured brain that answers
+    doc = _parse(runner.invoke(app, ["doctor", "--json", "-p", "ollama"]))
     assert doc["schema"] == "wrench.doctor.v1"
     assert doc["healthy"] is True
     assert doc["checks"]["provider_ping"]["ok"] is True
     assert doc["checks"]["sensor_os"]["ok"] is True
     assert "policy_tier" in doc["checks"]
+    assert doc["checks"]["audit"]["intact"] is True and "schema_version" in doc["checks"]
 
+    # a configured brain that is unreachable is a fault
     monkeypatch.setattr(providers.LLMClient, "ping",
                         lambda self: (False, "connection refused"))
-    res = runner.invoke(app, ["doctor", "--json"])
+    res = runner.invoke(app, ["doctor", "--json", "-p", "ollama"])
     doc = _parse(res, expect_exit=1)
     assert doc["healthy"] is False
+
+    # NO brain configured is a supported mode (deterministic patrols), not a fault —
+    # and the provider is never pinged
+    monkeypatch.setattr(providers.LLMClient, "ping",
+                        lambda self: (_ for _ in ()).throw(AssertionError("pinged")))
+    doc = _parse(runner.invoke(app, ["doctor", "--json", "-p", "meta"]))
+    assert doc["healthy"] is True
+    assert doc["checks"]["brain"]["configured"] is False
+    assert "deterministic" in doc["checks"]["provider_ping"]["detail"]
 
 
 # ---------------- output purity: stdout is exactly one JSON doc ----------------

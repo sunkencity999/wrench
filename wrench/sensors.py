@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import shutil
 import subprocess
 import time
 
@@ -40,8 +39,11 @@ BASELINED = {
 
 def _run(cmd: list[str], timeout: int = 10) -> str:
     try:
+        exe = platforms.find_tool(cmd[0])
+        if exe:
+            cmd = [exe, *cmd[1:]]
         return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
         ).stdout.strip()
     except Exception:  # noqa: BLE001
         return ""
@@ -109,8 +111,10 @@ def inode_usage() -> dict:
     if not hasattr(os, "statvfs"):
         return out
     for part in psutil.disk_partitions(all=False):
-        if part.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
+        if not platforms.is_monitored_volume(part.mountpoint, part.fstype, part.opts):
             continue
+        if (part.fstype or "").lower() in ("apfs", "ntfs", "btrfs", "zfs"):
+            continue   # dynamically allocated inodes — a percentage is meaningless
         try:
             s = os.statvfs(part.mountpoint)
         except (OSError, PermissionError):
@@ -122,8 +126,54 @@ def inode_usage() -> dict:
     return out
 
 
+def _proc_label(p) -> str:
+    """A process name a human recognizes.
+
+    Some tools install as a versioned binary (``…/claude/versions/2.1.317``),
+    so the bare executable name is a number. Fall back to the parent directory
+    of the executable in that case.
+    """
+    name = p.name() or "?"
+    if name.replace(".", "").replace("-", "").isdigit():
+        try:
+            parts = [x for x in (p.exe() or "").replace("\\", "/").split("/") if x]
+            for part in reversed(parts[:-1]):
+                if part.lower() not in ("versions", "bin", "current", "macos", "contents"):
+                    return f"{part} ({name})"
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            pass
+    return name
+
+
+# metrics where only an INCREASE is a problem (a CPU drop is not an incident)
+_HIGH_ONLY = {"cpu_pct", "mem_pct", "swap_pct", "load_1m", "disk_root_pct", "n_procs"}
+_ANOMALY_COOLDOWN_S = 1800
+
+
+def _should_record_anomaly(store: Store, metric: str, z: float) -> bool:
+    if abs(z) < ANOMALY_Z:
+        return False
+    if metric in _HIGH_ONLY and z < 0:
+        return False
+    # one row per excursion, not one per sample while it lasts
+    for a in store.recent_anomalies(_ANOMALY_COOLDOWN_S):
+        if a["metric"] == metric:
+            return False
+    return True
+
+
 def sample_os(store: Store | None = None) -> dict:
     """One OS sample: cpu/mem/swap/load/disk/net/procs + top offenders."""
+    # Per-process cpu_percent is a delta since the previous call, so the first
+    # reading is always 0.0. Prime every process, let the 0.5s system sample
+    # below be the measurement window, then read.
+    primed = []
+    for p in psutil.process_iter():
+        try:
+            p.cpu_percent(None)
+            primed.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
     cpu = psutil.cpu_percent(interval=0.5)
     vm = psutil.virtual_memory()
     sw = psutil.swap_memory()
@@ -131,15 +181,7 @@ def sample_os(store: Store | None = None) -> dict:
         load = psutil.getloadavg()  # emulated on Windows (needs a warmup); may raise
     except (OSError, AttributeError):
         load = (0.0, 0.0, 0.0)
-    disks = {}
-    for part in psutil.disk_partitions(all=False):
-        if part.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
-            continue
-        try:
-            u = psutil.disk_usage(part.mountpoint)
-            disks[part.mountpoint] = round(u.percent, 1)
-        except (PermissionError, OSError):
-            continue
+    disks = platforms.volume_usage()
     net = psutil.net_io_counters()
 
     payload = {
@@ -163,10 +205,12 @@ def sample_os(store: Store | None = None) -> dict:
 
     # top processes by cpu and mem (names only; cheap)
     procs = []
-    for p in psutil.process_iter(["name", "cpu_percent", "memory_percent"]):
+    for p in primed:
         try:
-            procs.append(p.info)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            with p.oneshot():
+                procs.append({"name": _proc_label(p), "cpu_percent": p.cpu_percent(None),
+                              "memory_percent": p.memory_percent()})
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue
     top_cpu = sorted(procs, key=lambda x: x["cpu_percent"] or 0, reverse=True)[:5]
     top_mem = sorted(procs, key=lambda x: x["memory_percent"] or 0, reverse=True)[:5]
@@ -197,14 +241,14 @@ def sample_os(store: Store | None = None) -> dict:
             if val is None:
                 continue
             z = store.update_baseline("os", metric, float(val))
-            if abs(z) >= ANOMALY_Z:
+            if _should_record_anomaly(store, metric, z):
                 store.add_anomaly("os", metric, float(val), round(z, 2))
     return payload
 
 
 def sample_docker(store: Store | None = None) -> dict | None:
     """Docker container census, if docker is installed and running."""
-    if not shutil.which("docker"):
+    if not platforms.has("docker"):
         return None
     out = _run(["docker", "ps", "-a", "--format", "{{json .}}"], timeout=15)
     if not out:
@@ -230,7 +274,7 @@ def sample_docker(store: Store | None = None) -> dict | None:
 
 def sample_gpu(store: Store | None = None) -> dict | None:
     """NVIDIA GPU census via nvidia-smi query (read-only, cheap)."""
-    if not shutil.which("nvidia-smi"):
+    if not platforms.has("nvidia-smi"):
         return None
     out = _run(
         [

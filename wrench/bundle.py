@@ -253,7 +253,7 @@ def summary_md(sections: dict[str, dict], now: float | None = None) -> str:
         "",
         "| file | contents |",
         "| --- | --- |",
-        f"| SUMMARY.md | this file |",
+        "| SUMMARY.md | this file |",
         f"| {VERSIONS_FILE} | wrench/python/platform/provider versions |",
         f"| {OFFLINE_FILE} | offline posture: what's blocked / still allowed |",
         f"| {CONFIG_FILE} | config.toml snapshot, secrets redacted |",

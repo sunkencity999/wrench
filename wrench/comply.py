@@ -36,6 +36,7 @@ BASELINE_KIND = "comply_baseline"
 SEVERITIES = ("critical", "high", "medium", "low")
 
 _PACK_DIR = Path(__file__).parent / "packs"
+_SYSCTL_ROOT = "/proc/sys"     # live kernel settings (module-level so tests can point it at a fixture tree)
 
 
 # --------------------------------------------------------------------------
@@ -58,6 +59,12 @@ class Rule:
         kind = self.check.get("kind")
         if kind not in CHECKS:
             raise ValueError(f"rule {self.id}: unknown check kind {kind!r}")
+        if kind == "probe":
+            from . import probes
+            if self.check.get("name") not in probes.PROBES:
+                raise ValueError(f"rule {self.id}: unknown probe {self.check.get('name')!r}")
+            if not any(k in self.check for k in ("expect", "max", "min")):
+                raise ValueError(f"rule {self.id}: probe check needs expect / max / min")
 
 
 @dataclass
@@ -66,6 +73,7 @@ class Pack:
     title: str
     description: str
     rules: list[Rule] = field(default_factory=list)
+    platforms: list[str] = field(default_factory=lambda: ["linux"])
 
 
 @dataclass
@@ -110,8 +118,11 @@ def load_pack(name: str) -> Pack:
     for key in ("name", "title", "rules"):
         if key not in data:
             raise ValueError(f"pack {name}: missing {key!r}")
+    plats = data.get("platforms") or ["linux"]
+    if not isinstance(plats, list) or not all(p in PLATFORMS for p in plats):
+        raise ValueError(f"pack {name}: platforms must be a list drawn from {PLATFORMS}")
     pack = Pack(name=data["name"], title=data["title"],
-                description=data.get("description", ""))
+                description=data.get("description", ""), platforms=list(plats))
     seen: set[str] = set()
     for raw in data["rules"]:
         rule = Rule(id=str(raw.get("id", "")), title=str(raw.get("title", "")),
@@ -263,7 +274,7 @@ def _check_sshd_config(c: dict) -> tuple[str, str]:
 
 def _check_sysctl(c: dict) -> tuple[str, str]:
     """{kind, key, value} — read /proc/sys (live kernel truth)."""
-    path = Path("/proc/sys") / c["key"].replace(".", "/")
+    path = Path(_SYSCTL_ROOT) / c["key"].replace(".", "/")
     text, why = _read(str(path))
     if text is None:
         return "skip", why
@@ -279,7 +290,7 @@ def _dpkg_installed(name: str) -> bool | None:
         return None
     try:
         r = subprocess.run([dpkg, "-W", "-f", "${Status}", name],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         return r.returncode == 0 and "install ok installed" in r.stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -390,7 +401,34 @@ def _check_single_uid0(c: dict) -> tuple[str, str]:
     return "pass", "root is the only UID-0 account"
 
 
+def _check_probe(c: dict) -> tuple[str, str]:
+    """{kind, name, expect: "on" | [..]} or {kind, name, max: N} / {min: N}.
+
+    ``name`` selects a hand-written, read-only probe from wrench/probes.py —
+    the pack supplies no command, only the name and the expected answer.
+    """
+    from . import probes
+    value, detail = probes.run(c["name"])
+    if value is None:
+        return "skip", detail
+    if "expect" in c:
+        want = c["expect"] if isinstance(c["expect"], list) else [c["expect"]]
+        ok = value in [str(w) for w in want]
+        return ("pass" if ok else "fail"), detail
+    try:
+        num = float(value)
+    except ValueError:
+        # a non-numeric answer to a numeric rule ("off") is a failure of the rule
+        return "fail", detail
+    if "max" in c and num > float(c["max"]):
+        return "fail", f"{detail} (limit {c['max']})"
+    if "min" in c and num < float(c["min"]):
+        return "fail", f"{detail} (minimum {c['min']})"
+    return "pass", detail
+
+
 CHECKS = {
+    "probe": _check_probe,
     "file_mode": _check_file_mode,
     "file_owner": _check_file_owner,
     "file_contains": _check_file_contains,
@@ -426,15 +464,37 @@ def run_pack(pack: Pack) -> dict:
         if r.status == "fail":
             sev_fails[r.rule.severity] += 1
     graded = counts["pass"] + counts["fail"]
-    score = round(100.0 * counts["pass"] / graded, 1) if graded else 0.0
+    # a pack where nothing could be graded has no score — 0% would be a lie
+    score = round(100.0 * counts["pass"] / graded, 1) if graded else None
     return {"pack": pack.name, "title": pack.title, "score": score,
+            "platforms": list(pack.platforms),
             "counts": counts, "severity_fails": sev_fails,
             "results": [r.to_dict() for r in results]}
 
 
+PLATFORMS = ("linux", "macos", "windows")
+
+
+def applicable_packs(plat: str | None = None) -> list[str]:
+    """Shipped packs whose ``platforms`` include this OS (pure given ``plat``)."""
+    from . import platforms as _pl
+    plat = plat or _pl.current_platform()
+    out = []
+    for p in sorted(pack_dir().glob("*.json")):
+        try:
+            if plat in load_pack(p.stem).platforms:
+                out.append(p.stem)
+        except ValueError:
+            continue
+    return out
+
+
 def scan(store, packs: list[str] | None = None) -> dict:
     """Run packs, snapshot a slim record, return the full report."""
-    names = packs or [p.stem for p in sorted(pack_dir().glob("*.json"))]
+    # An explicitly named pack always runs (auditing a Linux pack from a Mac is a
+    # legitimate "what would fail?" question); the default set is the packs
+    # written for this OS.
+    names = packs or applicable_packs()
     reports = [run_pack(load_pack(n)) for n in names]
     out = {"packs": reports,
            "fail_ids": sorted({r["id"] for rep in reports
@@ -500,9 +560,16 @@ def patrol_findings(cfg, store, cadence_s: int = 6 * 3600) -> list[dict]:
         for f in snap.get("fails") or []:
             if base is not None and f["id"] in base:
                 continue      # accepted debt — not news
+            summary = f"{f['id']}: {f['title']}"
             out.append({"severity": _SEV_TO_FINDING.get(f["severity"], "info"),
                         "area": "comply",
-                        "summary": f"{f['id']}: {f['title']}"})
+                        "summary": summary,
+                        # every patrol finding carries "text" — the merge and
+                        # the notification summary both read it. Rule titles
+                        # state the DESIRED condition, so say plainly that it
+                        # is not met.
+                        "text": f"compliance check failed — expected: {f['title']} "
+                                f"(`wrench comply show {f['id']}`)"})
         return out
     except Exception:  # noqa: BLE001
         return []
@@ -514,7 +581,10 @@ def patrol_summary_line(cfg, store, cadence_s: int = 6 * 3600) -> str:
         if last is None:
             return "comply: no scan yet"
         snap = last[1]
-        bits = [f"{p['pack']} {p['score']}%" for p in snap.get("packs") or []]
+        bits = [f"{p['pack']} " + ("n/a" if p.get("score") is None else f"{p['score']}%")
+                for p in snap.get("packs") or []]
+        if not bits:
+            return "comply: no compliance pack applies to this OS"
         base = baseline_fail_ids(store)
         tail = "no baseline" if base is None else f"baseline {len(base)} accepted"
         return f"comply: {', '.join(bits)} ({tail})"
@@ -526,7 +596,8 @@ def narration_context(report: dict) -> str:
     """Compact text for the optional brain briefing — analysis only."""
     lines = []
     for rep in report["packs"]:
-        lines.append(f"pack {rep['pack']}: score {rep['score']}% "
+        score = "n/a" if rep["score"] is None else f"{rep['score']}%"
+        lines.append(f"pack {rep['pack']}: score {score} "
                      f"({rep['counts']['fail']} fail, {rep['counts']['skip']} skip)")
         for r in rep["results"]:
             if r["status"] == "fail":

@@ -27,7 +27,8 @@ def _clip(text: str, n: int = MAX_OUTPUT) -> str:
 
 def _exec(argv: list[str], timeout: int = 30) -> str:
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
         out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr.strip() else "")
         return _clip(out.strip() or f"(exit {r.returncode}, no output)")
     except subprocess.TimeoutExpired:
@@ -36,6 +37,21 @@ def _exec(argv: list[str], timeout: int = 30) -> str:
         return f"(command not found: {argv[0]})"
     except Exception as e:  # noqa: BLE001
         return f"(error: {e.__class__.__name__}: {e})"
+
+
+def _exec_rc(argv: list[str], timeout: int = 30) -> tuple[int, str]:
+    """Like _exec, but also returns the exit code (124 timeout, 127 missing)."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
+        out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr.strip() else "")
+        return r.returncode, _clip(out.strip() or f"(exit {r.returncode}, no output)")
+    except subprocess.TimeoutExpired:
+        return 124, f"(timed out after {timeout}s)"
+    except FileNotFoundError:
+        return 127, f"(command not found: {argv[0]})"
+    except Exception as e:  # noqa: BLE001
+        return 1, f"(error: {e.__class__.__name__}: {e})"
 
 
 # ---------------- tool implementations ----------------
@@ -54,6 +70,10 @@ def run_diag(store: Store, command: str) -> str:
 def read_logs(store: Store, unit: str = "", lines: int = 50, priority: str = "") -> str:
     """Read recent system logs (journald / macOS unified log / Windows event log)."""
     lines = max(1, min(int(lines), 500))
+    if unit and not _safe_unit(unit):
+        return "DENIED: not a valid unit/process name."
+    if priority and not str(priority).isalnum():
+        return "DENIED: not a valid priority."
     backend = platforms.log_backend()
     if backend == "journald":
         argv = ["journalctl", "--no-pager", "-n", str(lines)]
@@ -94,8 +114,20 @@ def read_logs(store: Store, unit: str = "", lines: int = 50, priority: str = "")
             "journalctl, log, wevtutil)")
 
 
+_UNIT_RE = __import__("re").compile(r"[\w@][\w@.:\-]{0,200}")
+
+
+def _safe_unit(unit: str) -> bool:
+    """A unit/service name the model supplied: no leading "-" (it would be read
+    as an option — `systemctl status -Hroot@host` opens an outbound ssh) and no
+    quote/space that could break out of a log predicate."""
+    return bool(_UNIT_RE.fullmatch(unit or ""))
+
+
 def service_status(store: Store, unit: str) -> str:
     """Service status: systemctl / launchctl / sc query, per platform."""
+    if not _safe_unit(unit):
+        return "DENIED: not a valid service name."
     plat = platforms.current_platform()
     if plat == "linux" and platforms.has("systemctl"):
         out = _exec(["systemctl", "status", unit, "--no-pager", "-n", "10"])
@@ -160,7 +192,9 @@ def disk_tree(store: Store, path: str = "/", depth: int = 1) -> str:
     p = str(Path(path).expanduser())
     depth = max(1, min(int(depth), 3))
     if platforms.has("du") and not platforms.is_windows():
-        out = _exec(["du", "-x", "-h", f"--max-depth={depth}", p], timeout=60)
+        # `-d N` is understood by GNU and BSD du alike (`--max-depth` is GNU-only,
+        # so macOS returned a usage error); `--` keeps a path from being an option
+        out = _exec(["du", "-x", "-h", "-d", str(depth), "--", p], timeout=60)
         lines = out.splitlines()
 
         def size_key(ln: str) -> float:
@@ -188,29 +222,15 @@ def net_listeners(store: Store) -> str:
         out = _exec(["ss", "-tulnpH"])
         store.add_action("any", "diag:net", "ss -tulnpH", True, "")
         return out
+    from . import netinfo
     rows = ["proto  local address          pid    process"]
-    try:
-        conns = psutil.net_connections(kind="inet")
-    except (psutil.AccessDenied, OSError) as e:
-        return f"(cannot enumerate sockets: {e})"
-    seen = set()
-    for c in conns:
-        is_listener = (str(c.status) == "LISTEN") or (c.type == 2 and not c.raddr)
-        if not is_listener or not c.laddr:
-            continue
-        proto = "tcp" if c.type == 1 else "udp"
-        name = ""
-        if c.pid:
-            try:
-                name = psutil.Process(c.pid).name()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                name = "?"
-        key = (proto, c.laddr.ip, c.laddr.port, c.pid)
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(f"{proto:<6} {c.laddr.ip}:{c.laddr.port:<15} {c.pid or '-':<6} {name}")
-    store.add_action("any", "diag:net", "psutil.net_connections", True, "")
+    census, complete = netinfo.listeners()
+    if not complete:
+        return "(cannot enumerate sockets on this platform without elevated rights)"
+    for r in census:
+        local = f"{r['addr']}:{r['port']}"
+        rows.append(f"{r['proto']:<6} {local:<22} {r['pid'] or '-':<6} {r['process'] or '?'}")
+    store.add_action("any", "diag:net", "listener census", True, "")
     return "\n".join(rows)
 
 
@@ -236,9 +256,32 @@ def proc_top(store: Store, sort: str = "cpu", n: int = 15) -> str:
     return "\n".join(rows)
 
 
-def fix_action(store: Store, command: str, tier: str, confirm_fn=None) -> str:
-    """Attempt a mutation. Policy-gated, confirm-gated, always logged."""
+def _window_block(cfg, command: str) -> str | None:
+    """Reason the maintenance window forbids a mutation right now, else None.
+
+    The CLI gates fixxer/blueprint/cert renewals on [maintenance]; the agent's
+    own hands must obey the same change-control rule — an autonomous patrol
+    restarting a service at 14:00 on a Tuesday is exactly what windows exist
+    to prevent. There is no override on this path: nobody is present to consent.
+    """
+    if cfg is None:
+        return None
+    try:
+        from . import windows as _win
+        dec = _win.gate(cfg, f"agent fix `{command}`", override=False, has_consent=False)
+        return None if dec.allowed else dec.reason
+    except Exception as e:  # noqa: BLE001 — a broken gate must fail closed
+        return f"maintenance-window check failed ({e.__class__.__name__}); refusing to mutate"
+
+
+def fix_action(store: Store, command: str, tier: str, confirm_fn=None, cfg=None) -> str:
+    """Attempt a mutation. Policy-gated, window-gated, confirm-gated, always logged."""
     decision = policy.check_repair(command, tier)
+    if decision.allowed:
+        blocked = _window_block(cfg, command)
+        if blocked:
+            store.add_action(tier, "fix-denied", command, False, blocked)
+            return f"DENIED: {blocked}"
     if not decision.allowed:
         store.add_action(tier, "fix-denied", command, False, decision.reason)
         return (
@@ -252,8 +295,12 @@ def fix_action(store: Store, command: str, tier: str, confirm_fn=None) -> str:
         if not confirm_fn(command, decision.label):
             store.add_action(tier, "fix-declined", command, False, "human declined")
             return "DECLINED: the human said no. Do not retry this action."
-    out = _exec(policy.split_command(command), timeout=60)
-    store.add_action(tier, f"fix:{decision.label}", command, True, out[:1000])
+    code, out = _exec_rc(policy.split_command(command), timeout=60)
+    ok = code == 0
+    store.add_action(tier, f"fix:{decision.label}", command, ok,
+                     (out if ok else f"FAILED (exit {code}): {out}")[:1000])
+    if not ok:
+        return f"FAILED ({decision.label}, exit {code}) — the command did not succeed:\n{out}"
     return f"EXECUTED ({decision.label}):\n{out}"
 
 
@@ -333,7 +380,8 @@ TOOL_SPECS = [
 ]
 
 
-def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None) -> str:
+def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None,
+             cfg=None) -> str:
     try:
         if name == "run_diag":
             return run_diag(store, str(args.get("command", "")))
@@ -353,7 +401,7 @@ def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None) ->
         if name == "security_intel":
             return security_intel(store)
         if name == "fix_action":
-            return fix_action(store, str(args.get("command", "")), tier, confirm_fn)
+            return fix_action(store, str(args.get("command", "")), tier, confirm_fn, cfg=cfg)
         return f"unknown tool: {name}"
     except Exception as e:  # noqa: BLE001
         return f"tool error: {e.__class__.__name__}: {e}"

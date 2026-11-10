@@ -109,19 +109,28 @@ def inbox_path(data_dir: Path) -> Path:
 def _log(data_dir: Path, line: str) -> None:
     """Failures are logged, never fatal."""
     try:
-        with (Path(data_dir) / LOG_NAME).open("a") as fh:
+        path = Path(data_dir) / LOG_NAME
+        if path.exists() and path.stat().st_size > 2_000_000:   # keep the log bounded
+            os.replace(path, path.with_suffix(".log.1"))
+        with path.open("a", encoding="utf-8", errors="replace") as fh:
             fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {line}\n")
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 
+INBOX_MAX_ROWS = 2000     # the inbox is a tail, not an archive (SIEM sinks keep history)
+from .filelock import FileLock as _FileLock  # noqa: E402
+
+
 def record(data_dir: Path, severity: str, summary: str,
-           report_id: float | None = None, report_path: str = "") -> dict:
+           report_id: float | None = None, report_path: str = "",
+           kind: str = "patrol") -> dict:
     """Append one notification record to the inbox. Returns the record."""
     rec = {
         "id": uuid.uuid4().hex[:12],
         "ts": time.time(),
         "severity": severity,
+        "kind": kind,
         "summary": (summary or "")[:500],
         "report_id": report_id,
         "report_path": report_path,
@@ -129,7 +138,7 @@ def record(data_dir: Path, severity: str, summary: str,
     }
     p = inbox_path(data_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a") as fh:
+    with _FileLock(p), p.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec) + "\n")
     return rec
 
@@ -139,7 +148,7 @@ def read_all(data_dir: Path) -> list[dict]:
     if not p.exists():
         return []
     out: list[dict] = []
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -158,17 +167,20 @@ def unread(data_dir: Path) -> list[dict]:
 
 def mark_read(data_dir: Path, ids: list[str] | None = None) -> int:
     """Mark notifications read (all unread when ids is None). Returns count."""
-    rows = read_all(data_dir)
-    n = 0
-    for r in rows:
-        if not r.get("read") and (ids is None or r.get("id") in ids):
-            r["read"] = True
-            n += 1
-    if n:
-        p = inbox_path(data_dir)
-        tmp = p.with_suffix(".jsonl.tmp")
-        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
-        os.replace(tmp, p)
+    p = inbox_path(data_dir)
+    with _FileLock(p):
+        rows = read_all(data_dir)
+        n = 0
+        for r in rows:
+            if not r.get("read") and (ids is None or r.get("id") in ids):
+                r["read"] = True
+                n += 1
+        trimmed = len(rows) > INBOX_MAX_ROWS
+        if n or trimmed:
+            rows = rows[-INBOX_MAX_ROWS:]
+            tmp = p.with_suffix(".jsonl.tmp")
+            tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            os.replace(tmp, p)
     return n
 
 
@@ -452,8 +464,7 @@ def emit_event(cfg, kind: str, severity: str, summary: str,
         if not any(should_notify(severity, t) for t in thresholds):
             return None
         dd = Path(data_dir) if data_dir is not None else cfg.data_dir
-        rec = record(dd, severity, summary, report_id=report_id)
-        rec["kind"] = kind
+        rec = record(dd, severity, summary, report_id=report_id, kind=kind)
         from . import offline as _offline
         fan_out(st, rec, dd, block_public=_offline.is_offline(cfg))
         return rec
@@ -481,8 +492,7 @@ def dispatch(cfg, patrol: dict, report_id: float | None = None,
             return None
         dd = Path(data_dir) if data_dir is not None else cfg.data_dir
         summary = patrol.get("summary") or "(no summary)"
-        rec = record(dd, sev, summary, report_id=report_id)
-        rec["kind"] = "patrol"
+        rec = record(dd, sev, summary, report_id=report_id, kind="patrol")
         from . import offline as _offline
         fan_out(st, rec, dd, title=f"🔧 wrench patrol: {sev}",
                 block_public=_offline.is_offline(cfg))
