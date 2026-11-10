@@ -20,6 +20,7 @@
 
 <main class="page">
   <div class="summary" id="summary" role="group" aria-label="filter by status"></div>
+  <div class="dist" id="dist" role="img" aria-label="fleet status distribution"></div>
   <div class="toolbar">
     <input class="input" id="q" type="search" placeholder="Search name, host, OS, tag, finding…  ( / )" aria-label="search nodes">
     <span class="seg" role="group" aria-label="operating system" id="osfilter"></span>
@@ -80,6 +81,8 @@ function render(d) {
     + tile('yellow', 'Attention', s.yellow, 'yellow') + tile('red', 'Critical', s.red, 'red')
     + tile('silent', 'Silent', s.silent, '')
     + `<div class="sumtile" style="cursor:default"><div class="k">Fleet health</div><div class="v">${s.avg_score == null ? '—' : Math.round(s.avg_score)}<small class="dim" style="font-size:13px;font-weight:500"> avg</small></div></div>`;
+  const seg = (n, color) => n ? `<i style="flex:${n};background:var(--${color})" title="${n}"></i>` : '';
+  $('dist').innerHTML = seg(s.red, 'critical') + seg(s.yellow, 'warning') + seg(s.silent, 'unknown') + seg(s.green, 'good');
   const oses = [...new Set(nodes.map((n) => n.meta.os).filter(Boolean))].sort();
   $('osfilter').hidden = oses.length < 2;
   $('osfilter').innerHTML = [null, ...oses].map((o) => `<button data-os="${esc(o || '')}" aria-pressed="${filter.os === o}">${o ? esc(o) : 'all'}</button>`).join('');
@@ -104,7 +107,7 @@ function render(d) {
   }).join('');
   $('none').hidden = shown.length > 0;
   $('none').innerHTML = nodes.length ? 'No nodes match these filters.'
-    : 'No nodes have reported yet.<br><br>On this hub run <code>wrench fleet enroll</code>, then run the <code>wrench fleet join …</code> command it prints on each machine.';
+    : `<b style="font-size:15px;color:var(--text)">No machines have reported yet</b><br><br>On this hub run ${cmd('wrench fleet enroll')}<br>then run the <code>wrench fleet join …</code> line it prints on each machine.`;
 }
 
 async function refresh() {

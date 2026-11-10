@@ -7,6 +7,7 @@ made up, so the result is safe to publish.
 
     python scripts/demo_seed.py /tmp/wrench-demo            # seed + serve on :8799
     python scripts/demo_seed.py /tmp/wrench-demo --no-serve
+    python scripts/demo_seed.py /tmp/wrench-new --fresh     # a brand-new install (welcome guide)
 """
 
 from __future__ import annotations
@@ -33,6 +34,18 @@ def main() -> None:
 
     cfg = load_config(provider_override="ollama", model_override="qwen2.5:14b")
     store = Store(cfg.db_path)
+    if "--fresh" in sys.argv:
+        # a brand-new install: one sample, nothing else — shows the welcome guide
+        store.add_sample("os", {"cpu_pct": 7.0, "mem_pct": 41.0, "swap_pct": 0.0, "load_1m": 0.4,
+                                "n_procs": 188, "uptime_s": 5400, "disk_pct": {"/": 34.0},
+                                "top_cpu": [], "top_mem": []})
+        store.close()
+        cfg = load_config(provider_override="none")
+        httpd = webapp.serve(cfg.db_path, port=8799, host_label="new-laptop", bind="127.0.0.1",
+                             sample_thread=False, cfg=cfg, os_label="macOS 15.1")
+        print("fresh-install demo: http://127.0.0.1:8799/")
+        httpd.serve_forever()
+        return
     rnd = random.Random(11)
     now = time.time()
 
@@ -102,6 +115,14 @@ def main() -> None:
                  "the WAL archive is the cause.\nFINDINGS:\n"
                  + "\n".join(f"- [{f['severity']}] {f['text']}" for f in findings[:3])
                  + "\nRECOMMENDATIONS:\n- wrench fixxer")
+    for back in range(8, 0, -1):                       # a regular patrol cadence
+        store.db.execute(
+            "INSERT INTO patrols (ts, model, status, summary, findings, report_md, tokens) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (now - back * 900, "qwen2.5:14b", "ok" if back > 2 else "attention",
+             "all clear — sensors, drift and logs are quiet" if back > 2 else
+             "/var is filling faster than usual", "[]", "STATUS: ok", 9000 + back * 311))
+    store.db.commit()
     store.add_patrol("qwen2.5:14b", "attention",
                      "/var will cross 95% in about six days; the WAL archive is the cause.",
                      findings, report_md, 18240)
@@ -112,6 +133,15 @@ def main() -> None:
     audit.append(cfg.data_dir, "security.baseline.accept", {"listeners": 9})
     notifications.record(cfg.data_dir, "attention",
                          "/var will cross 95% in about six days", kind="forecast")
+
+    # ---- 30 days of health-score history (it dipped, then recovered) ----
+    for d in range(30 * 4, 0, -1):
+        t = now - d * 21600
+        dip = 16 * math.exp(-((d - 44) / 14) ** 2)
+        score = 84 - dip + rnd.uniform(-1.2, 1.2) - (4 if d < 6 else 0)
+        store.db.execute("INSERT INTO snapshots (ts, kind, payload) VALUES (?,?,?)",
+                         (t, "posture_history", '{"score": %.1f}' % score))
+    store.db.commit()
 
     # ---- a fictional fleet ----
     st = fleet.FleetSettings(max_skew_s=0)

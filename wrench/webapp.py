@@ -14,6 +14,7 @@ API (JSON; every route needs a credential when access control is on)
   GET  /api/timeline?hours=24     downsampled os samples (1h / 6h / 24h / 7d)
   GET  /api/patrols | /api/drift | /api/actions | /api/tokens | /api/webintel
   GET  /api/posture               the health score and its pillars
+  GET  /api/pillar?key=           one pillar: what it measures and the evidence behind it
   GET  /api/notifications[?all=1] unread (or all) notifications
   POST /api/notifications/read    mark read                         [admin]
   POST /api/chat                  talk to the agent                 [admin]
@@ -253,6 +254,12 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
             if path == "/api/posture":
                 from . import posture
                 return self._json(posture.compute(cfg, store))
+            if path == "/api/pillar":
+                from . import posture
+                ev = posture.evidence(cfg, store, (query.get("key") or [""])[0])
+                if ev is None:
+                    return self._json({"error": "unknown pillar"}, 404)
+                return self._json(ev)
             if path == "/api/timeline":
                 try:
                     hours = int((query.get("hours") or ["24"])[0])
@@ -287,6 +294,7 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 "ts": last[0] if last else None,
                 "os": last[1] if last else {},
                 "posture": posture.compute(cfg, store),
+                "checklist": posture.checklist(cfg, store),
                 "fleet_hub": hub_on(store),
                 "unread": len(notifications.unread(data_dir)),
                 "tokens_total": sum(t["total"] or 0 for t in store.token_totals()),
@@ -308,6 +316,9 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 out["brain"] = {"usable": False, "reason": "no config loaded"}
                 out["policy_tier"] = "suggest"
                 out["offline"] = False
+            hist = posture.history(store, 30)
+            out["health_history"] = hist[-400:]
+            out["health_trend"] = posture.trend(hist)
             return out
 
         def _fleet_get(self, path: str, query: dict, store: Store):
@@ -604,6 +615,9 @@ def serve(db_path, port: int = 8787, host_label: str = "localhost",
                     try:
                         sample_all(s)
                         s.maybe_prune(getattr(cfg, "retention_days", 30) if cfg else 30)
+                        if cfg is not None:
+                            from . import posture
+                            posture.record(cfg, s, min_gap_s=1800)
                     finally:
                         s.close()
                 except Exception:  # noqa: BLE001

@@ -424,8 +424,9 @@ def build_report(cfg, store, settings: FleetSettings | None = None,
     try:
         from . import posture
         pos = posture.compute(cfg, store, now=now)
-        meta["score"] = pos["score"]
-        meta["grade"] = pos["grade"]
+        if not pos.get("provisional"):       # a thinly measured box reports no score
+            meta["score"] = pos["score"]
+            meta["grade"] = pos["grade"]
         meta["pillars"] = {p["key"]: p["score"] for p in pos["pillars"]}
         gauges["comply_score"] = meta["pillars"].get("compliance")
     except Exception:  # noqa: BLE001

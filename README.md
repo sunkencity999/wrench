@@ -14,6 +14,38 @@
 [![Site](https://img.shields.io/badge/site-sunkencity999.github.io%2Fwrench-58a6ff?style=flat-square)](https://sunkencity999.github.io/wrench/)
 [![CI](https://github.com/sunkencity999/wrench/actions/workflows/ci.yml/badge.svg)](https://github.com/sunkencity999/wrench/actions/workflows/ci.yml)
 
+<p align="center">
+  <a href="https://sunkencity999.github.io/wrench/"><img src="docs/assets/dashboard.png" alt="The wrench dashboard: health score, posture pillars, vitals, patrols" width="100%"></a>
+</p>
+
+<p align="center">
+  <a href="#60-second-quickstart"><b>Quickstart</b></a> ·
+  <a href="docs/deployment.md"><b>Deployment guide</b></a> ·
+  <a href="docs/configuration.md"><b>Configuration</b></a> ·
+  <a href="SECURITY.md"><b>Security model</b></a> ·
+  <a href="PLATFORMS.md"><b>Platforms</b></a> ·
+  <a href="CHANGELOG.md"><b>Changelog</b></a> ·
+  <a href="https://sunkencity999.github.io/wrench/"><b>Website</b></a>
+</p>
+
+## Contents
+
+- **Start here** — [The problem](#the-problem-nobody-is-watching) · [Capability map](#the-capability-map--see--predict--prove--fix--scale) · [Quickstart](#60-second-quickstart) · [Your first five minutes](#your-first-five-minutes)
+- **See** — [status](#wrench-status) · [score](#wrench-score--one-number-with-its-reasons) · [ask](#wrench-ask-) · [patrol](#wrench-patrol) · [drift](#wrench-drift) · [explain](#wrench-explain-service--port--pid--path) · [security](#wrench-security--watch-the-doors) · [dashboard](#wrench-report--wrench-web) · [notifications](#notifications--wrench-taps-you-on-the-shoulder)
+- **Predict** — [cve](#wrench-cve--what-the-internet-already-knows-about-your-box) · [forecast](#wrench-forecast--see-the-incident-coming) · [certs](#wrench-certs--ssltls-lifecycle-from-inventory-to-renewal)
+- **Prove** — [backups](#wrench-backups--untested-backups-dont-exist) · [audit](#wrench-audit--prove-what-happened) · [comply](#wrench-comply--prove-the-box-meets-the-baseline) · [bundle](#wrench-bundle--the-air-gap-evidence-bundle)
+- **Fix** — [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
+- **Scale** — [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
+- **Understand it** — [How a patrol works](#how-a-patrol-works) · [The brain is swappable](#the-brain-is-swappable) · [Policy tiers](#policy-tiers--the-leash) · [Architecture](#architecture) · [Philosophy](#philosophy) · [FAQ](#faq)
+
+| guide | read it when |
+|---|---|
+| [Deployment](docs/deployment.md) | putting wrench on a server, building a fleet with MDM or Ansible, exposing the hub, going air-gapped, upgrading, troubleshooting |
+| [Configuration](docs/configuration.md) | you want to know what a setting does — every key, default and environment variable |
+| [Security model](SECURITY.md) | deciding whether to trust it: what each surface defends against, and what it does not |
+| [JSON & metrics](docs/json-output.md) | wiring it into CI, Prometheus, or a SIEM |
+| [Platforms](PLATFORMS.md) | what is tested on Linux, macOS and Windows — and what is not |
+
 ## The problem nobody is watching
 
 Your machine degrades slowly, and silently. A disk creeps from 60% to 94%
@@ -161,6 +193,32 @@ wrench web                  # dashboard at http://127.0.0.1:8787
 wrench install-service      # patrol on a schedule: systemd / launchd / Task Scheduler
 ```
 
+### Your first five minutes
+
+Run `wrench` with no arguments at any time. It shows where the machine stands
+and the single next command worth running:
+
+```text
+╭─ 🔧 wrench ───────────────────────────────────────────────────────────────╮
+│ app-prod-01  ·  Ubuntu 24.04.1 LTS  ·  wrench 3.0.0                        │
+│ health 80/100  grade B  ·  8 of 8 pillars measured                         │
+│ last patrol attention, 7m ago: /var will cross 95% in about six days       │
+╰────────────────────────────────────────────────────────────────────────────╯
+next  wrench security accept   After this, only NEW listeners, keys and sudoers changes raise an alarm.
+
+see      status · score · patrol · ask "…" · drift · security
+predict  forecast · certs · cve
+prove    audit verify · backups · comply · bundle
+fix      fixxer · blueprint "…"
+scale    web · fleet enroll / join / serve · metrics
+setup    init · doctor · install-service
+```
+
+The same five steps appear as a checklist at the top of the dashboard on a new
+install — run a patrol, schedule patrols, accept a security baseline, have a
+verified backup, optionally connect a model — and tick themselves off.
+`wrench --help` lists every command grouped by the same five arcs.
+
 **No model? wrench still does its job.** Every check that pages is code, so
 with no brain configured a patrol runs in *deterministic mode*: sensors, drift,
 certificates, security, backups, compliance and forecast all run, the report is
@@ -237,11 +295,29 @@ $ wrench score
 ```
 
 The score is arithmetic over what each subsystem last measured — the model is
-never asked how healthy the box is. Three rules keep it honest: a pillar with
-no data is **unmeasured**, shown as such and left out of the average (the
-header says how many were measured); one **critical** pillar caps the total so
-it cannot hide in a good average; and every pillar carries its reason and the
-command that improves it. The same number appears in `wrench status`, the
+never asked how healthy the box is. Four rules keep it honest:
+
+- A pillar with no data is **unmeasured**, shown as such and left out of the
+  average. The header says how many were measured.
+- Until at least half of the score's weight has been measured, the number is
+  **provisional**: no grade, no "healthy". A new install with one clean pillar
+  is unmeasured, not an A.
+- One **critical** pillar caps the total, so it cannot hide in a good average.
+- Every pillar carries its reason and the command that improves it.
+
+| pillar | weight | what it measures |
+|---|---|---|
+| Capacity | 20 | fullest volume, inodes, sustained memory pressure |
+| Security | 20 | sign-in anomalies, privilege drift, listeners vs. the accepted baseline |
+| Vulnerabilities | 15 | known CVEs in installed packages; end-of-life OS and runtimes |
+| Compliance | 15 | the hardening pack for this OS |
+| Backups | 12 | jobs exist, ran on schedule, and answer |
+| Certificates | 8 | soonest TLS expiry |
+| Forecast | 5 | projected capacity incidents |
+| Patrol | 5 | patrols are running, and what the last one found |
+
+wrench records the score at every patrol, so the dashboard shows the trend and
+how it compares with a week ago. The same number appears in `wrench status`, the
 dashboard, every fleet report, `--json` (`wrench.score.v1`, exit 1 attention /
 2 critical) and Prometheus (`wrench_health_score`, `wrench_health_pillar_score`).
 
@@ -404,13 +480,32 @@ build step, zero CDN. Light and dark follow your OS.
 
 ![wrench dashboard](docs/assets/dashboard.png)
 
+**Built to be used, not just looked at.**
+
+- **Every number opens.** Click a posture pillar and a panel shows what it
+  measures, its share of the score, and the evidence — each volume, finding,
+  failing rule, backup job or certificate — with the command to run next.
+  Each panel has its own link (`/#pillar=backups`) to paste into a ticket.
+- **⌘K / Ctrl-K** opens a command palette: jump to a section, open a pillar,
+  switch the time range or theme, or copy any `wrench` command.
+- **Click any command to copy it.** Wherever the page names a command, it is
+  a button.
+- **A health trend.** The score's history, and how it compares with a week ago.
+- **A first-run guide** that walks a new machine through five one-command
+  steps and disappears when they are done.
+- **Phone-sized screens work**, and motion is reduced when your OS asks for it.
+
+| | |
+|---|---|
+| ![a pillar opened to its evidence](docs/assets/pillar.png) | ![the command palette](docs/assets/palette.png) |
+
 **And I'm in there.** *Ask* opens a conversation with me — the same agent loop
 as `wrench chat`, diagnostics and all, so "what's eating RAM?" gets
 *investigated* from your browser.
 
-Keyboard shortcuts: <kbd>?</kbd> help · <kbd>c</kbd> ask · <kbd>n</kbd>
-notifications · <kbd>r</kbd> refresh · <kbd>t</kbd> theme · <kbd>f</kbd> fleet ·
-<kbd>Esc</kbd> close.
+Keyboard shortcuts: <kbd>⌘K</kbd> or <kbd>/</kbd> command palette ·
+<kbd>c</kbd> ask · <kbd>n</kbd> notifications · <kbd>r</kbd> refresh ·
+<kbd>t</kbd> theme · <kbd>f</kbd> fleet · <kbd>?</kbd> help · <kbd>Esc</kbd> close.
 
 **Who can see it.** On `127.0.0.1` (the default) there is no sign-in, and the
 server answers only to loopback host names, so a web page cannot reach it
@@ -1329,45 +1424,71 @@ declined, or failed — is logged and shown in the dashboard.
 ```mermaid
 flowchart TB
     subgraph sense["📡 sense (continuous)"]
-        sensors["sensors.py<br/>cpu · mem · disk · net · procs<br/>docker · gpu<br/>EWMA baselines + z-scores"]
-        drift["driftscan.py<br/>ports · services · packages<br/>users · scheduled jobs<br/>plain-English diffs"]
+        sensors["sensors.py<br/>cpu · mem · real volumes · net · procs<br/>docker · gpu · EWMA baselines"]
+        drift["driftscan.py · netinfo.py<br/>ports · services · packages<br/>users · scheduled jobs"]
     end
 
-    store[("store.py — wrench.db (SQLite)<br/>samples · baselines · anomalies · snapshots<br/>diffs · patrols · actions · token spend")]
-
-    subgraph think["🧠 orient + act"]
-        agent["agent.py<br/>observe → orient → act → report"]
-        tools["tools.py<br/>read_logs · service_status · disk_tree<br/>net_listeners · proc_top · run_diag · fix_action"]
-        policy["policy.py<br/>tiers + allowlists + forbidden patterns"]
-        providers["providers.py<br/>meta · openai · anthropic · azure<br/>ollama · lmstudio · litellm · custom"]
+    subgraph checks["🔎 deterministic checks (code, never the model)"]
+        sec["security.py<br/>auth · privilege · listeners · CVE"]
+        comply["comply.py · probes.py · packs/<br/>hardening per OS"]
+        misc["backups.py · certs.py<br/>forecast.py · webintel.py"]
+        posture["posture.py<br/>health score · evidence · history"]
     end
 
-    subgraph show["📺 report"]
-        cli["cli.py — rich terminal"]
-        web["webapp.py — dark dashboard"]
-        html["report.py — standalone HTML"]
+    store[("store.py — wrench.db (SQLite, WAL)<br/>samples · snapshots · patrols · actions<br/>fleet nodes + keys")]
+    audit[("audit.py — hash-chained log<br/>sealed head · optional MAC")]
+
+    subgraph think["🧠 orient + act (optional brain)"]
+        agent["agent.py<br/>observe → orient → act → report<br/>deterministic fallback"]
+        tools["tools.py<br/>read-only diagnostics · fix_action"]
+        policy["policy.py · windows.py · approvals.py<br/>tiers · allowlists · change windows"]
+        providers["providers.py<br/>ollama · lmstudio · openai · anthropic<br/>meta · azure · litellm · custom · none"]
     end
 
-    platforms["platforms.py — Linux / macOS / Windows<br/>paths · service manager · log backend · capabilities"]
+    subgraph hands["🔧 consent-gated hands"]
+        fix["fixxer.py · blueprint.py<br/>certs renew"]
+    end
+
+    subgraph show["📺 report + scale"]
+        cli["cli.py · report.py<br/>terminal · HTML · --json"]
+        web["webapp.py · webauth.py · web/<br/>dashboard · API · access control"]
+        fleet["fleet.py<br/>signed reports → hub console"]
+        sinks["notifications.py · metrics.py<br/>desktop · webhook · syslog · Prometheus"]
+    end
 
     sensors --> store
     drift --> store
+    checks --> store
+    store --> posture
     store --> agent
     agent <--> providers
-    agent --> tools
-    tools --> policy
-    tools --> store
+    agent --> tools --> policy
+    policy --> fix
+    fix --> audit
+    tools --> audit
     store --> cli
     store --> web
-    store --> html
-    platforms -.-> sensors
-    platforms -.-> drift
-    platforms -.-> tools
+    store --> fleet
+    store --> sinks
+    posture --> web
+    posture --> fleet
 ```
 
-Everything lands in one SQLite file. The dashboard, the terminal, and the HTML
-reports all render from the same store the agent writes to — there is exactly
+Everything lands in one SQLite file. The dashboard, the terminal, the HTML
+reports and the fleet report all render from the same store — there is exactly
 one source of truth, and you can query it with any sqlite client.
+
+Three boundaries hold the design together:
+
+1. **Checks are code.** Anything that can page you — a full disk, a stale
+   backup, a failed hardening rule, an expiring certificate — is decided by
+   deterministic code. The model reads the results; it does not produce them.
+2. **The brain is optional and replaceable.** `agent.py` investigates and
+   narrates when a provider is reachable, and falls back to the deterministic
+   report when it is not.
+3. **Hands are separate from the brain.** Changes go through `policy.py`
+   (allowlists, tiers), `windows.py` (change windows) and a consent record, and
+   every one is sealed into `audit.py`. The model never authors a command.
 
 Data locations (override with `WRENCH_DATA_DIR` / `WRENCH_CONFIG_DIR`):
 

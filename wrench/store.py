@@ -806,8 +806,12 @@ class Store:
         for table in ("samples", "anomalies", "diffs"):
             cur = self.db.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
             deleted[table] = cur.rowcount
+        # the health-score history is a trend line, kept as long as other history
         cur = self.db.execute(
-            "DELETE FROM snapshots WHERE ts < ? AND rowid NOT IN "
+            "DELETE FROM snapshots WHERE kind = 'posture_history' AND ts < ?",
+            (history_cutoff,))
+        cur = self.db.execute(
+            "DELETE FROM snapshots WHERE kind != 'posture_history' AND ts < ? AND rowid NOT IN "
             "(SELECT rowid FROM snapshots s WHERE s.ts = "
             " (SELECT MAX(ts) FROM snapshots WHERE kind = s.kind))", (cutoff,))
         deleted["snapshots"] = cur.rowcount

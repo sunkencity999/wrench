@@ -61,7 +61,11 @@ def test_posture_compute_on_a_fresh_store(tmp_path):
     p = posture.compute(Cfg(), store)
     assert p["score"] is None and len(p["pillars"]) == len(posture.WEIGHTS)
     store.add_sample("os", {"disk_pct": {"/": 30.0}, "mem_pct": 50.0})
-    assert posture.compute(Cfg(), store)["score"] == 100.0
+    thin = posture.compute(Cfg(), store)
+    # one clean pillar out of eight is a number, not a verdict
+    assert thin["score"] == 100.0 and thin["provisional"]
+    assert thin["grade"] == "–" and thin["state"] == "unknown"
+    assert posture.record(Cfg(), store, min_gap_s=0) is None      # and it is not charted
     store.close()
 
 
@@ -628,3 +632,37 @@ def test_csv_guard_and_session_with_odd_bytes():
     a = webauth.AuthConfig(admin_token="tok")
     assert a.role_for_session("admin.999.\xe9") is None         # no TypeError
     assert a.role_for_token("\udcff") is None
+
+
+def test_posture_evidence_history_and_checklist(tmp_path):
+    class Cfg:
+        patrol_interval_min = 15
+        provider = "none"
+        api_key = ""
+        base_url = ""
+    store = Store(tmp_path / "w.db")
+    assert posture.evidence(Cfg(), store, "nope") is None
+    ev = posture.evidence(Cfg(), store, "backups")
+    assert ev["score"] is None and ev["items"] == [] and ev["explain"]
+    store.add_sample("os", {"disk_pct": {"/": 93.0, "/data": 40.0}, "mem_pct": 50.0})
+    store.add_snapshot("backups_report", {"no_jobs": True, "jobs": []})
+    store.add_snapshot("security_scan", {"counts": {"critical": 1, "warning": 0},
+                                         "baseline_exists": True,
+                                         "findings": [{"severity": "critical", "title": "new root account",
+                                                       "detail": "uid 0: backdoor"}]})
+    cap = posture.evidence(Cfg(), store, "capacity")
+    assert cap["items"][0]["state"] == "critical" and "93%" in cap["items"][0]["title"]
+    assert posture.evidence(Cfg(), store, "security")["items"][0]["title"] == "new root account"
+    assert "no backup job" in posture.evidence(Cfg(), store, "backups")["items"][0]["title"]
+    # history + trend
+    assert posture.record(Cfg(), store, now=1000.0, min_gap_s=0)["score"] is not None
+    assert posture.record(Cfg(), store, min_gap_s=3600) is None          # throttled
+    pts = [{"ts": 0, "score": 70.0}, {"ts": 8 * 86400, "score": 82.0}]
+    assert posture.trend(pts, now=8 * 86400)["delta"] == 12.0
+    assert posture.trend(pts[:1])["delta"] is None
+    # checklist: nothing done on a box with no patrol, and it names the commands
+    steps = {s["key"]: s for s in posture.checklist(Cfg(), store)}
+    assert not steps["patrol"]["done"] and steps["patrol"]["command"] == "wrench patrol"
+    assert not steps["brain"]["done"] and not steps["backups"]["done"]
+    assert steps["baseline"]["done"]
+    store.close()

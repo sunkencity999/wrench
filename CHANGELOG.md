@@ -36,6 +36,17 @@ own network surfaces, and manages a fleet through one command per machine.
   any non-loopback bind (a token is generated if none is set), admin and viewer
   roles, DNS-rebinding and CSRF defences, security headers, optional native TLS
   for both `wrench web` and `wrench fleet serve`.
+- **Dashboard depth.** Every posture pillar opens to its evidence (volumes,
+  findings, failing rules, jobs, certificates) with a shareable link; a ⌘K
+  command palette; click-to-copy commands; a health trend with week-over-week
+  change; a first-run guide; phone-sized layouts.
+- **`wrench` with no arguments** shows where the machine stands and the single
+  next command; `wrench --help` groups commands by the five arcs.
+- **Provisional scores.** Until half of the score's weight is measured there is
+  no grade and no "healthy" — a new install is unmeasured, not an A.
+- **Docs.** A deployment guide (servers, fleets, MDM/Ansible, reverse proxy,
+  air-gap, upgrading, troubleshooting), a full configuration reference, and a
+  rebuilt website.
 - **macOS and Windows compliance packs** (`macos-baseline`, `windows-baseline`)
   on a new closed registry of read-only OS probes. Packs declare their
   platforms; only applicable packs run by default.

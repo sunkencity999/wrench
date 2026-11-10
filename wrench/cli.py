@@ -24,11 +24,110 @@ from .store import Store
 app = typer.Typer(
     help="🔧 wrench — I'm the sysadmin that lives on your machine. I watch, remember, "
     "explain, and — with your permission — fix.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     add_completion=False,
     rich_markup_mode="rich",
 )
 console = Console()
+
+# `wrench --help` groups commands by the five arcs instead of one long list.
+ARC_SEE, ARC_PREDICT, ARC_PROVE, ARC_FIX, ARC_SCALE, ARC_SETUP = (
+    "SEE — watch the machine (read-only)", "PREDICT — see it coming",
+    "PROVE — evidence, not vibes", "FIX — with your permission",
+    "SCALE — many machines, your stack", "Setup & housekeeping")
+_HELP_PANELS = {
+    "status": ARC_SEE, "score": ARC_SEE, "patrol": ARC_SEE, "ask": ARC_SEE, "chat": ARC_SEE,
+    "explain": ARC_SEE, "drift": ARC_SEE, "security": ARC_SEE, "watch": ARC_SEE,
+    "report": ARC_SEE, "notifications": ARC_SEE,
+    "forecast": ARC_PREDICT, "certs": ARC_PREDICT, "cve": ARC_PREDICT,
+    "audit": ARC_PROVE, "backups": ARC_PROVE, "comply": ARC_PROVE, "bundle": ARC_PROVE,
+    "fixxer": ARC_FIX, "blueprint": ARC_FIX, "approve": ARC_FIX, "approvals": ARC_FIX,
+    "fleet": ARC_SCALE, "web": ARC_SCALE, "metrics": ARC_SCALE,
+    "init": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
+}
+
+
+def _apply_help_panels() -> None:
+    for c in app.registered_commands:
+        name = c.name or (c.callback.__name__.replace("_", "-") if c.callback else "")
+        c.rich_help_panel = _HELP_PANELS.get(name, ARC_SETUP)
+    for g in app.registered_groups:
+        g.rich_help_panel = _HELP_PANELS.get(g.name or "", ARC_SETUP)
+    # panels appear in the order their first command does: SEE first, setup last
+    order = [ARC_SEE, ARC_PREDICT, ARC_PROVE, ARC_FIX, ARC_SCALE, ARC_SETUP]
+    app.registered_commands.sort(key=lambda c: order.index(c.rich_help_panel))
+
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        _home()
+
+
+def _home() -> None:
+    """`wrench` with no arguments: where this machine stands and what to do next.
+
+    Reads cached state only — it is instant and never touches the machine.
+    """
+    from . import posture
+    cfg, store = _ctx()
+    try:
+        pos = posture.compute(cfg, store)
+        steps = posture.checklist(cfg, store)
+        patrols = store.recent_patrols(1)
+    finally:
+        store.close()
+    head = Text()
+    head.append(platform.node() or "this machine", style="bold")
+    head.append(f"  ·  {platforms.os_label()}  ·  wrench {__version__}\n", style="dim")
+    style = {"ok": "green", "attention": "yellow", "critical": "bold red"}.get(pos["state"], "dim")
+    if pos["score"] is None:
+        head.append("not measured yet", style="dim")
+    elif pos.get("provisional"):
+        head.append(f"health {pos['score']:.0f}/100", style="dim")
+        head.append("  provisional — most pillars are not measured yet", style="yellow")
+    else:
+        head.append(f"health {pos['score']:.0f}/100", style=f"bold {style}")
+        head.append(f"  grade {pos['grade']}", style=style)
+        cov = pos["coverage"]
+        head.append(f"  ·  {cov['measured']} of {cov['total']} pillars measured", style="dim")
+    if patrols:
+        age = time.time() - patrols[0]["ts"]
+        when = f"{age / 60:.0f}m ago" if age < 5400 else f"{age / 3600:.1f}h ago" \
+            if age < 172800 else f"{age / 86400:.0f}d ago"
+        head.append(f"\nlast patrol {patrols[0]['status']}, {when}: ", style="dim")
+        head.append((patrols[0].get("summary") or "")[:110])
+    console.print(Panel(head, border_style="bright_blue", title="🔧 wrench", title_align="left"))
+
+    todo = [s for s in steps if not s["done"]]
+    if todo:
+        console.print(Text.assemble(("next  ", "bold bright_blue"), (todo[0]["command"], "bold"),
+                                    (f"   {todo[0]['why']}", "dim")))
+        if len(todo) > 1:
+            console.print(Text("then  " + "  ·  ".join(s["command"] for s in todo[1:4]), style="dim"))
+    elif pos.get("top_issues"):
+        i = pos["top_issues"][0]
+        console.print(Text.assemble(("next  ", "bold bright_blue"), (i["command"], "bold"),
+                                    (f"   {i['label']}: {i['detail']}", "dim")))
+    else:
+        console.print(Text("all set — nothing needs attention", style="green"))
+
+    t = Table.grid(padding=(0, 2))
+    t.add_column(style="bold bright_blue", no_wrap=True)
+    t.add_column()
+    for arc, cmds in (
+        ("see", "status · score · patrol · ask \"…\" · drift · security"),
+        ("predict", "forecast · certs · cve"),
+        ("prove", "audit verify · backups · comply · bundle"),
+        ("fix", "fixxer · blueprint \"…\""),
+        ("scale", "web · fleet enroll / join / serve · metrics"),
+        ("setup", "init · doctor · install-service"),
+    ):
+        t.add_row(arc, Text(cmds, style="dim"))
+    console.print()
+    console.print(t)
+    console.print(Text("\nwrench <command> --help for details  ·  wrench --help for everything",
+                       style="dim"))
 
 
 def _ctx(provider: str | None = None, model: str | None = None):
@@ -160,7 +259,8 @@ def status(json_out: bool = JSON_OPT):
     if pb.get("score") is not None:
         style = {"ok": "green", "attention": "yellow", "critical": "bold red"}.get(pb["state"], "dim")
         console.print(Text.assemble(
-            ("health ", "dim"), (f"{pb['score']:.0f}/100", style), (f" (grade {pb['grade']})", style),
+            ("health ", "dim"), (f"{pb['score']:.0f}/100", style),
+            (" (provisional)" if pb.get("provisional") else f" (grade {pb['grade']})", style),
             (f" · {pb['measured']} of {pb['total']} pillars measured · ", "dim"),
             ("wrench score", "bold"), (" for the breakdown", "dim")))
 
@@ -170,6 +270,7 @@ def _posture_brief(cfg, store) -> dict:
         from . import posture
         p = posture.compute(cfg, store)
         return {"score": p["score"], "grade": p["grade"], "state": p["state"],
+                "provisional": p.get("provisional", False),
                 "measured": p["coverage"]["measured"], "total": p["coverage"]["total"]}
     except Exception:  # noqa: BLE001
         return {}
@@ -497,7 +598,10 @@ def score(json_out: bool = JSON_OPT):
     else:
         head.append(f"{p['score']:.0f}", style=f"bold {style}")
         head.append(" / 100", style="dim")
-        head.append(f"   grade {p['grade']}", style=style)
+        if p.get("provisional"):
+            head.append("   provisional — too little measured for a grade yet", style="yellow")
+        else:
+            head.append(f"   grade {p['grade']}", style=style)
     cov = p["coverage"]
     head.append(f"\n{cov['measured']} of {cov['total']} pillars measured", style="dim")
     t = Table(border_style="bright_blue", show_edge=False, pad_edge=False)
@@ -3453,6 +3557,8 @@ def doctor(provider: str = PROVIDER_OPT, model: str = MODEL_OPT,
     if not alive or not a["intact"]:
         raise typer.Exit(1)
 
+
+_apply_help_panels()
 
 if __name__ == "__main__":
     app()

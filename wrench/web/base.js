@@ -69,6 +69,7 @@ function openDrawer(id) {
   const f = $(id).querySelector('[data-autofocus]'); if (f) f.focus();
 }
 function closeDrawers() {
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   document.querySelectorAll('.drawer.open').forEach((d) => d.classList.remove('open'));
   const s = $('scrim'); if (s) s.classList.remove('open');
 }
@@ -139,6 +140,60 @@ function niceMax(v) {
   for (const m of [1, 2, 2.5, 5, 10]) if (v <= m * mag) return m * mag;
   return 10 * mag;
 }
+
+/* ---- click any command to copy it ---- */
+const cmd = (c) => `<code class="cmd" title="click to copy">${esc(c)}</code>`;
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('code.cmd'); if (!el) return;
+  e.stopPropagation();
+  try { await navigator.clipboard.writeText(el.textContent); } catch (x) { return; }
+  const was = el.textContent; el.classList.add('copied'); el.textContent = 'copied';
+  setTimeout(() => { el.classList.remove('copied'); el.textContent = was; }, 900);
+});
+
+/* ---- sparkline (no axes: the caption carries the range) ---- */
+function sparkline(points, max = 100) {
+  if (points.length < 2) return '';
+  const W = 300, H = 44, t0 = points[0][0], t1 = Math.max(points[points.length - 1][0], t0 + 1);
+  const lo = Math.max(0, Math.min(...points.map((p) => p[1])) - 8), hi = Math.min(max, Math.max(...points.map((p) => p[1])) + 8);
+  const X = (t) => (t - t0) / (t1 - t0) * W, Y = (v) => H - 3 - (v - lo) / Math.max(hi - lo, 1) * (H - 6);
+  const d = points.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join('');
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <path class="a" d="${d}L${W} ${H}L0 ${H}Z"/><path class="l" d="${d}" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+/* ---- command palette: ⌘K / Ctrl-K ---- */
+function initPalette(getActions) {
+  const root = $('palette'), input = $('palette-input'), list = $('palette-list');
+  let items = [], sel = 0;
+  const draw = () => {
+    const q = input.value.trim().toLowerCase();
+    items = getActions().filter((a) => !q || (a.label + ' ' + a.group + ' ' + (a.hint || '')).toLowerCase().includes(q)).slice(0, 40);
+    sel = Math.min(sel, Math.max(items.length - 1, 0));
+    list.innerHTML = items.map((a, i) => `<li role="option" data-i="${i}" aria-selected="${i === sel}">
+      <span class="g">${esc(a.group)}</span><span>${esc(a.label)}</span>${a.hint ? `<span class="h">${esc(a.hint)}</span>` : ''}</li>`).join('')
+      || '<li class="dim" style="cursor:default">No matches</li>';
+    const cur = list.querySelector('[aria-selected="true"]'); if (cur) cur.scrollIntoView({ block: 'nearest' });
+  };
+  const open = () => { root.classList.add('open'); input.value = ''; sel = 0; draw(); input.focus(); };
+  const close = () => root.classList.remove('open');
+  const run = (i) => { const a = items[i]; if (!a) return; close(); a.run(); };
+  input.addEventListener('input', () => { sel = 0; draw(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, items.length - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { run(sel); e.preventDefault(); }
+    else if (e.key === 'Escape') { close(); e.stopPropagation(); }
+  });
+  list.addEventListener('click', (e) => { const li = e.target.closest('li[data-i]'); if (li) run(Number(li.dataset.i)); });
+  root.addEventListener('click', (e) => { if (e.target === root) close(); });
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); root.classList.contains('open') ? close() : open(); }
+  });
+  const btn = $('palette-btn'); if (btn) btn.addEventListener('click', open);
+  return { open, close };
+}
+const copyText = async (t) => { try { await navigator.clipboard.writeText(t); } catch (x) { /* denied */ } };
 
 /* ---- top bar wiring shared by pages ---- */
 function wireChrome() {

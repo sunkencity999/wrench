@@ -61,6 +61,7 @@ COMMANDS = {
 }
 
 GRADES = ((90, "A"), (80, "B"), (70, "C"), (60, "D"), (0, "F"))
+MIN_COVERAGE = 0.5      # share of the score's weight that must be measured to earn a grade
 
 
 def grade_for(score: float | None) -> str:
@@ -285,10 +286,16 @@ def combine(pillars: list[dict]) -> dict:
     if score is not None and any(p["state"] == "critical" for p in known):
         score = min(score, 69.0)
     worst = sorted(known, key=lambda p: p["score"])[:3]
+    # A verdict needs evidence. Until at least half of the score's weight has
+    # been measured, the number is shown but it earns no grade and no "healthy":
+    # a new install with one clean pillar is unmeasured, not an A.
+    all_w = sum(p["weight"] for p in pillars)
+    provisional = score is not None and all_w > 0 and (total_w / all_w) < MIN_COVERAGE
     return {
         "score": score,
-        "grade": grade_for(score),
-        "state": state_for(score),
+        "grade": "–" if provisional else grade_for(score),
+        "state": "unknown" if provisional else state_for(score),
+        "provisional": provisional,
         "coverage": {"measured": len(known), "total": len(pillars)},
         "pillars": pillars,
         "top_issues": [{"pillar": p["key"], "label": p["label"], "detail": p["detail"],
@@ -331,5 +338,236 @@ def summary_line(p: dict) -> str:
     if p.get("score") is None:
         return "posture: not enough data yet"
     cov = p["coverage"]
+    if p.get("provisional"):
+        return (f"posture: provisional {p['score']:.0f}/100 — only "
+                f"{cov['measured']} of {cov['total']} pillars measured")
     return (f"posture: {p['score']:.0f}/100 (grade {p['grade']}) — "
             f"{cov['measured']} of {cov['total']} pillars measured")
+
+
+# ---------------- evidence: what is behind each pillar ----------------
+
+EXPLAIN = {
+    "capacity": "Whether this machine is running out of room: the fullest volume, inodes, and "
+                "sustained memory pressure. The worst resource dominates the score.",
+    "security": "The ways in: sign-in anomalies, privilege drift (sudoers, authorized_keys, "
+                "extra root accounts), and listening sockets compared with the accepted baseline.",
+    "vulnerabilities": "Known CVEs in installed packages (OSV.dev) and whether the OS and "
+                       "runtimes still receive security updates (endoflife.date).",
+    "compliance": "Hardening checks from the compliance pack written for this OS. Every check "
+                  "is deterministic code; skipped checks never count as passing.",
+    "backups": "Whether backups exist, ran on their own schedule, and answer when asked. "
+               "A machine with no detected backup job scores low on purpose.",
+    "certificates": "TLS certificates found in web-server configs and well-known stores, "
+                    "scored by the soonest expiry.",
+    "forecast": "Trends projected from this machine's own history: when a disk, inode table "
+                "or log directory crosses its limit.",
+    "patrol": "Whether patrols are running on schedule, and what the last one concluded.",
+}
+
+_SEV_STATE = {"critical": "critical", "error": "critical", "high": "critical",
+              "warning": "attention", "attention": "attention", "medium": "attention",
+              "moderate": "attention", "low": "info", "info": "info", "ok": "ok", "none": "ok"}
+
+
+def _item(state: str, title: str, detail: str = "") -> dict:
+    return {"state": _SEV_STATE.get(str(state).lower(), "info"),
+            "title": str(title)[:200], "detail": str(detail)[:400]}
+
+
+def evidence(cfg, store, key: str) -> dict | None:
+    """Everything behind one pillar: its score, what it measures, and the
+    individual facts (volumes, findings, failing rules, jobs, certificates…)
+    that produced it. Cached data only. None for an unknown pillar."""
+    if key not in WEIGHTS:
+        return None
+    pos = compute(cfg, store)
+    pillar = next(p for p in pos["pillars"] if p["key"] == key)
+    items: list[dict] = []
+
+    def snap(kind):
+        row = store.last_snapshot(kind)
+        return (row[1], row[0]) if row else (None, None)
+
+    measured_at = None
+    try:
+        if key == "capacity":
+            last = store.last_sample("os")
+            if last:
+                measured_at, osd = last
+                for mount, pct in sorted((osd.get("disk_pct") or {}).items(), key=lambda kv: -kv[1]):
+                    st = "critical" if pct >= 90 else "warning" if pct >= 80 else "ok"
+                    items.append(_item(st, f"{mount} — {pct:.0f}% used"))
+                for mount, pct in sorted((osd.get("inode_pct") or {}).items(), key=lambda kv: -kv[1]):
+                    if pct >= 70:
+                        items.append(_item("warning" if pct < 90 else "critical",
+                                           f"inodes on {mount} — {pct:.0f}% used"))
+                if osd.get("mem_pct") is not None:
+                    items.append(_item("warning" if osd["mem_pct"] > 90 else "ok",
+                                       f"memory — {osd['mem_pct']:.0f}% used",
+                                       f"{osd.get('mem_used_gb', '?')} of {osd.get('mem_total_gb', '?')} GB"))
+        elif key == "security":
+            data, measured_at = snap("security_scan")
+            for f in (data or {}).get("findings") or []:
+                items.append(_item(f.get("severity", "info"), f.get("title") or f.get("summary", ""),
+                                   f.get("detail", "")))
+        elif key == "vulnerabilities":
+            data = store.cache_get("webintel_scan", float("inf")) or {}
+            measured_at = data.get("ts")
+            for v in (data.get("vulns") or [])[:40]:
+                ids = ", ".join(v.get("aliases") or []) or v.get("vuln_id", "")
+                items.append(_item(v.get("severity") or "warning",
+                                   f"{v.get('package')} {v.get('version', '')} — {ids}",
+                                   (v.get("summary") or "")
+                                   + (f" Fixed in {v['fixed']}." if v.get("fixed") else "")))
+            for e in data.get("eol") or []:
+                items.append(_item("warning" if e.get("is_eol") else "ok", e.get("label", "")))
+        elif key == "compliance":
+            data, measured_at = snap("comply_scan")
+            for p in (data or {}).get("packs") or []:
+                c = p.get("counts") or {}
+                score = "n/a" if p.get("score") is None else f"{p['score']:.0f}%"
+                items.append(_item("info", f"pack {p.get('pack')} — {score}",
+                                   f"{c.get('pass', 0)} pass · {c.get('fail', 0)} fail · "
+                                   f"{c.get('skip', 0)} skipped"))
+            for f in (data or {}).get("fails") or []:
+                items.append(_item(f.get("severity", "medium"), f"not met: {f.get('title')}",
+                                   f"wrench comply show {f.get('id')}"))
+        elif key == "backups":
+            data, measured_at = snap("backups_report")
+            if data and (data.get("no_jobs") or not data.get("jobs")):
+                items.append(_item("warning", "no backup job detected",
+                                   "nothing in cron, systemd timers or Time Machine protects this machine"))
+            for j in (data or {}).get("jobs") or []:
+                bad = j.get("integrity") == "failed"
+                stale = j.get("freshness") != "fresh"
+                items.append(_item("critical" if bad else "warning" if stale else "ok",
+                                   f"{j.get('name')} — {j.get('freshness', 'unknown')}, "
+                                   f"integrity {j.get('integrity', 'unknown')}",
+                                   j.get("integrity_note") or ""))
+        elif key == "certificates":
+            for c in store.recent_certs():
+                if c.get("error") or c.get("days_left") is None:
+                    continue
+                d = int(c["days_left"])
+                st = "critical" if d <= 7 else "warning" if d <= 30 else "ok"
+                name = (c.get("subject") or c.get("path") or "").replace("CN=", "")
+                items.append(_item(st, f"{name} — " + ("EXPIRED" if d <= 0 else f"{d} days left"),
+                                   c.get("path") or ""))
+                measured_at = max(measured_at or 0, c.get("ts") or 0) or None
+        elif key == "forecast":
+            data, measured_at = snap("forecast_feed")
+            for inc in (data or {}).get("incidents") or []:
+                if inc.get("severity") in ("critical", "warning", "info"):
+                    items.append(_item(inc["severity"],
+                                       f"{inc.get('kind')} {inc.get('resource')}",
+                                       inc.get("detail", "")))
+        elif key == "patrol":
+            patrols = store.recent_patrols(1)
+            if patrols:
+                measured_at = patrols[0]["ts"]
+                items.append(_item(patrols[0].get("status", "ok"), patrols[0].get("summary", "")))
+                for f in (patrols[0].get("findings") or [])[:20]:
+                    if f.get("severity") != "recommendation":
+                        items.append(_item(f.get("severity", "info"), f.get("text", "")))
+    except Exception:  # noqa: BLE001 — evidence is best-effort; the score stands on its own
+        pass
+    return {**pillar, "explain": EXPLAIN[key], "items": items[:60],
+            "measured_at": measured_at,
+            "share": round(100 * WEIGHTS[key] / sum(WEIGHTS.values()))}
+
+
+# ---------------- history: the score over time ----------------
+
+HISTORY_KIND = "posture_history"
+
+
+def record(cfg, store, now: float | None = None, min_gap_s: float = 600) -> dict | None:
+    """Snapshot the current score so it can be charted. At most one point per
+    ``min_gap_s``; a box with nothing measured records nothing. Never raises."""
+    try:
+        last = store.last_snapshot(HISTORY_KIND)
+        now = now if now is not None else time.time()
+        if last and (now - last[0]) < min_gap_s:
+            return None
+        p = compute(cfg, store, now=now)
+        if p["score"] is None or p.get("provisional"):
+            return None
+        point = {"score": p["score"], "grade": p["grade"],
+                 "pillars": {x["key"]: x["score"] for x in p["pillars"]}}
+        store.add_snapshot(HISTORY_KIND, point)
+        return point
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def history(store, days: float = 30) -> list[dict]:
+    """[{ts, score}] oldest first, for the health trend chart."""
+    try:
+        cur = store.db.execute(
+            "SELECT ts, payload FROM snapshots WHERE kind=? AND ts>=? ORDER BY ts",
+            (HISTORY_KIND, time.time() - days * 86400))
+        out = []
+        for ts, payload in cur.fetchall():
+            import json as _json
+            try:
+                out.append({"ts": ts, "score": _json.loads(payload).get("score")})
+            except ValueError:
+                continue
+        return [p for p in out if isinstance(p["score"], (int, float))]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def trend(points: list[dict], now: float | None = None, window_s: float = 7 * 86400) -> dict:
+    """Change in score over the window: {delta, since_ts} (delta None if unknown)."""
+    if len(points) < 2:
+        return {"delta": None, "since_ts": None}
+    now = now if now is not None else time.time()
+    past = [p for p in points if p["ts"] <= now - window_s]
+    base = past[-1] if past else points[0]
+    return {"delta": round(points[-1]["score"] - base["score"], 1), "since_ts": base["ts"]}
+
+
+def checklist(cfg, store, now: float | None = None) -> list[dict]:
+    """First-run guide: what is set up and what is the next command. Each item
+    is {key, title, done, command, why}. Pure reads; never raises."""
+    now = now if now is not None else time.time()
+
+    def safe(fn, default=None):
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001
+            return default
+
+    patrols = safe(lambda: store.recent_patrols(5), []) or []
+    interval = max(60, int(getattr(cfg, "patrol_interval_min", 15)) * 60)
+    scheduled = len(patrols) >= 3 and (now - patrols[0]["ts"]) < interval * 4 and \
+        (patrols[0]["ts"] - patrols[2]["ts"]) < interval * 6
+    brain = False
+    try:
+        from . import agent
+        brain = agent.brain_status(cfg)[0]
+    except Exception:  # noqa: BLE001
+        pass
+    sec = safe(lambda: store.last_snapshot("security_scan"))
+    backups = safe(lambda: store.last_snapshot("backups_report"))
+    return [
+        {"key": "patrol", "title": "Run a first patrol", "done": bool(patrols),
+         "command": "wrench patrol",
+         "why": "Takes every measurement once: sensors, drift, security, backups, compliance."},
+        {"key": "schedule", "title": "Patrol on a schedule", "done": scheduled,
+         "command": "wrench install-service",
+         "why": "A scheduled patrol is what turns wrench from a tool into a watch."},
+        {"key": "baseline", "title": "Accept a security baseline",
+         "done": bool(sec and sec[1].get("baseline_exists")),
+         "command": "wrench security accept",
+         "why": "After this, only NEW listeners, keys and sudoers changes raise an alarm."},
+        {"key": "backups", "title": "Have a verified backup",
+         "done": bool(backups and backups[1].get("jobs") and not backups[1].get("no_jobs")),
+         "command": "wrench backups",
+         "why": "Untested backups don't exist. wrench checks that yours ran and answer."},
+        {"key": "brain", "title": "Connect a model (optional)", "done": brain,
+         "command": "wrench init",
+         "why": "Adds investigation, plain-English reports and chat. Everything else works without it."},
+    ]

@@ -54,8 +54,31 @@
       ]
     },
     {
+      id: "score",
+      label: "3 · score · SEE",
+      cmd: "wrench score",
+      out: [
+        { t: "╭──────────── 🔧 wrench score ────────────╮", cls: "c-acc" },
+        { t: "│ 80 / 100   grade B                      │", cls: "c-ok" },
+        { t: "│ 8 of 8 pillars measured                 │", cls: "c-dim" },
+        { t: "╰──────────────────────────────────────────╯", cls: "c-acc" },
+        { t: " Capacity          61  ██████░░░░  fullest disk /var at 88%, memory 64%", cls: "c-warn" },
+        { t: " Security          90  █████████░  0 critical, 1 warning finding(s)", cls: "c-ok" },
+        { t: " Vulnerabilities   70  ███████░░░  1 known CVE in 1 package · 1 end-of-life product", cls: "c-warn" },
+        { t: " Compliance        88  █████████░  88% of checks pass · 5 failing", cls: "c-ok" },
+        { t: " Backups          100  ██████████  2 job(s), all fresh", cls: "c-ok" },
+        { t: " Certificates      85  ████████░░  1 tracked · next expiry in 23d", cls: "c-ok" },
+        { t: " Forecast          80  ████████░░  1 projected incident · disk /var in ~6d", cls: "c-ok" },
+        { t: " Patrol            70  ███████░░░  last patrol attention, 7m ago", cls: "c-warn" },
+        { t: "next steps", cls: "c-acc" },
+        { t: "  • Capacity: fullest disk /var at 88%  → wrench status", cls: "c-dim" },
+        { t: "  • Vulnerabilities: 1 known CVE         → wrench cve", cls: "c-dim" },
+        { t: "SEE — one number for \"how is this box, really?\". It is arithmetic over what each subsystem measured — the model is never asked. A pillar with no data is shown as unmeasured and left out, never counted as healthy; one critical pillar caps the total so it can't hide in a good average. The same score rides in every fleet report.", cls: "c-dim", note: true }
+      ]
+    },
+    {
       id: "forecast",
-      label: "3 · forecast · PREDICT",
+      label: "4 · forecast · PREDICT",
       cmd: "wrench forecast",
       out: [
         { t: "  ⚙ trend engine — least-squares over 3,125 samples / 1.9d", cls: "c-cyan" },
@@ -77,7 +100,7 @@
     },
     {
       id: "comply",
-      label: "4 · comply · PROVE",
+      label: "5 · comply · PROVE",
       cmd: "wrench comply",
       out: [
         { t: "╭──── 📋 Ubuntu hardening essentials (inspired by CIS L1) — score 56.8% ────╮", cls: "c-acc" },
@@ -93,7 +116,7 @@
     },
     {
       id: "audit",
-      label: "5 · audit + bundle · PROVE",
+      label: "6 · audit + bundle · PROVE",
       cmd: "wrench audit verify && wrench bundle",
       out: [
         { t: "╭────────────────────── 🧾 audit verify ──────────────────────╮", cls: "c-ok" },
@@ -110,7 +133,7 @@
     },
     {
       id: "fixxer",
-      label: "6 · fixxer · FIX",
+      label: "7 · fixxer · FIX",
       cmd: "wrench fixxer",
       out: [
         { t: "I'm going through the box looking for things I can fix myself...", cls: "c-dim" },
@@ -134,24 +157,28 @@
     },
     {
       id: "fleet",
-      label: "7 · fleet · SCALE",
-      cmd: "wrench fleet status",
+      label: "8 · fleet · SCALE",
+      cmd: "wrench fleet enroll --label \"web tier\"",
       out: [
-        { t: "  (hub: wrench fleet serve · nodes push a signed snapshot after each patrol)", cls: "c-dim" },
-        { t: "╭──────────────────────── 🔧 wrench fleet ──────────────────────╮", cls: "c-acc" },
-        { t: "│ fleet — 3 node(s): 1 ok / 1 attn / 0 crit / 1 SILENT          │", cls: "c-acc" },
-        { t: "│                                                               │", cls: "" },
-        { t: "│ node      status      worst     last seen                     │", cls: "c-dim" },
-        { t: "│ web-01    ok          —         42s ago                       │", cls: "c-ok" },
-        { t: "│ db-02     attention   warning   1m ago                        │", cls: "c-warn" },
-        { t: "│ edge-03   SILENT      —         6h ago · past 2× cadence      │", cls: "c-crit" },
-        { t: "╰──────────────────────────────────────────────────────────────╯", cls: "c-acc" },
-        { t: "SCALE — one box watching itself is a homelab; a hundred reporting to one pane of glass is operations. Push is HMAC-signed and built from CACHED scans (never a rerun). The dead-man's switch makes silence loud: edge-03 went quiet past 2× its cadence, so the hub raises a CRITICAL. Default OFF — no [fleet] config, zero change.", cls: "c-dim", note: true }
+        { t: "╭──────────────────── 🔧 wrench fleet enroll ───────────────────╮", cls: "c-acc" },
+        { t: "│ run this on each machine that should report to this hub:      │", cls: "c-dim" },
+        { t: "│ wrench fleet join https://hub.example:8788 wfl_9bbe…0d7b      │", cls: "c-ok" },
+        { t: "│ key id 44c9d382ce376f27 · reusable · shown once               │", cls: "c-dim" },
+        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "$ wrench fleet join https://hub.example:8788 wfl_9bbe…0d7b --tags prod,web     # on web-01", cls: "c-cyan" },
+        { t: "✔ joined https://hub.example:8788 as web-01 (tags: prod, web)", cls: "c-ok" },
+        { t: "$ wrench fleet status                                                          # on the hub", cls: "c-cyan" },
+        { t: "  fleet — 10 node(s): 5 ok / 3 attn / 1 crit / 1 SILENT", cls: "c-acc" },
+        { t: "  db-01        critical   41 F   disk /var/lib/postgresql is 96% full", cls: "c-crit" },
+        { t: "  web-02       attention  72 C   certificate shop.example.com expires in 9d", cls: "c-warn" },
+        { t: "  web-01       ok         94 A   all clear", cls: "c-ok" },
+        { t: "  dc-edge-07   SILENT     —      no report for 12m — expected every 5m", cls: "c-crit" },
+        { t: "SCALE — one command on the hub, one line on each machine (drop it in your MDM or Ansible). Every report is signed over a timestamp + body: the hub rejects replays, stale clocks, revoked keys, and a node id claimed by another key — and it stores only a derived key, never the token. The hub itself checks every 30 seconds for machines that have gone quiet, because a silent box is the one you most need to hear about.", cls: "c-dim", note: true }
       ]
     },
     {
       id: "offline",
-      label: "8 · offline mode",
+      label: "9 · offline mode",
       cmd: "WRENCH_OFFLINE=1 wrench cve",
       chatFinale: true,
       out: [

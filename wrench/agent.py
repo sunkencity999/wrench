@@ -525,6 +525,11 @@ def run_patrol(cfg: Config, store, client: LLMClient | None = None, on_step=None
         store.maybe_prune(getattr(cfg, "retention_days", 30))
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from . import posture
+        posture.record(cfg, store, min_gap_s=0)     # one health point per patrol
+    except Exception:  # noqa: BLE001
+        pass
     # tap the human on the shoulder — best-effort, never breaks a patrol
     try:
         from . import notifications

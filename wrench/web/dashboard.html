@@ -11,6 +11,9 @@
   <nav class="nav" aria-label="sections"><a class="on" href="/">Overview</a><a id="nav-fleet" href="/fleet" hidden>Fleet</a></nav>
   <span class="spacer"></span>
   <span class="dim" id="updated" style="font-size:12px"></span>
+  <button class="searchbtn" id="palette-btn" title="command palette" aria-label="open the command palette">
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <span class="lbl">Search &amp; commands</span><span class="kbdkey lbl">⌘K</span></button>
   <span class="seg" role="group" aria-label="time range" id="range">
     <button data-h="1" aria-pressed="false">1h</button><button data-h="6" aria-pressed="false">6h</button>
     <button data-h="24" aria-pressed="true">24h</button><button data-h="168" aria-pressed="false">7d</button></span>
@@ -26,6 +29,14 @@
 </div>
 
 <main class="page">
+  <section class="card welcome" id="welcome" hidden aria-labelledby="h-welcome">
+    <header style="align-items:center"><div><h3 id="h-welcome">Welcome — let's get this machine watched</h3>
+      <span class="dim" style="font-size:13px" id="welcome-sub"></span></div>
+      <span class="meta" style="display:flex;align-items:center;gap:10px;min-width:220px;justify-content:flex-end">
+        <span class="progress" aria-hidden="true"><i id="welcome-bar"></i></span>
+        <button class="iconbtn" id="welcome-hide" title="hide this guide">Hide</button></span></header>
+    <div class="steps" id="welcome-steps"></div>
+  </section>
   <div class="row hero">
     <section class="card health" aria-labelledby="h-health">
       <header><h2 id="h-health">Health</h2><span class="meta" id="coverage"></span></header>
@@ -37,9 +48,11 @@
           <text class="score" id="score" x="64" y="70" text-anchor="middle">–</text>
           <text class="of" x="64" y="88" text-anchor="middle">out of 100</text>
         </svg>
-        <div><div class="grade"><b id="grade">–</b>grade</div><div id="state" style="margin-top:6px"></div>
+        <div><div class="grade"><b id="grade">–</b>grade</div>
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"><span id="state"></span><span id="trend"></span></div>
           <p class="dim" style="font-size:12.5px;margin-top:8px" id="health-note"></p></div>
       </div>
+      <div id="health-spark"></div>
       <dl class="kv" id="health-facts" style="margin-top:auto;padding-top:12px;border-top:1px solid var(--line-soft)"></dl>
     </section>
     <section class="card" aria-labelledby="h-pillars">
@@ -112,9 +125,24 @@
   <div class="content"><div class="feed" id="notif-list" style="max-height:none"></div></div>
 </aside>
 
+<aside class="drawer" id="pillar" role="dialog" aria-label="pillar detail">
+  <header><h2 id="p-title">Pillar</h2><span id="p-state"></span>
+    <button class="iconbtn" data-close aria-label="close">✕</button></header>
+  <div class="content" id="p-body"></div>
+</aside>
+
+<div class="palette" id="palette" role="dialog" aria-label="command palette">
+  <div class="box"><input id="palette-input" type="text" autocomplete="off" spellcheck="false"
+      placeholder="Jump to a section, open a pillar, copy a command…" aria-label="search commands">
+    <ul id="palette-list" role="listbox"></ul>
+    <div class="hint"><span><span class="kbdkey">↑</span> <span class="kbdkey">↓</span> move</span>
+      <span><span class="kbdkey">↵</span> run</span><span><span class="kbdkey">esc</span> close</span></div></div>
+</div>
+
 <aside class="drawer" id="help" role="dialog" aria-label="keyboard shortcuts">
   <header><h2>Keyboard shortcuts</h2><button class="iconbtn" data-close aria-label="close">✕</button></header>
   <div class="content"><dl class="kv">
+    <dt>Command palette</dt><dd><code>⌘K</code> / <code>Ctrl K</code></dd>
     <dt>Ask wrench</dt><dd><code>c</code></dd><dt>Notifications</dt><dd><code>n</code></dd>
     <dt>Refresh now</dt><dd><code>r</code></dd><dt>Toggle theme</dt><dd><code>t</code></dd>
     <dt>Fleet console</dt><dd><code>f</code></dd><dt>Close panel</dt><dd><code>Esc</code></dd></dl></div>
@@ -124,31 +152,88 @@
 <script nonce="__NONCE__">
 let hours = 24, me = { role: 'viewer' }, seenNotif = new Set(), firstLoad = true;
 
-function renderHealth(p) {
-  const s = p.score, C = 339.3;
-  $('score').textContent = s == null ? '–' : Math.round(s);
+let shownScore = null;
+function animateScore(to) {
+  const C = 339.3, v = $('ring-val'), label = $('score');
+  if (to == null) { label.textContent = '–'; v.style.strokeDashoffset = C; shownScore = null; return; }
+  const from = shownScore ?? 0, t0 = performance.now(), ms = shownScore == null ? 900 : 400;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || document.hidden) {
+    label.textContent = Math.round(to); v.style.strokeDashoffset = C * (1 - to / 100); shownScore = to; return; }
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3), cur = from + (to - from) * e;
+    label.textContent = Math.round(cur); v.style.strokeDashoffset = C * (1 - cur / 100);
+    if (k < 1) requestAnimationFrame(step); else shownScore = to;
+  };
+  // paint the final state first: if frames never run (background tab) it is still right
+  label.textContent = Math.round(to); v.style.strokeDashoffset = C * (1 - to / 100);
+  requestAnimationFrame(step);
+}
+
+function renderHealth(p, o) {
+  const s = p.score;
+  animateScore(s);
   $('grade').textContent = p.grade;
   $('ring').setAttribute('aria-label', s == null ? 'health score: no data yet' : `health score ${Math.round(s)} of 100, grade ${p.grade}`);
-  const v = $('ring-val');
-  v.style.stroke = `var(--${p.state === 'ok' ? 'good' : p.state === 'attention' ? 'warning' : p.state === 'critical' ? 'critical' : 'unknown'})`;
-  v.style.strokeDashoffset = s == null ? C : C * (1 - s / 100);
-  $('state').innerHTML = badge(p.state);
+  $('ring-val').style.stroke = `var(--${p.state === 'ok' ? 'good' : p.state === 'attention' ? 'warning' : p.state === 'critical' ? 'critical' : 'unknown'})`;
+  $('state').innerHTML = p.provisional ? badge('unknown', 'Provisional') : badge(p.state);
+  const tr = o.health_trend || {}, hist = (o.health_history || []).map((h) => [h.ts, h.score]);
+  const days = tr.since_ts ? Math.max(1, Math.round((Date.now() / 1000 - tr.since_ts) / 86400)) : 0;
+  const dir = tr.delta > 0.4 ? 'up' : tr.delta < -0.4 ? 'down' : '';
+  $('trend').innerHTML = tr.delta == null ? '' : `<span class="trend ${dir}" title="compared with ${esc(new Date(tr.since_ts * 1000).toLocaleDateString())}">${dir === 'up' ? '▲' : dir === 'down' ? '▼' : '—'} ${dir ? (tr.delta > 0 ? '+' : '') + tr.delta.toFixed(0) : 'steady'} <span style="font-weight:500">vs ${days}d ago</span></span>`;
+  $('health-spark').innerHTML = hist.length > 1 ? sparkline(hist)
+    + `<div class="sparkcap"><span>health · ${esc(ago(hist[0][0]).replace(' ago', ''))} of history</span><span>now ${Math.round(hist[hist.length - 1][1])}</span></div>` : '';
   $('coverage').textContent = `${p.coverage.measured} of ${p.coverage.total} pillars measured`;
-  $('health-note').textContent = p.coverage.measured < p.coverage.total
-    ? 'Unmeasured pillars are left out of the score, not counted as healthy.' : 'Every pillar is measured.';
+  $('health-note').textContent = s == null ? 'No measurements yet — run a patrol to take the first ones.'
+    : p.provisional ? 'Too little is measured to grade this machine yet. Run a patrol to measure the rest.'
+    : p.coverage.measured < p.coverage.total ? 'Unmeasured pillars are left out of the score, not counted as healthy.' : 'Every pillar is measured.';
   $('issues').innerHTML = (p.top_issues || []).map((i) => `
     <div class="issue"><span class="dot ${esc(p.pillars.find((x) => x.key === i.pillar).state)}"></span>
-      <span><b>${esc(i.label)}</b> — ${esc(i.detail)}</span><small>next step: <code>${esc(i.command)}</code></small></div>`).join('')
-    || (s == null ? '<div class="empty">Run <code>wrench patrol</code> to take the first measurements.</div>'
+      <span><b>${esc(i.label)}</b> — ${esc(i.detail)}</span><small>next step: ${cmd(i.command)}</small></div>`).join('')
+    || (s == null ? `<div class="empty">Run ${cmd('wrench patrol')} to take the first measurements.</div>`
+      : p.provisional ? `<div class="empty">Most pillars are not measured yet — run ${cmd('wrench patrol')}.</div>`
       : '<div class="empty">Nothing needs attention.</div>');
   $('issues-head').hidden = !(p.top_issues || []).length;
   $('pillars').innerHTML = p.pillars.map((x) => `
-    <div class="pillar" title="run: ${esc(x.command)}">
+    <button class="pillar" data-pillar="${esc(x.key)}" aria-label="${esc(x.label)}: ${x.score == null ? 'not measured' : Math.round(x.score) + ' of 100'} — open details">
       <div class="top">${badge(x.state)}<span class="name">${esc(x.label)}</span>
         <span class="val num">${x.score == null ? '—' : Math.round(x.score)}</span></div>
-      <div class="meter ${esc(x.state)}"><i style="width:${x.score ?? 0}%"></i></div>
-      <div class="detail">${esc(x.detail)}${x.score == null ? ` · <code>${esc(x.command)}</code>` : ''}</div>
-    </div>`).join('');
+      <div class="meter ${esc(x.state)}"><i style="width:${Number(x.score) || 0}%"></i></div>
+      <div class="detail">${esc(x.detail)}</div><div class="more">See the evidence →</div>
+    </button>`).join('');
+}
+
+async function openPillar(key) {
+  $('p-title').textContent = '…'; $('p-state').innerHTML = ''; $('p-body').innerHTML = '<div class="empty">loading…</div>';
+  openDrawer('pillar');
+  if (location.hash !== '#pillar=' + key) history.replaceState(null, '', '#pillar=' + key);
+  let d; try { d = await api('/api/pillar?key=' + encodeURIComponent(key)); } catch (e) { $('p-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  $('p-title').textContent = d.label; $('p-state').innerHTML = badge(d.state);
+  const order = { critical: 0, attention: 1, info: 2, ok: 3 };
+  const items = (d.items || []).slice().sort((a, b) => (order[a.state] ?? 2) - (order[b.state] ?? 2));
+  $('p-body').innerHTML = `
+    <div style="display:flex;align-items:flex-end;gap:14px"><div class="bigscore">${d.score == null ? '—' : Math.round(d.score)}</div>
+      <div class="dim" style="font-size:12.5px;padding-bottom:4px">${d.score == null ? 'not measured yet' : 'out of 100'} · ${d.share}% of the overall score${d.measured_at ? ' · measured ' + esc(ago(d.measured_at)) : ''}</div></div>
+    <div class="meter ${esc(d.state)}" style="height:6px"><i style="width:${Number(d.score) || 0}%"></i></div>
+    <p style="color:var(--text-2)">${esc(d.explain)}</p>
+    <div><div class="subhead" style="margin:0 0 8px">Evidence</div><div class="evid">${
+      items.map((i) => `<div class="finding">${badge(i.state)}<span>${esc(i.title)}${i.detail ? `<small>${esc(i.detail)}</small>` : ''}</span></div>`).join('')
+      || `<div class="empty">${d.score == null ? 'Nothing has been measured for this pillar yet.' : 'No individual items to show.'}</div>`}</div></div>
+    <div><div class="subhead" style="margin:0 0 8px">Measure again or go deeper</div>
+      <p style="font-size:13px">Run ${cmd(d.command)} on this machine. <span class="dim">Click the command to copy it.</span></p></div>`;
+}
+
+function renderWelcome(list, hasPatrol) {
+  const done = list.filter((x) => x.done).length, core = list.slice(0, 2).every((x) => x.done);
+  let hidden = false; try { hidden = localStorage.getItem('wrench-welcome') === 'hide'; } catch (e) { /* private mode */ }
+  $('welcome').hidden = (core && hidden) || done === list.length;
+  if ($('welcome').hidden) return;
+  $('h-welcome').textContent = hasPatrol ? 'Finish setting up this machine' : "Welcome — let's get this machine watched";
+  $('welcome-sub').textContent = `${done} of ${list.length} done · each step is one command`;
+  $('welcome-bar').style.width = (done / list.length * 100) + '%';
+  $('welcome-hide').hidden = !core;
+  $('welcome-steps').innerHTML = list.map((x) => `
+    <div class="stepc ${x.done ? 'done' : ''}"><span class="tick" aria-hidden="true">✓</span><span class="t">${esc(x.title)}</span>
+      <span class="w">${esc(x.why)}</span>${x.done ? '' : `<span class="c">${cmd(x.command)}</span>`}</div>`).join('');
 }
 
 function renderVitals(o, tl) {
@@ -188,10 +273,10 @@ function renderPatrols(list) {
       ${i === 0 && fs.length ? `<div class="findings">${fs.slice(0, 8).map((f) =>
         `<div class="finding">${badge(f.severity)}<span>${esc(f.text)}</span></div>`).join('')}
         ${fs.length > 8 ? `<div class="sub">…and ${fs.length - 8} more in the full report</div>` : ''}</div>` : ''}
-      ${i === 0 && recs.length ? `<div class="sub">Recommended: ${recs.slice(0, 3).map((r) => `<code>${esc(r.text)}</code>`).join(' ')}</div>` : ''}
+      ${i === 0 && recs.length ? `<div class="sub">Recommended: ${recs.slice(0, 3).map((r) => cmd(r.text)).join(' ')}</div>` : ''}
       <details><summary>Full report${i ? ` · ${fs.length} finding(s)` : ''}</summary><pre>${esc(p.report_md)}</pre></details>
       <div class="sub">${esc(p.model || '')}${p.tokens ? ` · ${p.tokens.toLocaleString()} tokens` : ''}</div></div>`;
-  }).join('') : '<div class="empty">No patrols yet. Run <code>wrench patrol</code>, or schedule them with <code>wrench install-service</code>.</div>';
+  }).join('') : `<div class="empty">No patrols yet. Run ${cmd('wrench patrol')}, or schedule them with ${cmd('wrench install-service')}.</div>`;
 }
 
 function renderFeeds(drift, wi, actions, o) {
@@ -212,7 +297,7 @@ function renderFeeds(drift, wi, actions, o) {
       + (!v.length ? `<div class="item sub">No known CVEs in ${wi.packages_checked} checked packages.</div>` : '');
   } else {
     $('intel').innerHTML = o.offline ? '<div class="empty">Offline mode — public vulnerability lookups are disabled.</div>'
-      : '<div class="empty">No scan yet. Run <code>wrench cve</code>.</div>';
+      : `<div class="empty">No scan yet. Run ${cmd('wrench cve')}.</div>`;
   }
   const a = o.audit || {};
   $('audit-state').innerHTML = a.count == null ? '' : badge(a.intact ? 'ok' : 'critical', a.intact ? 'Audit chain intact' : 'Audit chain broken');
@@ -262,7 +347,8 @@ async function refresh() {
     const fresh = o.ts && (Date.now() / 1000 - o.ts) < 300;
     $('live').classList.toggle('stale', !fresh);
     $('updated').textContent = o.ts ? 'sampled ' + ago(o.ts) : 'no samples yet';
-    renderHealth(o.posture); renderVitals(o, tl); renderPatrols(patrols);
+    renderHealth(o.posture, o); renderVitals(o, tl); renderPatrols(patrols);
+    renderWelcome(o.checklist || [], patrols.length > 0);
     const lp = patrols[0], unread = notifs.filter((n) => !n.read).length;
     const hot = Object.values((o.os || {}).disk_pct || {}).filter((p) => p >= 90).length;
     $('health-facts').innerHTML = `
@@ -283,6 +369,25 @@ $('range').addEventListener('click', (e) => {
   refresh();
 });
 $('bell').addEventListener('click', () => openDrawer('notifs'));
+$('pillars').addEventListener('click', (e) => { const b = e.target.closest('[data-pillar]'); if (b) openPillar(b.dataset.pillar); });
+$('welcome-hide').addEventListener('click', () => { try { localStorage.setItem('wrench-welcome', 'hide'); } catch (e) { /* private */ } $('welcome').hidden = true; });
+const jump = (id) => () => { const el = $(id).closest('.card'); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+const COMMANDS = ['wrench patrol', 'wrench score', 'wrench status', 'wrench security', 'wrench comply', 'wrench backups',
+  'wrench certs', 'wrench cve', 'wrench forecast', 'wrench drift', 'wrench fixxer', 'wrench doctor',
+  'wrench install-service', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
+initPalette(() => [
+  ...(me.posture ? me.posture.pillars.map((x) => ({ group: 'Pillar', label: x.label, hint: x.score == null ? 'not measured' : String(Math.round(x.score)), run: () => openPillar(x.key) })) : []),
+  { group: 'Go to', label: 'Vitals', run: jump('h-vitals') }, { group: 'Go to', label: 'Patrols', run: jump('h-patrol') },
+  { group: 'Go to', label: 'Storage', run: jump('h-disks') }, { group: 'Go to', label: 'What changed', run: jump('h-drift') },
+  { group: 'Go to', label: 'Vulnerabilities & end of life', run: jump('h-intel') }, { group: 'Go to', label: 'Trust & activity', run: jump('h-trust') },
+  ...(me.fleet_hub ? [{ group: 'Go to', label: 'Fleet console', hint: 'f', run: () => { location.href = '/fleet'; } }] : []),
+  { group: 'Open', label: 'Notifications', hint: 'n', run: () => openDrawer('notifs') },
+  ...(me.role === 'admin' && me.brain && me.brain.usable ? [{ group: 'Open', label: 'Ask wrench', hint: 'c', run: openChat }] : []),
+  { group: 'Open', label: 'Keyboard shortcuts', hint: '?', run: () => openDrawer('help') },
+  { group: 'View', label: 'Toggle light / dark', hint: 't', run: toggleTheme }, { group: 'View', label: 'Refresh now', hint: 'r', run: refresh },
+  ...[1, 6, 24, 168].map((h) => ({ group: 'Range', label: h === 168 ? 'Last 7 days' : `Last ${h} hour${h > 1 ? 's' : ''}`, run: () => $('range').querySelector(`[data-h="${h}"]`).click() })),
+  ...COMMANDS.map((c) => ({ group: 'Copy', label: c, hint: 'copy', run: () => copyText(c) })),
+]);
 $('mark-all').addEventListener('click', async () => { await post('/api/notifications/read'); refresh(); });
 let greeted = false, busy = false;
 function addMsg(cls, text, meta) {
@@ -310,13 +415,23 @@ $('chat-form').addEventListener('submit', async (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === '/') { e.preventDefault(); $('palette-btn').click(); return; }
   if (e.key === 'c') openChat(); else if (e.key === 'n') openDrawer('notifs');
   else if (e.key === 'r') refresh(); else if (e.key === 't') toggleTheme();
   else if (e.key === '?') openDrawer('help'); else if (e.key === 'f' && me.fleet_hub) location.href = '/fleet';
   else return;
   e.preventDefault();
 });
+/* deep links: /#pillar=backups · /#notifications · /#ask · /#commands */
+function route() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h.startsWith('pillar=')) openPillar(h.slice(7));
+  else if (h === 'notifications') openDrawer('notifs');
+  else if (h === 'ask') openChat();
+  else if (h === 'commands') $('palette-btn').click();
+}
+addEventListener('hashchange', route);
 let resizeTimer;
 addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(refresh, 200); });
-refresh(); setInterval(refresh, 15000);
+refresh().then(route); setInterval(refresh, 15000);
 </script></body></html>
