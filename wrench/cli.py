@@ -22,7 +22,7 @@ from .providers import LLMClient
 from .store import Store
 
 app = typer.Typer(
-    help="🔧 wrench — I'm the sysadmin that lives on your machine. I watch, remember, "
+    help="🔧 wrench — I'm the sysadmin's right hand on your machine. I watch, remember, "
     "explain, and — with your permission — fix.",
     no_args_is_help=False,
     add_completion=False,
@@ -306,7 +306,7 @@ def ask(
 
 @app.command()
 def chat(provider: str = PROVIDER_OPT, model: str = MODEL_OPT):
-    """Interactive conversation with your sysadmin. Ctrl-D or 'exit' to leave."""
+    """Interactive conversation with wrench. Ctrl-D or 'exit' to leave."""
     cfg, store = _ctx(provider, model)
     _notify_banner(cfg)
     a = agent_mod.Agent(cfg, store, confirm_fn=_confirm,
@@ -1065,7 +1065,7 @@ def init(
             console.print(f"[red]✖ local smoke test failed[/red] — {detail}")
             smoke_note = "\nlocal smoke test: ✖ FAILED — fix before relying on patrols"
     console.print(Panel(
-        "[bold]I'm wrench — your systems administrator. I live here now.[/bold]\n"
+        "[bold]I'm wrench — your right hand on this machine. I live here now.[/bold]\n"
         "I read the logs so you don't have to, I remember what changes on this box,\n"
         "and with your permission I fix problems before you ever see them.\n"
         "I just took my first look around (sensor baseline + drift snapshot recorded).\n\n"

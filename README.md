@@ -1,8 +1,8 @@
 # 🔧 wrench
 
-> **"I'm the sysadmin that lives on your machine. I read the logs so you don't have to. I remember what changed. I explain problems in plain English — and with your permission, I fix them before you ever see them."**
+> **"I'm the sysadmin's right hand, and I live on your machine. I read the logs so you don't have to. I remember what changed. I explain problems in plain English — and with your permission, I fix them before you ever see them."**
 >
-> wrench is an **intentional sysadmin agent**: **senses** (live sensors + a SQLite time-series) + **memory** (learned baselines, drift snapshots, a hash-chained audit trail) + a **bring-your-own-mind brain** + **consent-gated hands**. It **sees** the box, **predicts** what's coming, **proves** what happened, **fixes** what it can — with your permission — and **scales** to a fleet.
+> wrench is an **intentional agent for the people who run machines**: **senses** (live sensors + a SQLite time-series) + **memory** (learned baselines, drift snapshots, a hash-chained audit trail) + a **bring-your-own-mind brain** + **consent-gated hands**. It **sees** the box, **predicts** what's coming, **proves** what happened, **fixes** what it can — with your permission — and **scales** to a fleet.
 >
 > 🧠 **Bring your own mind.** Run wrench on a **fully local brain** ([Ollama](https://ollama.com) or LM Studio — private, free, nothing leaves the box) or on **any API brain** (OpenAI, Anthropic, Meta, Azure, LiteLLM, or any OpenAI-compatible endpoint via the `custom` provider). One agent loop, many doors, no favorites.
 
@@ -64,8 +64,8 @@ The standard tools each solve a slice of this and leave the rest to you:
   for fleets. Overkill for the one box you actually love.
 - And none of them can *investigate*. A graph can scream; it can't find out why.
 
-**wrench** closes the loop. It's a single `pip install` that puts a tireless
-staff sysadmin on the box itself. It does four things, continuously:
+**wrench** closes the loop. It's a single `pip install` that gives you a tireless
+right hand on the box itself. It does four things, continuously:
 
 | | | |
 |---|---|---|
@@ -103,7 +103,7 @@ and closes with: "With 109 Gi swap, 33% is coffee, not fire."*
 
 ## The capability map — SEE · PREDICT · PROVE · FIX · SCALE
 
-wrench is an intentional sysadmin agent: **senses** (live sensors + a SQLite
+wrench is an intentional agent that works for the sysadmin: **senses** (live sensors + a SQLite
 time-series), **memory** (learned baselines, drift snapshots, a hash-chained
 audit trail), a **bring-your-own-mind brain** (any OpenAI-compatible endpoint —
 local or API), and **consent-gated hands** (fixxer, blueprints, cert renewal).
@@ -1096,7 +1096,7 @@ Schemas, metric families, and alert ideas: [docs/json-output.md](docs/json-outpu
 
 ### Offline / air-gap mode — a first-class zero-egress guarantee
 
-Plenty of the machines that most need a sysadmin have **no internet**: classified
+Plenty of the machines that most need watching have **no internet**: classified
 networks, industrial/OT segments, ships, labs. wrench already runs there — the
 brain can be a local [ollama/vLLM/llama.cpp endpoint](#the-brain-is-swappable),
 and OSV/EOL/webintel fail soft. Offline mode turns that from an *accident of
@@ -1580,7 +1580,7 @@ wrench was born at the Meta Llama hackathon (2026), which is why the early
 demo transcripts, GIFs, and eval runs in this repo were generated through the
 Meta Model API (`muse-spark-1.3` / `muse-wonder-1.0`) — and why parts of this
 README's humor were drafted by a muse model. The project has since grown into
-what it always wanted to be: a **bring-your-own-mind** sysadmin agent. Every
+what it always wanted to be: a **bring-your-own-mind** agent for sysadmins. Every
 provider — local or API — drives the exact same agent loop, tools, and safety
 rails; none gets special treatment.
 

@@ -105,7 +105,7 @@ def _launchd_commands(label: str, plist_path: Path) -> list[list[str]]:
 def _systemd_plan(wrench_bin: str, interval_min: int, home: Path) -> InstallPlan:
     unit_dir = home / ".config" / "systemd" / "user"
     service = f"""[Unit]
-Description=wrench patrol — intentional sysadmin agent
+Description=wrench patrol — the sysadmin's right hand
 
 [Service]
 Type=oneshot

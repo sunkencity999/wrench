@@ -25,7 +25,7 @@
         { t: "wrote ~/.config/wrench/config.toml", cls: "c-ok" },
         { t: "recording first sensor sample + drift baseline...", cls: "c-dim" },
         { t: "╭──────────────────── 🔧 wrench initialized ────────────────────╮", cls: "c-ok" },
-        { t: "│ I'm wrench — your systems administrator. I live here now.    │", cls: "c-ok" },
+        { t: "│ I'm wrench — the sysadmin's right hand. I live here now.     │", cls: "c-ok" },
         { t: "│ provider: ollama · model: qwen3:30b · policy: suggest         │", cls: "c-ok" },
         { t: "│ data: ~/.local/share/wrench/wrench.db                         │", cls: "c-ok" },
         { t: "│ put me to work: doctor · status · patrol · fixxer · web        │", cls: "c-ok" },
