@@ -604,6 +604,15 @@ def test_propose_targets_validates(cfg, root):
         bp.propose_targets(cfg, None, "intent", client=client)
 
 
+def test_apply_keeps_crlf_line_endings():
+    patch = bp.parse_unified_diff(MODIFY_DIFF.format(p="/etc/demo.conf"))[0]
+    out = bp.apply_patch_text("keep1\r\nchange me\r\nkeep2\r\n", patch)
+    assert out == "keep1\r\nchanged\r\nadded\r\nkeep2\r\n"
+    # mixed endings stay strict: the stray CR is part of the line
+    with pytest.raises(bp.BlueprintError):
+        bp.apply_patch_text("keep1\r\nchange me\nkeep2\n", patch)
+
+
 # ---------------- Windows paths ----------------
 
 @windows_only

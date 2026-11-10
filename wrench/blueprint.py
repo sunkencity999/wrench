@@ -368,12 +368,18 @@ def _find_hunk_pos(src: list[str], h: Hunk) -> int:
 
 def apply_patch_text(original: str, patch: FilePatch) -> str:
     """Apply one FilePatch to original content. Raises BlueprintError on any
-    context mismatch. Preserves a trailing newline if the original had one."""
+    context mismatch. Preserves a trailing newline if the original had one,
+    and the file's line endings: a CRLF file is matched against the diff's LF
+    lines and written back as CRLF."""
     had_nl = original.endswith("\n") or original == ""
-    # split on "\n" ONLY. str.splitlines() also breaks on \r, form feed, NEL and
-    # U+2028, silently rewriting lines the diff never touched (CRLF configs
-    # became LF; a form feed became a line break).
-    src = original.split("\n")
+    # A file that is CRLF throughout (the Windows norm) is split on CRLF, so
+    # its lines compare equal to the diff's and every line — old and new —
+    # goes back out with CRLF. Mixed endings are left strict: a stray \r stays
+    # part of its line and the diff has to match it exactly.
+    eol = "\r\n" if original.count("\r\n") == original.count("\n") > 0 else "\n"
+    # split on the line ending ONLY. str.splitlines() also breaks on a lone \r,
+    # form feed, NEL and U+2028, silently rewriting lines the diff never touched.
+    src = original.split(eol)
     if had_nl and src and src[-1] == "":
         src.pop()
     out: list[str] = []
@@ -398,9 +404,9 @@ def apply_patch_text(original: str, patch: FilePatch) -> str:
                 out.append(text)
         pos = i
     out.extend(src[pos:])
-    result = "\n".join(out)
+    result = eol.join(out)
     if had_nl and result:
-        result += "\n"
+        result += eol
     return result
 
 

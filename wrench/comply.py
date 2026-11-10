@@ -166,12 +166,12 @@ def _read(path: str) -> tuple[str | None, str]:
 def _check_file_mode(c: dict) -> tuple[str, str]:
     """{kind, path, max_mode: "0644"} — fail when perms exceed max_mode."""
     p = Path(c["path"])
-    if _NO_POSIX_MODES:
-        return "skip", "POSIX permission bits do not exist on Windows (access is by ACL)"
     if not p.exists():
         if c.get("missing_ok"):
             return "pass", f"{p} absent (ok)"
         return "skip", f"{p} does not exist"
+    if _NO_POSIX_MODES:
+        return "skip", "POSIX permission bits do not exist on Windows (access is by ACL)"
     try:
         mode = _stat.S_IMODE(p.stat().st_mode)
     except PermissionError:
