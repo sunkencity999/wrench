@@ -1,5 +1,22 @@
 # wrench — build progress
 
+## 2026-11-10 — v3.1.0: MEMORY + HEARTBEAT
+
+wrench could watch and act but not learn or take initiative. Now:
+
+- `wrench/memory.py` — memories (user / agent / learned), deterministic
+  retrieval, review queue for unattended agent notes, habit counters
+  (approvals, routine commands), export/import. Injected into every agent
+  system prompt.
+- `wrench/heartbeat.py` — schedule parser (plain language + cron), jobs with a
+  closed action registry, `tick` (lock, timeouts, coalesced catch-up,
+  fail-streak pause), pulse, `reflect` (routine → proposed job), the brief.
+- Agent tools `remember`, `recall`, `schedule_task`, `list_tasks`; CLI
+  `remember`, `memory`, `jobs`, `heartbeat`; dashboard Memory + Schedule
+  panels; `install-service` now installs the heartbeat timer.
+- Not verified: the OS timers themselves (install-service was not run), an
+  `ask` job against a real model, Windows beyond CI.
+
 ## 2026-11-09 — v3.0.0: ENTERPRISE PASS (branch `enterprise-v3`)
 
 Goal: a tool an IT infrastructure team would install on every machine. Full

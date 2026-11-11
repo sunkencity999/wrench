@@ -17,7 +17,8 @@ wrench works with no configuration at all. Everything here is optional.
 [notify](#notify) · [web](#web--the-dashboard) · [fleet](#fleet) ·
 [maintenance](#maintenance--change-windows) · [approvals](#approvals) ·
 [security](#security) · [webintel](#webintel) · [fixxer](#fixxer) ·
-[blueprint](#blueprint) · [environment variables](#environment-variables) ·
+[blueprint](#blueprint) · [memory](#memory) · [heartbeat](#heartbeat) ·
+[environment variables](#environment-variables) ·
 [files wrench writes](#files-wrench-writes)
 
 ## `[provider]` — the brain
@@ -222,6 +223,38 @@ tmp_age_days      = 14
 allowed_roots    = ["/etc"]
 allow_exec_paths = false   # cron, shell profiles, unit files, PAM: refused unless you opt in
 ```
+
+## `[memory]`
+
+```toml
+[memory]
+enabled      = true       # false: nothing is remembered and nothing is shown to the model
+agent_writes = "review"   # review: notes the agent writes unattended wait for `wrench memory review`
+                          # off:    unattended notes are refused outright
+learn_habits = true       # learn from approvals and from which commands you run, and when
+```
+
+With a person present (`wrench chat`, `wrench ask` in a terminal) the agent's
+notes are confirmed on the spot, whatever `agent_writes` says. Memories live in
+the `memories` table of the database; `wrench memory export` writes them as
+JSON.
+
+## `[heartbeat]`
+
+```toml
+[heartbeat]
+enabled          = true
+tick_min         = 5          # how often the OS timer beats (set at `install-service`; 1–60)
+max_tier         = "suggest"  # the most a scheduled `ask` job may do: observe | suggest | repair | autonomous
+job_timeout_s    = 900        # a job running longer than this is abandoned and recorded as an error
+propose_routines = true       # offer to schedule what you do by hand at the same time each day
+```
+
+`max_tier` can only lower the tier, never raise it: the effective tier of a
+scheduled question is the lower of `[policy] tier` and `max_tier`. The patrol
+job runs at `[policy] tier`, as scheduled patrols always have. Job times are
+honoured to the nearest beat, so with `tick_min = 5` a `daily 08:30` job starts
+between 08:30 and 08:35. Jobs are managed with `wrench jobs`, not in this file.
 
 ## Environment variables
 

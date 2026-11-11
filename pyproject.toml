@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wrench-agent"
-version = "3.0.0"
+version = "3.1.0"
 description = "The sysadmin's right hand: a local agent that watches, diagnoses, explains, and (with permission) fixes."
 readme = "README.md"
 license = { text = "MIT" }

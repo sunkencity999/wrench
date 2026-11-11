@@ -204,7 +204,7 @@ footer .wrap { display:flex; gap:24px; flex-wrap:wrap; justify-content:space-bet
 
 <header class="nav"><div class="wrap">
   <a class="brand" href="#top"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z"/></svg>wrench</a>
-  <nav aria-label="page sections"><a href="#score">Health score</a><a href="#arcs">What it does</a><a href="#fleet">Fleet</a>
+  <nav aria-label="page sections"><a href="#score">Health score</a><a href="#arcs">What it does</a><a href="#learn">Memory</a><a href="#fleet">Fleet</a>
     <a href="#trust">Security</a><a href="#tutorial">Tour</a><a href="#faq">FAQ</a></nav>
   <span class="sp"></span>
   <button class="iconbtn" id="theme" aria-label="toggle light or dark" title="toggle theme">
@@ -437,7 +437,47 @@ wrench_fleet_nodes_silent 1</pre></div></div>
 <span class="c-dim"> every finding above comes from code</span></pre></div>
 </div></section>
 
-<section class="alt" id="fleet"><div class="wrap">
+<section class="alt" id="learn"><div class="wrap">
+  <div class="grid g2">
+  <div class="term reveal"><div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>it remembers · it keeps a schedule</span></div>
+<pre><span class="c-dim">$</span> <span class="c-acc">wrench remember</span> "the 02:00 load spike is
+    the nightly pg_dump — expected"
+<span class="c-ok">✔ remembered #3</span>
+
+<span class="c-dim">$</span> <span class="c-acc">wrench jobs add</span> pg-growth "every 6h" ask \
+    -p "is /var/lib/postgresql growing faster
+        than its 30-day trend?"
+<span class="c-ok">✔ scheduled pg-growth</span>  <span class="c-dim">first run in 6h</span>
+
+<span class="c-dim">$</span> <span class="c-acc">wrench jobs</span>
+ <span class="c-dim">job            schedule        next    last</span>
+ patrol         every 15m       in 11m  <span class="c-warn">attention</span>
+ pg-growth      every 6h        in 6h   <span class="c-dim">never</span>
+ morning-brief  weekdays 08:30  in 14h  <span class="c-ok">ok</span>
+
+ <span class="c-acc">proposed</span>  auto-security — You run `wrench
+ security` around 09:00 most days. I can have
+ it done beforehand and tell you only what
+ needs attention.
+ <span class="c-dim">approve: wrench jobs approve auto-security</span></pre></div>
+  <div>
+    <p class="eyebrow">Memory &amp; heartbeat</p>
+    <h2>Tell it once. It keeps that in mind — and keeps working.</h2>
+    <p class="lead">wrench remembers how you run each machine, and it has a heartbeat: scheduled work it does on its own
+      and reports back on. The longer it runs beside you, the less you have to repeat and the less you have to remember to check.</p>
+    <ul class="ticks">
+      <li><span><b>It remembers what you tell it</b> — preferences, facts, procedures. Every patrol and every answer starts with the ones that bear on the task.</span></li>
+      <li><span><b>It learns from what you do</b> — the fixes you always approve, the checks you run by hand each morning. Learned by code, not guessed by a model.</span></li>
+      <li><span><b>It works on a schedule</b> — a morning brief, a weekly certificate check, a question for the agent every six hours, a follow-up in two hours.</span></li>
+      <li><span><b>It proposes; you decide</b> — a note written while nobody was watching waits for your review. A job it suggests does nothing until you approve it.</span></li>
+    </ul>
+  </div>
+  </div>
+  <figure class="shot reveal"><div class="bar"><i></i><i></i><i></i><span>dashboard — memory and schedule</span></div>
+    <img src="assets/learn.png" alt="The dashboard's Memory panel, with a note waiting for approval and four remembered items, beside the Schedule panel showing a live heartbeat, a proposed job and three scheduled jobs with their last results" loading="lazy" width="1440" height="550"></figure>
+</div></section>
+
+<section id="fleet"><div class="wrap">
   <div class="center"><p class="eyebrow">Fleet</p><h2>One line per machine.</h2>
     <p class="lead">Any wrench install can be a hub. Enrollment is a command, not a config file you paste into two places.</p></div>
   <figure class="shot reveal"><div class="bar"><i></i><i></i><i></i><span>hub.example:8788/fleet</span></div>
@@ -461,7 +501,7 @@ wrench install-service</pre></div></div>
   </div>
 </div></section>
 
-<section id="trust"><div class="wrap">
+<section class="alt" id="trust"><div class="wrap">
   <p class="eyebrow">Security model</p>
   <h2>An agent on a leash you hold.</h2>
   <p class="lead">Something that can touch your systems has to earn it. wrench's whole permission model is one line of config,
@@ -484,7 +524,7 @@ wrench install-service</pre></div></div>
     <a href="https://github.com/sunkencity999/wrench/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 </div></section>
 
-<section class="alt" id="tutorial"><div class="wrap center">
+<section id="tutorial"><div class="wrap center">
   <p class="eyebrow">Try it</p><h2>The 60-second tour</h2>
   <p class="lead">A simulated terminal with real, sanitized output. Click a step — nothing runs on your machine.</p>
   <div class="term" style="max-width:940px;margin:30px auto 0"><div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>wrench — interactive demo</span></div>
@@ -493,7 +533,7 @@ wrench install-service</pre></div></div>
     <button id="tut-run" type="button">▶ run</button></div>
 </div></section>
 
-<section><div class="wrap">
+<section class="alt"><div class="wrap">
   <p class="eyebrow">Case study</p><h2>The night it earned its keep.</h2>
   <div class="case reveal">
     <h3>Attention — the dying disk whose alarm was also broken</h3>
@@ -509,7 +549,7 @@ wrench install-service</pre></div></div>
   </div>
 </div></section>
 
-<section class="alt"><div class="wrap">
+<section><div class="wrap">
   <div class="center"><p class="eyebrow">Every machine</p><h2>From one laptop to the whole estate.</h2></div>
   <div class="grid g3 os" style="margin-top:34px">
     <div class="card reveal"><h3>Linux <b class="s ok">tested live</b></h3><p>systemd, journald, apt/dnf/pacman, cron and timers, a CIS-inspired Ubuntu pack. The original platform, exercised end to end.</p></div>
@@ -525,7 +565,7 @@ wrench install-service</pre></div></div>
     <a href="https://github.com/sunkencity999/wrench/blob/main/PLATFORMS.md">PLATFORMS.md</a>.</p>
 </div></section>
 
-<section id="install"><div class="wrap center">
+<section class="alt" id="install"><div class="wrap center">
   <p class="eyebrow">Install</p><h2>Two minutes to a watched machine.</h2>
   <div class="tabs">
     <div class="tabbar"><button type="button" class="active" data-tab="linux">Linux</button><button type="button" data-tab="macos">macOS</button><button type="button" data-tab="windows">Windows</button></div>
@@ -557,11 +597,13 @@ wrench web               <span class="cmt"># dashboard at http://127.0.0.1:8787<
   <p class="dim" style="margin-top:18px;font-size:14.5px">Want a brain? <code>wrench init</code> opens a provider menu — local first — and proves the setup with a live smoke test.</p>
 </div></section>
 
-<section class="alt" id="faq"><div class="wrap" style="max-width:860px">
+<section id="faq"><div class="wrap" style="max-width:860px">
   <p class="eyebrow">Questions</p><h2>Fair things to ask.</h2>
   <details class="q" open><summary>Will it run commands on my server without asking?</summary><p>No. It starts in <code>suggest</code>, where it cannot change anything. Above that, every action must match an allowlist, and <code>repair</code> confirms each one with you. The only unattended path is one you opt into deliberately, and it is logged.</p></details>
   <details class="q"><summary>Do I need an LLM?</summary><p>No. Patrols, the health score, drift, security, backups, compliance, forecasting, alerts and fleet reporting are all code. A model adds investigation, narrative and chat.</p></details>
   <details class="q"><summary>Does my data leave the machine?</summary><p>Telemetry lives in a local SQLite file. If you choose a cloud model, the context for a question is sent to that provider. Use a local model, or set <code>offline = true</code>, and nothing leaves.</p></details>
+  <details class="q"><summary>Can something in a log file plant a false memory?</summary><p>Not on its own. What you tell wrench is used at once. A note the model writes while nobody is watching — during a patrol or a scheduled job — goes to a review queue and is shown to no model until you approve it. What wrench learns from your habits is derived by code, not by a model. Memory never changes the policy tier and never authorises a command.</p></details>
+  <details class="q"><summary>What can a scheduled job do?</summary><p>Only what is on a short list: a patrol, one of the scans, a brief, a reminder, or a question for the agent. There is no "run this command" job. A scheduled question is read-only by default, whatever tier you use interactively, and a job wrench proposes does nothing until you approve it.</p></details>
   <details class="q"><summary>Isn't this Prometheus and Grafana?</summary><p>Those are excellent for metrics, and wrench feeds them. wrench answers different questions: what changed, are the backups real, is the box hardened, when does it fill up, which machine went quiet — and then it goes and finds out why.</p></details>
   <details class="q"><summary>How does it scale to hundreds of machines?</summary><p>Each machine does its own work and pushes a 2 KB signed summary after each patrol. The hub is one process and one SQLite file, with search, filters, per-machine history, CSV export and Prometheus gauges.</p></details>
   <details class="q"><summary>What is not done yet?</summary><p>Windows has not had a native hands-on pass. Sign-in log watching exists only on Linux. Both are stated in the docs rather than implied away.</p></details>

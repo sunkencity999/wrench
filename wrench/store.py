@@ -153,6 +153,62 @@ CREATE TABLE IF NOT EXISTS fleet_keys (
     last_used REAL
 );
 
+-- what wrench has been told, has noticed, and has learned (wrench/memory.py)
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    updated REAL NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    pinned INTEGER NOT NULL DEFAULT 0,
+    uses INTEGER NOT NULL DEFAULT 0,
+    last_used REAL,
+    origin TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+
+-- counters behind learned habits (which commands, when; which fixes approved)
+CREATE TABLE IF NOT EXISTS habits (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    first REAL NOT NULL,
+    last REAL NOT NULL,
+    payload TEXT
+);
+
+-- scheduled work the heartbeat runs (wrench/heartbeat.py)
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    schedule TEXT NOT NULL,
+    action TEXT NOT NULL,
+    args TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created REAL NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'user',
+    note TEXT,
+    next_run REAL,
+    last_run REAL,
+    last_status TEXT,
+    last_summary TEXT,
+    runs INTEGER NOT NULL DEFAULT 0,
+    fail_streak INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    name TEXT NOT NULL,
+    ts REAL NOT NULL,
+    duration_s REAL,
+    status TEXT NOT NULL,
+    summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_ts ON job_runs(ts);
+
 CREATE TABLE IF NOT EXISTS tokens_spent (
     ts REAL NOT NULL,
     provider TEXT NOT NULL,
@@ -820,6 +876,14 @@ class Store:
             deleted[table] = cur.rowcount
         cur = self.db.execute("DELETE FROM approvals WHERE expires < ?", (history_cutoff,))
         deleted["approvals"] = cur.rowcount
+        cur = self.db.execute("DELETE FROM job_runs WHERE ts < ?", (history_cutoff,))
+        deleted["job_runs"] = cur.rowcount
+        # forgotten / rejected memories linger a month (so a slip can be undone),
+        # then really go; live memories are never aged out
+        cur = self.db.execute(
+            "DELETE FROM memories WHERE status IN ('forgotten', 'rejected') AND updated < ?",
+            (now - 30 * 86400,))
+        deleted["memories"] = cur.rowcount
         self.db.commit()
         return deleted
 

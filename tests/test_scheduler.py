@@ -16,7 +16,7 @@ def test_systemd_plan(monkeypatch):
     plan = scheduler.plan_install("/usr/bin/wrench", 15, home=HOME)
     assert plan.kind == "systemd"
     svc = plan.files[HOME / ".config" / "systemd" / "user" / "wrench-patrol.service"]
-    assert 'ExecStart="/usr/bin/wrench" patrol --quiet --no-html' in svc   # quoted: paths with spaces
+    assert 'ExecStart="/usr/bin/wrench" heartbeat --quiet' in svc   # quoted: paths with spaces
     assert 'Environment="PATH=' in svc
     timer = plan.files[HOME / ".config" / "systemd" / "user" / "wrench-patrol.timer"]
     assert "OnUnitActiveSec=15min" in timer
@@ -32,7 +32,7 @@ def test_launchd_plan(monkeypatch):
     plist = plan.files[plist_path]
     assert "<integer>1800</integer>" in plist           # 30 min -> seconds
     assert "<string>/opt/homebrew/bin/wrench</string>" in plist
-    assert "<string>patrol</string>" in plist
+    assert "<string>heartbeat</string>" in plist    # the timer beats; jobs decide what runs
     assert plan.commands[-1][:2] == ["launchctl", "bootstrap"]
     assert plan.commands[-1][-1] == str(plist_path)
     # scheduled runs get a real PATH and a log file (launchd's default has neither)

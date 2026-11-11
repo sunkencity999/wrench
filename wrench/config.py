@@ -257,6 +257,20 @@ cadence_hours = 24
 # approval_webhook_url = "https://hooks.example.com/wrench"
 # ttl_minutes          = 60
 
+[memory]
+# What wrench remembers (`wrench remember`, `wrench memory`). Notes the agent
+# writes while nobody is present wait for `wrench memory review`.
+# enabled      = true
+# agent_writes = "review"   # or "off": refuse unattended notes outright
+# learn_habits = true       # learn from your approvals and your routines
+
+[heartbeat]
+# Scheduled work (`wrench jobs`, started by `wrench install-service`).
+# enabled          = true
+# max_tier         = "suggest"   # the most a scheduled `ask` job may do
+# job_timeout_s    = 900
+# propose_routines = true        # offer to schedule what you do by hand each day
+
 [web]
 # The dashboard (`wrench web`). On 127.0.0.1 it needs no sign-in. On any other
 # bind address every page and API call needs a token — if you set none, one is

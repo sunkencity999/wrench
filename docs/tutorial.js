@@ -156,8 +156,36 @@
       ]
     },
     {
+      id: "learn",
+      label: "8 · memory + heartbeat",
+      cmd: "wrench remember \"the 02:00 load spike is the nightly pg_dump — expected\"",
+      out: [
+        { t: "✔ remembered #3  [fact] the 02:00 load spike is the nightly pg_dump — expected", cls: "c-ok" },
+        { t: "$ wrench jobs add pg-growth \"every 6h\" ask -p \"is /var/lib/postgresql growing faster than its 30-day trend?\"", cls: "c-cyan" },
+        { t: "✔ scheduled pg-growth  every 6h → ask · first run in 6h", cls: "c-ok" },
+        { t: "$ wrench jobs", cls: "c-cyan" },
+        { t: "  job             state      schedule         does                         next     last", cls: "c-dim" },
+        { t: "  auto-security   proposed   daily 08:45      security                     —        never", cls: "c-acc" },
+        { t: "  patrol          active     every 15m        patrol                       in 11m   attention 4m ago", cls: "c-warn" },
+        { t: "  pg-growth       active     every 6h         ask: is /var/lib/postgresql… in 6h    never", cls: "" },
+        { t: "  morning-brief   active     weekdays 08:30   brief                        in 14h   ok 9h ago", cls: "c-ok" },
+        { t: "proposed  auto-security — You run `wrench security` around 09:00 most days (7 times over 6 days).", cls: "c-acc" },
+        { t: "          I can have it done beforehand and tell you only what needs attention.", cls: "c-acc" },
+        { t: "          approve: wrench jobs approve auto-security   ·   decline: wrench jobs rm auto-security", cls: "c-dim" },
+        { t: "heartbeat alive · last beat 2m ago", cls: "c-dim" },
+        { t: "$ wrench memory review", cls: "c-cyan" },
+        { t: "╭─ 🧠 note #12 ─────────────────────────────────────────────────╮", cls: "c-acc" },
+        { t: "│ reports.service is restarted by deploys on Tuesdays; a stop   │", cls: "" },
+        { t: "│ outside Tuesday is unusual.                                   │", cls: "" },
+        { t: "│ observation · noted 1h ago · during patrol                    │", cls: "c-dim" },
+        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "keep it? [y]es / [n]o / [s]kip ▸ y", cls: "c-cyan" },
+        { t: "LEARN — tell it once and every patrol and answer starts with it. It also learns from what you do (the checks you run by hand each morning become a proposal) and keeps notes of its own. Two rules keep that safe: a note written while nobody was watching is shown to no model until you approve it — so a log line cannot plant a standing instruction — and a job wrench proposes does nothing until you say yes. Scheduled questions are read-only by default.", cls: "c-dim", note: true }
+      ]
+    },
+    {
       id: "fleet",
-      label: "8 · fleet · SCALE",
+      label: "9 · fleet · SCALE",
       cmd: "wrench fleet enroll --label \"web tier\"",
       out: [
         { t: "╭──────────────────── 🔧 wrench fleet enroll ───────────────────╮", cls: "c-acc" },
@@ -178,7 +206,7 @@
     },
     {
       id: "offline",
-      label: "9 · offline mode",
+      label: "10 · offline mode",
       cmd: "WRENCH_OFFLINE=1 wrench cve",
       chatFinale: true,
       out: [

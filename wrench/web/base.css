@@ -343,3 +343,21 @@ code.cmd.copied { border-color: var(--good); color: var(--good-ink); }
   .ringwrap { flex-direction: column; align-items: flex-start; }
   .disk { grid-template-columns: 1fr auto; } .disk .meter { grid-column: 1 / -1; order: 3; }
 }
+
+/* memory + schedule */
+.memform { display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+.memform .input { flex: 1; min-width: 160px; }
+.memform select.input { flex: 0 0 auto; min-width: 0; }
+.btn.sm { height: 26px; padding: 0 9px; font-size: 12px; border-radius: 6px; }
+.acts { display: flex; gap: 6px; margin-top: 4px; }
+/* secondary actions float over the item's top-right corner on hover, so
+   they cost no height; on touch screens they sit under the text instead */
+.item { position: relative; }
+.acts.quiet { position: absolute; top: 6px; right: 0; margin: 0; padding-left: 10px; background: var(--surface);
+  opacity: 0; pointer-events: none; transition: opacity .12s; }
+.item:hover .acts.quiet, .item:focus-within .acts.quiet { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .acts.quiet { position: static; opacity: 1; pointer-events: auto; padding: 0; margin-top: 4px; } }
+.item.proposal { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.item.proposal + .item.proposal { border-top: 1px solid var(--line); }
+details.runs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+details.runs > summary { cursor: pointer; color: var(--text-3); font-size: 12.5px; }

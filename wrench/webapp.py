@@ -281,6 +281,20 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 rows = (notifications.read_all(data_dir)[-100:] if query.get("all")
                         else notifications.unread(data_dir))
                 return self._json(rows)
+            if path == "/api/memory":
+                from . import memory
+                return self._json({
+                    "enabled": cfg is None or memory.settings(cfg)["enabled"],
+                    "counts": memory.counts(store),
+                    "memories": memory.list_memories(store, limit=200),
+                    "pending": memory.list_memories(store, status="pending", limit=100)})
+            if path == "/api/jobs":
+                from . import heartbeat
+                return self._json({
+                    "heartbeat": heartbeat.pulse(store),
+                    "jobs": [j for j in heartbeat.list_jobs(store) if j["status"] != "done"],
+                    "runs": heartbeat.job_runs(store, limit=25),
+                    "actions": {k: v[1] for k, v in heartbeat.ACTIONS.items()}})
             if path.startswith("/api/fleet/"):
                 return self._fleet_get(path, query, store)
             return self._json({"error": "not found"}, 404)
@@ -316,6 +330,11 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 out["brain"] = {"usable": False, "reason": "no config loaded"}
                 out["policy_tier"] = "suggest"
                 out["offline"] = False
+            try:
+                from . import heartbeat, memory
+                out["learn"] = {"memory": memory.counts(store), "heartbeat": heartbeat.pulse(store)}
+            except Exception:  # noqa: BLE001
+                out["learn"] = None
             hist = posture.history(store, 30)
             out["health_history"] = hist[-400:]
             out["health_trend"] = posture.trend(hist)
@@ -374,6 +393,10 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                     return self._chat()
                 if path == "/api/fleet/forget":
                     return self._fleet_forget()
+                if path == "/api/memory":
+                    return self._memory_post()
+                if path == "/api/jobs":
+                    return self._jobs_post()
                 return self._json({"error": "not found"}, 404)
             except BrokenPipeError:
                 return None
@@ -452,6 +475,73 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                                    "steps": len(res["steps"]), "model": cfg.model})
             finally:
                 store.close()
+
+        def _memory_post(self):
+            """add / approve / reject / forget / pin / unpin. Admin only: what is
+            written here steers the agent, so it is the operator's word."""
+            if self._gate("admin") is None:
+                return None
+            payload = self._json_body()
+            if payload is None:
+                return None
+            from . import memory
+            action = str(payload.get("action", ""))
+            store = Store(db_path)
+            try:
+                if action == "add":
+                    try:
+                        m = memory.add(store, str(payload.get("text", ""))[:2000],
+                                       str(payload.get("kind", "fact")), source="user",
+                                       origin="web", cfg=cfg)
+                    except memory.MemoryError_ as e:
+                        return self._json({"error": str(e)}, 400)
+                    return self._json({"ok": True, "memory": m})
+                try:
+                    mem_id = int(payload.get("id"))
+                except (TypeError, ValueError, OverflowError):
+                    return self._json({"error": "id required"}, 400)
+                if action in ("pin", "unpin"):
+                    m = memory.set_pinned(store, mem_id, action == "pin")
+                elif action in ("approve", "reject", "forget"):
+                    m = memory.set_status(store, mem_id, {
+                        "approve": "active", "reject": "rejected",
+                        "forget": "forgotten"}[action], cfg=cfg)
+                else:
+                    return self._json({"error": "unknown action"}, 400)
+            finally:
+                store.close()
+            if m is None:
+                return self._json({"error": "unknown memory"}, 404)
+            return self._json({"ok": True, "memory": m})
+
+        def _jobs_post(self):
+            """approve / pause / resume / rm. Jobs are created from the CLI (or
+            proposed by the agent); the dashboard decides their fate."""
+            if self._gate("admin") is None:
+                return None
+            payload = self._json_body()
+            if payload is None:
+                return None
+            from . import heartbeat
+            action, name = str(payload.get("action", "")), str(payload.get("name", ""))[:60]
+            store = Store(db_path)
+            try:
+                try:
+                    if action in ("approve", "resume"):
+                        res = heartbeat.set_job_status(store, name, "active", cfg=cfg)
+                    elif action == "pause":
+                        res = heartbeat.set_job_status(store, name, "paused", cfg=cfg)
+                    elif action == "rm":
+                        res = heartbeat.remove_job(store, name, cfg=cfg)
+                    else:
+                        return self._json({"error": "unknown action"}, 400)
+                except heartbeat.HeartbeatError as e:
+                    return self._json({"error": str(e)}, 400)
+            finally:
+                store.close()
+            if not res:
+                return self._json({"error": "unknown job"}, 404)
+            return self._json({"ok": True})
 
         def _fleet_forget(self):
             if self._gate("admin") is None:

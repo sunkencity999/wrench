@@ -48,6 +48,13 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
 | `wrench comply --json [--pack N]` | `wrench.comply.v1` | `packs[]` — pack, title, score (`null` when nothing could be graded), platforms[], counts{pass,fail,skip}, severity_fails{}; `critical_fails`; `results[]` — pack, id, title, severity, status (`pass\|fail\|skip`), detail | **1 when any critical rule fails** |
 | `wrench bundle --json [--out PATH]` | `wrench.bundle.v1` | `path`, `bytes`, `files[]` (SUMMARY.md + per-section JSON), `offline` — writes a portable tar.gz evidence bundle; no secrets (config redacted) | 0 |
 | `wrench doctor --json` | `wrench.doctor.v1` | `healthy`, `checks{}` — platform, scheduler, log_backend, provider, base_url, model, policy_tier, api_key_present, db_path, sensor_os/docker/gpu, `brain{configured, reason}`, provider_ping{ok, detail}, `admin`, `data_dir_mode`, `schema_version`, `audit{intact, count, reason, mac_checked}`, `last_patrol_age_s`, `fleet`, `offline{offline, egress, disabled[], still_allowed[], brain_is_local}` | **1 when a configured provider is unreachable or the audit chain is broken** (no brain configured is healthy: deterministic mode) |
+| `wrench memory --json [-k KIND]` | `wrench.memory.v1` | `enabled`, `memories[]` and `pending[]` — id, ts, updated, kind (`preference\|fact\|procedure\|lesson\|observation`), text, source (`user\|agent\|learned`), status, pinned, uses, last_used, origin | 0 |
+| `wrench remember "…" --json` | `wrench.remember.v1` | `ok`, `memory{…, duplicate}` or `error` | **2 when refused** |
+| `wrench jobs --json` | `wrench.jobs.v1` | `jobs[]` — id, name, schedule, action, args{}, status (`active\|paused\|proposed\|done`), created_by (`user\|agent\|learned\|system`), note, next_run, last_run, last_status, last_summary, runs, fail_streak; `heartbeat{…}` as below | 0 |
+| `wrench jobs run NAME --json` | `wrench.jobs.run.v1` | `name`, `action`, `status` (`ok\|attention\|critical\|error`), `summary`, `duration_s`, `next_run`, `job_status` | **2 on critical or error** |
+| `wrench jobs log --json` | `wrench.jobs.log.v1` | `runs[]` — name, ts, duration_s, status, summary | 0 |
+| `wrench heartbeat --json` | `wrench.heartbeat.v1` | `ts`, `ran[]` (as `jobs run`), `skipped` (why this beat did nothing, else `""`), `proposals[]` | 0 |
+| `wrench heartbeat --status --json` | `wrench.heartbeat.status.v1` | `last_tick`, `age_s`, `alive` (`null` if it has never run), `ticks`, `last_ran[]`, `jobs{active,paused,proposed}`, `next{name, at}` | **1 when not alive** |
 | `wrench version --json` | `wrench.version.v1` | envelope only | 0 |
 
 Examples:

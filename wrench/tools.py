@@ -292,7 +292,14 @@ def fix_action(store: Store, command: str, tier: str, confirm_fn=None, cfg=None)
         if confirm_fn is None:
             store.add_action(tier, "fix-needs-confirm", command, False, "no confirm channel")
             return "DENIED: interactive confirmation required but no confirmation channel available."
-        if not confirm_fn(command, decision.label):
+        approved = bool(confirm_fn(command, decision.label))
+        try:      # learn from the answer (code-derived, no model involved)
+            from . import memory
+            if cfg is None or memory.settings(cfg)["learn_habits"]:
+                memory.note_decision(store, command, approved, cfg=cfg)
+        except Exception:  # noqa: BLE001 — learning never blocks a fix
+            pass
+        if not approved:
             store.add_action(tier, "fix-declined", command, False, "human declined")
             return "DECLINED: the human said no. Do not retry this action."
     code, out = _exec_rc(policy.split_command(command), timeout=60)
@@ -372,6 +379,33 @@ TOOL_SPECS = [
                 "no network. If empty, suggest the human runs `wrench cve`.",
     },
     {
+        "name": "remember",
+        "args": {"text": "string — one self-contained sentence",
+                 "kind": "preference | fact | procedure | lesson | observation"},
+        "desc": "Keep a lasting note about this machine or how its operator wants things "
+                "done, so future patrols and conversations start with it. Use it when the "
+                "human states a preference or explains something you would otherwise "
+                "re-discover. Never store secrets. Unattended, the note waits for review.",
+    },
+    {
+        "name": "recall",
+        "args": {"query": "string — words to look for"},
+        "desc": "Search your memory of this machine and its operator.",
+    },
+    {
+        "name": "schedule_task",
+        "args": {"name": "string — short-kebab-name",
+                 "schedule": "string — 'every 30m' | 'daily 08:30' | 'weekdays 9am' | "
+                             "'in 2h' | 'at 2026-12-01 09:00' | cron",
+                 "action": "patrol | brief | score | security | comply | backups | cve | "
+                           "certs | drift | forecast | remind | ask",
+                 "prompt": "string — for 'ask' the task, for 'remind' the reminder"},
+        "desc": "Schedule recurring work or a one-off follow-up (e.g. check in 2h that a "
+                "restart held). Offer this when the human would otherwise have to remember "
+                "to come back. Unattended, it is only a proposal until the operator approves.",
+    },
+    {"name": "list_tasks", "args": {}, "desc": "List scheduled jobs and when they run next."},
+    {
         "name": "fix_action",
         "args": {"command": "string — one allowlisted mutation (e.g. 'systemctl restart foo')"},
         "desc": "Execute a repair. Only works at repair/autonomous policy tiers; "
@@ -402,6 +436,21 @@ def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None,
             return security_intel(store)
         if name == "fix_action":
             return fix_action(store, str(args.get("command", "")), tier, confirm_fn, cfg=cfg)
+        if name == "remember":
+            from . import memory
+            return memory.tool_remember(store, cfg, str(args.get("text", "")),
+                                        str(args.get("kind", "fact") or "fact"), confirm_fn)
+        if name == "recall":
+            from . import memory
+            return memory.tool_recall(store, str(args.get("query", "")))
+        if name == "schedule_task":
+            from . import heartbeat
+            return heartbeat.tool_schedule(
+                store, cfg, str(args.get("name", "")), str(args.get("schedule", "")),
+                str(args.get("action", "")), str(args.get("prompt", "") or ""), confirm_fn)
+        if name == "list_tasks":
+            from . import heartbeat
+            return heartbeat.tool_jobs(store)
         return f"unknown tool: {name}"
     except Exception as e:  # noqa: BLE001
         return f"tool error: {e.__class__.__name__}: {e}"

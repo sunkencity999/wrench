@@ -1,6 +1,49 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 — memory and a heartbeat
+
+wrench now remembers how you run each machine, and does scheduled work on its
+own. **After upgrading, re-run `wrench install-service` once** — the timer now
+runs the heartbeat, which runs the patrol and everything else.
+
+### New
+
+- **Memory** — `wrench remember "…"`, `wrench memory` (list, `search`,
+  `forget`, `pin`, `review`, `approve`, `reject`, `export`, `import`). Every
+  patrol, `ask`, `chat` and scheduled question starts with the memories that
+  bear on the task; preferences, procedures and pinned items always come
+  along. Retrieval is deterministic and offline.
+- **Three sources, three levels of trust.** What you write is used at once.
+  What the agent asks to keep is confirmed on the spot when you are present,
+  and otherwise waits in a review queue that no model can see. What wrench
+  learns — fixes you approve three times running, commands you run by hand at
+  the same hour on several days — is derived by code.
+- **Heartbeat and jobs** — `wrench jobs` (`add`, `run`, `pause`, `resume`,
+  `approve`, `rm`, `log`) and `wrench heartbeat` (`--status`, `--loop`).
+  Plain-language or cron schedules; one-off follow-ups (`in 2h`). Actions come
+  from a closed list: patrol, brief, score, security, comply, backups, cve,
+  certs, drift, forecast, remind, ask.
+- **It proposes; you decide.** Jobs suggested by the agent unattended, or by
+  wrench from a learned routine, do nothing until approved. A new install is
+  offered a weekday morning brief.
+- **Agent tools** `remember`, `recall`, `schedule_task`, `list_tasks`.
+- **Dashboard** Memory and Schedule panels: approve or discard notes and
+  proposals, add a memory, pause or remove jobs, see the heartbeat and recent
+  runs. `/api/memory`, `/api/jobs` (writes need the admin role).
+- `wrench` (home screen) shows what is waiting on you and whether the
+  heartbeat is alive. `--help` gains a LEARN group.
+- `[memory]` and `[heartbeat]` config sections.
+
+### Changed
+
+- `install-service` installs the heartbeat timer (same unit / agent / task
+  names, so it replaces the old one). `--interval` now sets the patrol job's
+  cadence.
+- Scheduled `ask` jobs run at `[heartbeat] max_tier` (default `suggest`).
+- Briefs, reminders and scheduled answers are always delivered to the inbox,
+  desktop and webhook, regardless of `[notify] min_severity`.
+
+## Also in 3.1.0
 
 ### Fixed — Windows
 

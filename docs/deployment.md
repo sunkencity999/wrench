@@ -20,7 +20,8 @@ that matches what you have.
 pipx install git+https://github.com/sunkencity999/wrench
 wrench patrol            # first measurements — works with no model
 wrench                   # where the machine stands, and the next step
-wrench install-service   # patrol every 15 minutes
+wrench install-service   # start the heartbeat: patrol every 15 minutes + scheduled jobs
+wrench jobs              # what is scheduled; approve the morning brief if you want it
 wrench web               # http://127.0.0.1:8787
 ```
 
@@ -248,6 +249,11 @@ wrench doctor
 ```
 
 - The database migrates itself in place on first run.
+- **From 3.0 or 2.x: re-run `wrench install-service` once.** The old timer ran
+  `wrench patrol` directly; the new one runs `wrench heartbeat`, which runs the
+  patrol and every other scheduled job. The unit, agent and task names are the
+  same, so the reinstall replaces the old timer in place. Until you do, patrols
+  continue exactly as before but no other job fires.
 - **From 2.x:** existing fleet nodes keep reporting with their shared tokens.
   Move them to enrollment keys at your own pace with `enroll` + `join`.
 - **From 2.x:** a dashboard bound beyond loopback now requires a token. If you

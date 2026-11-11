@@ -35,6 +35,7 @@
 - **Predict** — [cve](#wrench-cve--what-the-internet-already-knows-about-your-box) · [forecast](#wrench-forecast--see-the-incident-coming) · [certs](#wrench-certs--ssltls-lifecycle-from-inventory-to-renewal)
 - **Prove** — [backups](#wrench-backups--untested-backups-dont-exist) · [audit](#wrench-audit--prove-what-happened) · [comply](#wrench-comply--prove-the-box-meets-the-baseline) · [bundle](#wrench-bundle--the-air-gap-evidence-bundle)
 - **Fix** — [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
+- **Learn** — [memory](#wrench-remember--wrench-memory--it-learns-how-you-run-this-machine) · [jobs & heartbeat](#wrench-jobs--wrench-heartbeat--work-it-does-without-being-asked)
 - **Scale** — [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
 - **Understand it** — [How a patrol works](#how-a-patrol-works) · [The brain is swappable](#the-brain-is-swappable) · [Policy tiers](#policy-tiers--the-leash) · [Architecture](#architecture) · [Philosophy](#philosophy) · [FAQ](#faq)
 
@@ -190,7 +191,8 @@ wrench status               # one-screen health
 wrench patrol               # send it on its rounds
 wrench score                # one health number, with the reasons behind it
 wrench web                  # dashboard at http://127.0.0.1:8787
-wrench install-service      # patrol on a schedule: systemd / launchd / Task Scheduler
+wrench install-service      # start the heartbeat: patrols + scheduled jobs (systemd / launchd / Task Scheduler)
+wrench remember "…"         # tell it how you run this machine; it keeps that in mind from now on
 ```
 
 ### Your first five minutes
@@ -210,6 +212,7 @@ see      status · score · patrol · ask "…" · drift · security
 predict  forecast · certs · cve
 prove    audit verify · backups · comply · bundle
 fix      fixxer · blueprint "…"
+learn    remember "…" · memory · jobs · heartbeat
 scale    web · fleet enroll / join / serve · metrics
 setup    init · doctor · install-service
 ```
@@ -987,6 +990,136 @@ and `certs renew`: policy tier `repair`/`autonomous`, or a recorded
 `wrench blueprint consent` ceremony.
 
 
+## LEARN — remembers you, works on a schedule
+
+The five arcs describe what wrench can do. This is what makes it a colleague
+rather than a tool you have to keep driving: it **remembers** what you tell it
+and what it sees you do, and it has a **heartbeat** — scheduled work it carries
+out on its own and reports back on.
+
+### `wrench remember` / `wrench memory` — it learns how you run this machine
+
+```bash
+wrench remember "the 02:00 load spike is the nightly pg_dump — expected"
+wrench remember -k preference --pin "never restart postgresql without asking me"
+wrench remember -k procedure "when /var/log passes 85%, rotate first, then find the noisy unit"
+wrench memory                 # everything it knows, and how often each was used
+wrench memory search postgres
+wrench memory forget 7
+```
+
+From then on every patrol, `ask`, `chat` and scheduled question starts with the
+memories that bear on the task. Preferences, procedures and anything pinned
+always come along; facts and observations are matched by keyword. Retrieval is
+deterministic and offline — no embeddings, no network.
+
+Memory comes from three places, and they are not trusted equally:
+
+| from | how it gets there | when it is used |
+|---|---|---|
+| **you** | `wrench remember`, the dashboard, or a chat turn you confirm | immediately |
+| **wrench** | the agent asks to keep a note (`remember` tool) | with you present: after you say yes. Unattended (a patrol, a scheduled job, web chat): only after `wrench memory review` |
+| **learned** | code watching what you do — no model involved | immediately |
+
+That middle row is the important one. A patrol reads logs, and logs contain
+text written by whoever can reach the machine. If a line in `auth.log` could
+talk the model into saving *"xmrig is expected, ignore it"*, the next hundred
+patrols would believe it. So a note written with nobody watching sits in a
+review queue, invisible to every model, until you approve it:
+
+```text
+$ wrench memory review
+╭─ 🧠 note #12 ────────────────────────────────────────────────────────────╮
+│ reports.service is restarted by deploys on Tuesdays; a stop outside       │
+│ Tuesday is unusual.                                                       │
+│ observation · noted 1h ago · during patrol                                │
+╰───────────────────────────────────────────────────────────────────────────╯
+keep it? [y]es / [n]o / [s]kip:
+```
+
+What it learns by itself is deliberately narrow and mechanical:
+
+- **Fixes you keep approving.** Approve the same repair three times without
+  ever declining it and wrench notes that — and tells you which policy tier
+  would stop it asking.
+- **Things you do by hand at the same time each day.** Run `wrench security`
+  around nine on four or more mornings and the heartbeat offers to have it done
+  by 08:45 (see below). It only offers.
+
+Memory never changes the policy tier and never authorises a command. It
+refuses anything that looks like a credential, every write lands in the audit
+chain, and `wrench memory export` / `import` carries a standing set of
+preferences to the next machine.
+
+### `wrench jobs` / `wrench heartbeat` — work it does without being asked
+
+`wrench install-service` starts the **heartbeat**: one native timer that beats
+every few minutes and runs whatever has come due. The patrol is simply the
+first job.
+
+```bash
+wrench jobs add morning-brief "weekdays 08:30" brief
+wrench jobs add tls-check     "mon 09:00"      certs
+wrench jobs add pg-growth     "every 6h"       ask -p "is /var/lib/postgresql growing faster than its 30-day trend?"
+wrench jobs add renew-wildcard "at 2026-12-01 09:00" remind -p "renew the wildcard cert"
+wrench jobs                   # what is scheduled, when it runs next, how the last run went
+wrench jobs run pg-growth     # right now
+wrench jobs log               # what ran and what it found
+wrench jobs pause tls-check   # resume · rm · approve
+wrench heartbeat --status     # is it alive? what is next?
+```
+
+```text
+⏱ scheduled jobs
+  job             state      schedule         does                          next     last
+  auto-security   proposed   daily 08:45      security                      —        never
+  patrol          active     every 15m        patrol                        in 11m   attention 4m ago
+  pg-growth       active     every 6h         ask: is /var/lib/postgresql…  in 4h    attention 2h ago
+  morning-brief   active     weekdays 08:30   brief                         in 14h   ok 9h ago
+
+proposed  auto-security — You run `wrench security` around 09:00 most days (7 times
+          over 6 days). I can have it done beforehand and tell you only what needs attention.
+          approve: wrench jobs approve auto-security   ·   decline: wrench jobs rm auto-security
+```
+
+**Schedules** are plain language or cron, in local time: `every 15m`,
+`every 2h`, `daily 08:30`, `weekdays 9am`, `mon,thu 18:00`, `monthly 1 06:00`,
+`in 2h`, `tomorrow 9am`, `at 2026-12-01 09:00`, `*/10 * * * *`.
+
+**Actions** come from a closed list — there is no "run this shell command" job:
+
+| action | does | tells you |
+|---|---|---|
+| `patrol` | the full patrol | by the patrol's own rules |
+| `brief` | health, the week's trend, top issues, what is waiting on you — no model needed | always |
+| `score` `security` `comply` `backups` `cve` `certs` `drift` `forecast` | that scan | when it needs attention |
+| `remind` | sends you the text | always |
+| `ask` | gives the agent a question; it investigates with its tools and answers | always |
+
+A scheduled `ask` runs at the tier `[heartbeat] max_tier` allows — `suggest`
+by default, so an unattended question can look but not touch, whatever your
+interactive tier is.
+
+**It proposes; you decide.** Three things can put a job on the list:
+
+- you (`wrench jobs add`) — live at once;
+- the agent, mid-conversation (*"want me to check in two hours that the restart
+  held?"*) — you confirm on the spot; if nobody is there, it is only a proposal;
+- wrench itself, from a learned routine — always a proposal.
+
+A proposal does nothing until `wrench jobs approve`. Declining it is final.
+
+**It looks after itself.** One beat at a time (a beat that finds a long patrol
+still running skips). A job that hangs is abandoned at `job_timeout_s`. A job
+that fails five times in a row is paused and you are told. Missed runs — the
+laptop was asleep — collapse into one. And the pulse is visible: `wrench`,
+`wrench jobs` and the dashboard all say when it last beat, and say so loudly
+when it has stopped.
+
+No systemd, launchd or Task Scheduler — a container, a tmux pane?
+`wrench heartbeat --loop` beats in the foreground.
+
+
 ## SCALE — many machines, one view, wired into your stack
 
 Run wrench everywhere and plug it into what you already operate.
@@ -1135,8 +1268,10 @@ and a USB stick for the complete sneakernet workflow.
 
 Onboarding, self-diagnosis, and persistence. `doctor` checks config, store,
 sensors, platform capabilities (which service manager? which log backend?),
-and provider liveness. `install-service` schedules patrols natively on every
-OS:
+and provider liveness. `install-service` starts the
+[heartbeat](#wrench-jobs--wrench-heartbeat--work-it-does-without-being-asked)
+natively on every OS — one timer that runs the patrol (`--interval`, default
+15 minutes) and every other scheduled job:
 
 | OS | mechanism |
 |---|---|
@@ -1144,7 +1279,9 @@ OS:
 | macOS | launchd user agent (`~/Library/LaunchAgents`) |
 | Windows | Scheduled Task (`schtasks`) |
 
-`wrench install-service --uninstall` removes it just as cleanly.
+`wrench install-service --uninstall` removes it just as cleanly. Upgrading from
+3.0 or 2.x? Re-run `wrench install-service` once: the old timer ran `wrench patrol`
+directly, the new one runs the heartbeat.
 
 ## How a patrol works
 

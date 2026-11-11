@@ -52,6 +52,7 @@ ARC_SEE, ARC_PREDICT, ARC_PROVE, ARC_FIX, ARC_SCALE, ARC_SETUP = (
     "SEE — watch the machine (read-only)", "PREDICT — see it coming",
     "PROVE — evidence, not vibes", "FIX — with your permission",
     "SCALE — many machines, your stack", "Setup & housekeeping")
+ARC_LEARN = "LEARN — remembers you, works on a schedule"
 _HELP_PANELS = {
     "status": ARC_SEE, "score": ARC_SEE, "patrol": ARC_SEE, "ask": ARC_SEE, "chat": ARC_SEE,
     "explain": ARC_SEE, "drift": ARC_SEE, "security": ARC_SEE, "watch": ARC_SEE,
@@ -59,6 +60,7 @@ _HELP_PANELS = {
     "forecast": ARC_PREDICT, "certs": ARC_PREDICT, "cve": ARC_PREDICT,
     "audit": ARC_PROVE, "backups": ARC_PROVE, "comply": ARC_PROVE, "bundle": ARC_PROVE,
     "fixxer": ARC_FIX, "blueprint": ARC_FIX, "approve": ARC_FIX, "approvals": ARC_FIX,
+    "remember": ARC_LEARN, "memory": ARC_LEARN, "jobs": ARC_LEARN, "heartbeat": ARC_LEARN,
     "fleet": ARC_SCALE, "web": ARC_SCALE, "metrics": ARC_SCALE,
     "init": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
 }
@@ -71,7 +73,7 @@ def _apply_help_panels() -> None:
     for g in app.registered_groups:
         g.rich_help_panel = _HELP_PANELS.get(g.name or "", ARC_SETUP)
     # panels appear in the order their first command does: SEE first, setup last
-    order = [ARC_SEE, ARC_PREDICT, ARC_PROVE, ARC_FIX, ARC_SCALE, ARC_SETUP]
+    order = [ARC_SEE, ARC_PREDICT, ARC_PROVE, ARC_FIX, ARC_LEARN, ARC_SCALE, ARC_SETUP]
     app.registered_commands.sort(key=lambda c: order.index(c.rich_help_panel))
 
 
@@ -79,6 +81,26 @@ def _apply_help_panels() -> None:
 def _root(ctx: typer.Context):
     if ctx.invoked_subcommand is None:
         _home()
+    else:
+        _note_routine(ctx.invoked_subcommand)
+
+
+def _note_routine(command: str) -> None:
+    """Remember that a person ran this read-only command, and when — so the
+    heartbeat can offer to do it for them. Interactive terminals only (a
+    script or a scheduled run is not a habit). Never fatal."""
+    try:
+        from . import heartbeat as _hb, memory as _mem
+        if command not in _hb.ROUTINE_COMMANDS or not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return
+        cfg, store = _ctx()
+        try:
+            if _mem.settings(cfg)["enabled"] and _mem.settings(cfg)["learn_habits"]:
+                _mem.note_command(store, command)
+        finally:
+            store.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _home() -> None:
@@ -92,6 +114,7 @@ def _home() -> None:
         pos = posture.compute(cfg, store)
         steps = posture.checklist(cfg, store)
         patrols = store.recent_patrols(1)
+        learn = _learn_brief(store)
     finally:
         store.close()
     head = Text()
@@ -128,7 +151,9 @@ def _home() -> None:
                                     (f"   {i['label']}: {i['detail']}", "dim")))
     else:
         console.print(Text("all set — nothing needs attention", style="green"))
-
+    for label, body, hint in learn:
+        console.print(Text.assemble((f"{label}  ", "bold bright_blue"), (body, ""),
+                                    (f"   {hint}" if hint else "", "dim")))
     t = Table.grid(padding=(0, 2))
     t.add_column(style="bold bright_blue", no_wrap=True)
     t.add_column()
@@ -137,6 +162,7 @@ def _home() -> None:
         ("predict", "forecast · certs · cve"),
         ("prove", "audit verify · backups · comply · bundle"),
         ("fix", "fixxer · blueprint \"…\""),
+        ("learn", "remember \"…\" · memory · jobs · heartbeat"),
         ("scale", "web · fleet enroll / join / serve · metrics"),
         ("setup", "init · doctor · install-service"),
     ):
@@ -145,6 +171,50 @@ def _home() -> None:
     console.print(t)
     console.print(Text("\nwrench <command> --help for details  ·  wrench --help for everything",
                        style="dim"))
+
+
+def _rel(ts: float | None, now: float | None = None) -> str:
+    """'in 12m' / '3h ago' / '—'."""
+    if not ts:
+        return "—"
+    d = ts - (now if now is not None else time.time())
+    a = abs(d)
+    span = f"{a:.0f}s" if a < 90 else f"{a / 60:.0f}m" if a < 5400 else \
+        f"{a / 3600:.0f}h" if a < 172800 else f"{a / 86400:.0f}d"
+    return f"in {span}" if d > 0 else f"{span} ago"
+
+
+def _learn_brief(store) -> list[tuple[str, str, str]]:
+    """Home-screen lines about memory and the heartbeat. Cached reads only."""
+    out: list[tuple[str, str, str]] = []
+    try:
+        from . import heartbeat as _hb, memory as _mem
+        mc = _mem.counts(store)
+        pu = _hb.pulse(store)
+        waiting = []
+        if mc["pending"]:
+            waiting.append((f"{mc['pending']} note{'s' if mc['pending'] != 1 else ''} to review",
+                            "wrench memory review"))
+        if pu["jobs"]["proposed"]:
+            n = pu["jobs"]["proposed"]
+            waiting.append((f"{n} proposed job{'s' if n != 1 else ''}", "wrench jobs"))
+        if waiting:
+            out.append(("waiting", " · ".join(w[0] for w in waiting),
+                        " · ".join(w[1] for w in waiting)))
+        if pu["alive"] is None:
+            out.append(("heartbeat", "not running", "wrench install-service"))
+        else:
+            nxt = f" · next: {pu['next']['name']} {_rel(pu['next']['at'])}" if pu["next"] else ""
+            out.append(("heartbeat",
+                        ("alive" if pu["alive"] else "SILENT") + f", last beat "
+                        f"{_rel(pu['last_tick'])}{nxt}",
+                        "" if pu["alive"] else "wrench install-service"))
+        if mc["active"]:
+            out.append(("memory", f"{mc['active']} thing{'s' if mc['active'] != 1 else ''} "
+                        "remembered", "wrench memory"))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _ctx(provider: str | None = None, model: str | None = None):
@@ -170,6 +240,13 @@ def _notify_banner(cfg) -> None:
 
 
 def _confirm(command: str, label: str) -> bool:
+    if label.startswith(("memory:", "schedule:")):
+        what, _, ask = label.partition(": ")
+        console.print(Panel(Text(command, style="bold white"), border_style="bright_blue",
+                            title="🧠 remember?" if what == "memory" else "⏱ schedule?",
+                            title_align="left"))
+        # default No, like a fix: a bare Enter must not make a model's note stick
+        return typer.confirm(ask + "?", default=False)
     console.print(Panel(
         Text.assemble(("about to execute: ", "bold yellow"), (command, "bold white"),
                       (f"\n({label})", "dim")),
@@ -3274,6 +3351,511 @@ def _own_executable() -> str | None:
     return shutil.which("wrench")
 
 
+# ---------------- memory ----------------
+
+def _mem_table(rows: list[dict], title: str) -> Table:
+    t = Table(title=title, title_justify="left", box=box.SIMPLE_HEAD, expand=False)
+    t.add_column("#", justify="right", style="dim")
+    t.add_column("kind")
+    t.add_column("from", style="dim")
+    t.add_column("memory", overflow="fold")
+    t.add_column("used", justify="right", style="dim")
+    tag = {"user": "you", "agent": "wrench", "learned": "learned"}
+    for m in rows:
+        t.add_row(str(m["id"]), ("📌 " if m["pinned"] else "") + m["kind"],
+                  tag.get(m["source"], m["source"]), m["text"], str(m["uses"]))
+    return t
+
+
+@app.command("remember")
+def remember_cmd(
+    text: list[str] = typer.Argument(..., help="what wrench should remember"),
+    kind: str = typer.Option("fact", "--kind", "-k",
+                             help="preference | fact | procedure | lesson | observation"),
+    pin: bool = typer.Option(False, "--pin", help="always bring this to the agent's attention"),
+    json_out: bool = JSON_OPT,
+):
+    """Tell wrench something it should keep in mind from now on.
+
+    wrench remember "nginx on this box is fronted by Cloudflare — 502s are usually upstream"
+    wrench remember -k preference "never restart postgres without asking me first"
+    """
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        m = mem.add(store, " ".join(text), kind, source="user", pinned=pin, cfg=cfg)
+    except mem.MemoryError_ as e:
+        if json_out:
+            jsonout.emit("remember", {"ok": False, "error": str(e)})
+        else:
+            console.print(f"[red]✖ {e}[/red]")
+        raise typer.Exit(2) from None
+    finally:
+        store.close()
+    if json_out:
+        jsonout.emit("remember", {"ok": True, "memory": m})
+        return
+    verb = "already knew that — refreshed" if m.get("duplicate") else "remembered"
+    console.print(Text.assemble(("✔ ", "green"), (f"{verb} ", ""), (f"#{m['id']}", "bold"),
+                                (f"  [{m['kind']}] {m['text']}", "dim")))
+
+
+memory_app = typer.Typer(
+    help="What wrench remembers: what you told it, what it noticed, what it learned.",
+    invoke_without_command=True)
+
+
+@memory_app.callback(invoke_without_command=True)
+def memory_root(ctx: typer.Context,
+                kind: str = typer.Option(None, "--kind", "-k", help="only this kind"),
+                json_out: bool = JSON_OPT):
+    """List what wrench remembers."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        rows = mem.list_memories(store, kind=kind)
+        pending = mem.list_memories(store, status="pending")
+    finally:
+        store.close()
+    if json_out:
+        jsonout.emit("memory", {"memories": rows, "pending": pending,
+                                "enabled": mem.settings(cfg)["enabled"]})
+        return
+    if not rows and not pending:
+        console.print(Panel(
+            "Nothing yet. Tell me how you want things done, or what is unusual about this "
+            "machine:\n\n"
+            "  [bold]wrench remember[/bold] \"the 02:00 load spike is the nightly backup — expected\"\n"
+            "  [bold]wrench remember -k preference[/bold] \"never restart postgres without asking\"\n\n"
+            "[dim]I also keep notes of my own (you approve them first) and learn from what "
+            "you do.[/dim]", border_style="bright_blue", title="🧠 wrench memory",
+            title_align="left"))
+        return
+    if rows:
+        console.print(_mem_table(rows, f"🧠 {len(rows)} remembered"))
+    if pending:
+        console.print(Text.assemble(
+            (f"{len(pending)} note{'s' if len(pending) != 1 else ''} waiting for your review  ",
+             "yellow"), ("wrench memory review", "bold")))
+    console.print(Text("forget: wrench memory forget <#>   ·   pin: wrench memory pin <#>   ·   "
+                       "search: wrench memory search <words>", style="dim"))
+
+
+@memory_app.command("search")
+def memory_search(query: list[str] = typer.Argument(...), json_out: bool = JSON_OPT):
+    """Find memories that mention these words."""
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        rows = mem.search(store, " ".join(query))
+    finally:
+        store.close()
+    if json_out:
+        jsonout.emit("memory.search", {"query": " ".join(query), "memories": rows})
+        return
+    if not rows:
+        console.print("[dim]nothing in memory matches that[/dim]")
+        return
+    console.print(_mem_table(rows, f"🧠 {len(rows)} match{'es' if len(rows) != 1 else ''}"))
+
+
+def _mem_set(mem_id: int, status: str, done: str) -> None:
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        m = mem.set_status(store, mem_id, status, cfg=cfg)
+    finally:
+        store.close()
+    if m is None:
+        console.print(f"[red]no memory #{mem_id}[/red]")
+        raise typer.Exit(1)
+    console.print(Text.assemble(("✔ ", "green"), (f"{done} #{mem_id}  ", ""), (m["text"], "dim")))
+
+
+@memory_app.command("forget")
+def memory_forget(mem_id: int = typer.Argument(..., help="memory number")):
+    """Forget one memory (kept 30 days in case it was a slip, then deleted)."""
+    _mem_set(mem_id, "forgotten", "forgot")
+
+
+@memory_app.command("approve")
+def memory_approve(mem_id: int = typer.Argument(..., help="pending note number")):
+    """Approve one of wrench's own notes so it starts using it."""
+    _mem_set(mem_id, "active", "approved")
+
+
+@memory_app.command("reject")
+def memory_reject(mem_id: int = typer.Argument(..., help="pending note number")):
+    """Reject one of wrench's own notes."""
+    _mem_set(mem_id, "rejected", "rejected")
+
+
+@memory_app.command("pin")
+def memory_pin(mem_id: int = typer.Argument(...),
+               off: bool = typer.Option(False, "--off", help="unpin")):
+    """Pin a memory: the agent sees it on every run, whatever the task."""
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        m = mem.set_pinned(store, mem_id, not off)
+    finally:
+        store.close()
+    if m is None:
+        console.print(f"[red]no memory #{mem_id}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✔[/green] {'unpinned' if off else 'pinned'} #{mem_id}")
+
+
+@memory_app.command("review")
+def memory_review():
+    """Go through the notes wrench wants to keep: approve, reject, or skip each."""
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        pending = mem.list_memories(store, status="pending")
+        if not pending:
+            console.print("[dim]nothing waiting for review[/dim]")
+            return
+        if not sys.stdin.isatty():
+            console.print(_mem_table(pending, f"{len(pending)} pending"))
+            console.print("[dim]approve: wrench memory approve <#>   ·   "
+                          "reject: wrench memory reject <#>[/dim]")
+            return
+        kept = dropped = 0
+        for m in pending:
+            console.print(Panel(
+                Text.assemble((m["text"], "bold white"),
+                              (f"\n{m['kind']} · noted {_rel(m['ts'])}"
+                               + (f" · during {m['origin']}" if m["origin"] else ""), "dim")),
+                border_style="bright_blue", title=f"🧠 note #{m['id']}", title_align="left"))
+            ans = typer.prompt("keep it? [y]es / [n]o / [s]kip", default="s").strip().lower()[:1]
+            if ans == "y":
+                mem.set_status(store, m["id"], "active", cfg=cfg)
+                kept += 1
+            elif ans == "n":
+                mem.set_status(store, m["id"], "rejected", cfg=cfg)
+                dropped += 1
+        console.print(f"[green]✔[/green] kept {kept}, rejected {dropped}, "
+                      f"left {len(pending) - kept - dropped} for later")
+    finally:
+        store.close()
+
+
+@memory_app.command("export")
+def memory_export():
+    """Print every active memory as JSON (to carry to another machine)."""
+    from . import memory as mem
+    cfg, store = _ctx()
+    try:
+        print(json.dumps(mem.export(store), indent=2))
+    finally:
+        store.close()
+
+
+@memory_app.command("import")
+def memory_import(path: str = typer.Argument(..., help="a file written by `wrench memory export`")):
+    """Load memories from an export. They become yours (you chose the file)."""
+    from pathlib import Path as _P
+    from . import memory as mem
+    try:
+        items = json.loads(_P(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        console.print(f"[red]cannot read {path}: {e}[/red]")
+        raise typer.Exit(1) from None
+    cfg, store = _ctx()
+    try:
+        res = mem.import_(store, items, cfg=cfg)
+    finally:
+        store.close()
+    console.print(f"[green]✔[/green] imported {res['added']} · already known "
+                  f"{res['duplicates']} · skipped {res['skipped']}")
+
+
+app.add_typer(memory_app, name="memory")
+
+
+# ---------------- jobs + heartbeat ----------------
+
+_JOB_STYLE = {"ok": "green", "attention": "yellow", "critical": "bold red", "error": "red"}
+
+
+def _jobs_table(jobs: list[dict]) -> Table:
+    t = Table(title="⏱ scheduled jobs", title_justify="left", box=box.SIMPLE_HEAD)
+    for col in ("job", "state", "schedule", "does", "next", "last"):
+        t.add_column(col, overflow="fold")
+    for j in jobs:
+        state = {"active": "[green]active[/green]", "paused": "[yellow]paused[/yellow]",
+                 "proposed": "[bright_blue]proposed[/bright_blue]",
+                 "done": "[dim]done[/dim]"}.get(j["status"], j["status"])
+        does = j["action"] + (f": {(j['args'].get('prompt') or j['args'].get('text') or '')[:48]}"
+                              if j["action"] in ("ask", "remind") else "")
+        last = "never" if not j["last_run"] else (
+            f"[{_JOB_STYLE.get(j['last_status'], 'dim')}]{j['last_status']}[/] "
+            f"{_rel(j['last_run'])}")
+        t.add_row(j["name"], state, j["schedule"], does,
+                  _rel(j["next_run"]) if j["status"] == "active" else "—", last)
+    return t
+
+
+jobs_app = typer.Typer(
+    help="Scheduled work the heartbeat runs: patrols, scans, briefs, reminders, questions.",
+    invoke_without_command=True)
+
+
+@jobs_app.callback(invoke_without_command=True)
+def jobs_root(ctx: typer.Context, json_out: bool = JSON_OPT):
+    """List scheduled jobs."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import heartbeat as hb
+    cfg, store = _ctx()
+    try:
+        jobs = hb.list_jobs(store)
+        pu = hb.pulse(store)
+    finally:
+        store.close()
+    if json_out:
+        jsonout.emit("jobs", {"jobs": jobs, "heartbeat": pu})
+        return
+    live = [j for j in jobs if j["status"] != "done"]
+    if not live:
+        console.print(Panel(
+            "No scheduled jobs yet.\n\n"
+            "  [bold]wrench install-service[/bold]                      start the heartbeat + patrol\n"
+            "  [bold]wrench jobs add brief \"weekdays 08:30\" brief[/bold]   a morning brief\n"
+            "  [bold]wrench jobs add tls \"mon 09:00\" certs[/bold]          weekly certificate check\n"
+            "  [bold]wrench jobs add growth \"every 6h\" ask -p \"is /var growing faster than "
+            "usual?\"[/bold]", border_style="bright_blue", title="⏱ wrench jobs",
+            title_align="left"))
+        return
+    console.print(_jobs_table(live))
+    for j in live:
+        if j["status"] == "proposed":
+            console.print(Text.assemble(
+                ("proposed  ", "bold bright_blue"), (j["name"], "bold"), (f" — {j['note']}", ""),
+                # the whole text that would run — never a truncated preview
+                (f"\n          would run: {j['action']}"
+                 + (f": {j['args'].get('prompt') or j['args'].get('text')}"
+                    if j["args"].get("prompt") or j["args"].get("text") else ""), ""),
+                (f"\n          approve: wrench jobs approve {j['name']}   ·   "
+                 f"decline: wrench jobs rm {j['name']}", "dim")))
+    if pu["alive"] is None:
+        console.print(Text.assemble(("heartbeat is not running — nothing will fire.  ", "yellow"),
+                                    ("wrench install-service", "bold")))
+    elif not pu["alive"]:
+        console.print(Text.assemble((f"heartbeat has been silent since {_rel(pu['last_tick'])}.  ",
+                                     "red"), ("wrench install-service", "bold")))
+    else:
+        console.print(Text(f"heartbeat alive · last beat {_rel(pu['last_tick'])}", style="dim"))
+
+
+@jobs_app.command("add")
+def jobs_add(
+    name: str = typer.Argument(..., help="short name, e.g. morning-brief"),
+    schedule: str = typer.Argument(..., help="'every 15m' · 'daily 08:30' · 'weekdays 9am' · "
+                                             "'mon,thu 18:00' · 'in 2h' · cron"),
+    action: str = typer.Argument(..., help="patrol | brief | score | security | comply | backups "
+                                           "| cve | certs | drift | forecast | remind | ask"),
+    prompt: str = typer.Option("", "--prompt", "-p",
+                               help="for `ask`: the task; for `remind`: the reminder text"),
+    notify: str = typer.Option("", "--notify", help="always | attention | never"),
+):
+    """Add a scheduled job.
+
+    wrench jobs add morning-brief "weekdays 08:30" brief
+    wrench jobs add tls-check "mon 09:00" certs
+    wrench jobs add growth "every 6h" ask -p "is /var growing faster than usual?"
+    wrench jobs add renew "at 2026-12-01 09:00" remind -p "renew the wildcard cert"
+    """
+    from . import heartbeat as hb
+    cfg, store = _ctx()
+    args: dict = {}
+    if prompt:
+        args["text" if action == "remind" else "prompt"] = prompt
+    if notify:
+        args["notify"] = notify
+    try:
+        job = hb.add_job(store, name, schedule, action, args, cfg=cfg)
+        alive = hb.pulse(store)["alive"]
+    except hb.HeartbeatError as e:
+        console.print(f"[red]✖ {e}[/red]")
+        raise typer.Exit(2) from None
+    finally:
+        store.close()
+    console.print(Text.assemble(
+        ("✔ ", "green"), ("scheduled ", ""), (job["name"], "bold"),
+        (f"  {job['schedule']} → {job['action']} · first run {_rel(job['next_run'])}", "dim")))
+    if not alive:
+        console.print(Text.assemble(("the heartbeat is not running yet — start it with  ", "yellow"),
+                                    ("wrench install-service", "bold")))
+
+
+def _job_action(ref: str, fn, done: str) -> None:
+    from . import heartbeat as hb
+    cfg, store = _ctx()
+    try:
+        res = fn(hb, cfg, store)
+    except hb.HeartbeatError as e:
+        console.print(f"[red]✖ {e}[/red]")
+        raise typer.Exit(2) from None
+    finally:
+        store.close()
+    if not res:
+        console.print(f"[red]no job '{ref}'[/red] — see: wrench jobs")
+        raise typer.Exit(1)
+    console.print(f"[green]✔[/green] {done} [bold]{ref}[/bold]")
+
+
+@jobs_app.command("approve")
+def jobs_approve(name: str = typer.Argument(...)):
+    """Approve a job wrench proposed; it starts running on its schedule."""
+    _job_action(name, lambda hb, c, s: hb.set_job_status(s, name, "active", cfg=c), "approved")
+
+
+@jobs_app.command("resume")
+def jobs_resume(name: str = typer.Argument(...)):
+    """Resume a paused job."""
+    _job_action(name, lambda hb, c, s: hb.set_job_status(s, name, "active", cfg=c), "resumed")
+
+
+@jobs_app.command("pause")
+def jobs_pause(name: str = typer.Argument(...)):
+    """Pause a job without deleting it."""
+    _job_action(name, lambda hb, c, s: hb.set_job_status(s, name, "paused", cfg=c), "paused")
+
+
+@jobs_app.command("rm")
+def jobs_rm(name: str = typer.Argument(...)):
+    """Delete a job (or decline a proposal)."""
+    _job_action(name, lambda hb, c, s: hb.remove_job(s, name, cfg=c), "removed")
+
+
+@jobs_app.command("run")
+def jobs_run(name: str = typer.Argument(...), json_out: bool = JSON_OPT):
+    """Run one job right now, whatever its schedule."""
+    from . import heartbeat as hb
+    cfg, store = _ctx()
+    try:
+        job = hb.get_job(store, name)
+        if job is None:
+            console.print(f"[red]no job '{name}'[/red] — see: wrench jobs")
+            raise typer.Exit(1)
+        if json_out:
+            res = hb.run_job(cfg, store, job)
+        else:
+            with console.status(f"[cyan]running {job['name']} ({job['action']})..."):
+                res = hb.run_job(cfg, store, job)
+    finally:
+        store.close()
+    if json_out:
+        jsonout.emit("jobs.run", res)
+    else:
+        console.print(Panel(Text(res["summary"] or "(no output)"),
+                            border_style=_JOB_STYLE.get(res["status"], "dim").replace("bold ", ""),
+                            title=f"⏱ {res['name']} · {res['status']} · {res['duration_s']}s",
+                            title_align="left"))
+    raise typer.Exit(0 if res["status"] in ("ok", "attention") else 2)
+
+
+@jobs_app.command("log")
+def jobs_log(name: str = typer.Argument(None, help="one job (default: all)"),
+             limit: int = typer.Option(20, "--limit", "-n"), json_out: bool = JSON_OPT):
+    """What ran, when, and how it went."""
+    from . import heartbeat as hb
+    cfg, store = _ctx()
+    try:
+        runs = hb.job_runs(store, name, limit)
+    finally:
+        store.close()
+    if json_out:
+        jsonout.emit("jobs.log", {"runs": runs})
+        return
+    if not runs:
+        console.print("[dim]no runs recorded yet[/dim]")
+        return
+    t = Table(box=box.SIMPLE_HEAD)
+    for col in ("when", "job", "result", "took", "summary"):
+        t.add_column(col, overflow="fold")
+    for r in runs:
+        t.add_row(_rel(r["ts"]), r["name"],
+                  f"[{_JOB_STYLE.get(r['status'], 'dim')}]{r['status']}[/]",
+                  f"{r['duration_s'] or 0:.1f}s", (r["summary"] or "").replace("\n", " ⏎ ")[:140])
+    console.print(t)
+
+
+app.add_typer(jobs_app, name="jobs")
+
+
+@app.command("heartbeat")
+def heartbeat_cmd(
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="print only when a job needs attention"),
+    loop: bool = typer.Option(False, "--loop", help="keep beating in the foreground (no OS timer)"),
+    status: bool = typer.Option(False, "--status", help="is the heartbeat alive? what is next?"),
+    json_out: bool = JSON_OPT,
+):
+    """One beat: run every scheduled job that is due. `install-service` runs
+    this on a timer; `--loop` keeps it going where there is no timer."""
+    from . import heartbeat as hb
+    if status:
+        cfg, store = _ctx()
+        try:
+            pu = hb.pulse(store)
+        finally:
+            store.close()
+        if json_out:
+            jsonout.emit("heartbeat.status", pu)
+        elif pu["alive"] is None:
+            console.print("heartbeat has never run — start it with [bold]wrench install-service[/bold]")
+        else:
+            style = "green" if pu["alive"] else "red"
+            console.print(Text.assemble(
+                ("● ", style), ("alive" if pu["alive"] else "silent", f"bold {style}"),
+                (f" · last beat {_rel(pu['last_tick'])} · {pu['ticks']} beats · "
+                 f"{pu['jobs']['active']} active job(s)", ""),
+                (f" · next: {pu['next']['name']} {_rel(pu['next']['at'])}" if pu["next"] else "",
+                 "dim")))
+        raise typer.Exit(0 if pu["alive"] else 1)
+
+    def show(res: dict) -> None:
+        if json_out:
+            jsonout.emit("heartbeat", res)
+            return
+        if res["skipped"]:
+            if not quiet:
+                console.print(f"[dim]skipped — {res['skipped']}[/dim]")
+            return
+        for r in res["ran"]:
+            if quiet and r["status"] == "ok":
+                continue
+            console.print(Text.assemble(
+                ("⏱ ", "dim"), (r["name"], "bold"), (" ", ""),
+                (r["status"], _JOB_STYLE.get(r["status"], "dim")),
+                (f"  {(r['summary'] or '').splitlines()[0][:150] if r['summary'] else ''}", "dim")))
+        for j in res["proposals"]:
+            console.print(Text.assemble(("proposal  ", "bold bright_blue"), (j["note"], ""),
+                                        (f"  wrench jobs approve {j['name']}", "dim")))
+        if not res["ran"] and not res["proposals"] and not quiet:
+            console.print("[dim]♥ beat — nothing due[/dim]")
+
+    if loop:
+        if not json_out:
+            console.print("[bold]wrench heartbeat[/bold] — beating every 60s. Ctrl-C to stop.")
+        try:
+            hb.run_loop(lambda: _ctx(), on_tick=show)
+        except KeyboardInterrupt:
+            console.print("\n[dim]heartbeat stopped[/dim]")
+        return
+    cfg, store = _ctx()
+    try:
+        res = hb.tick(cfg, store)
+    finally:
+        store.close()
+    show(res)
+
+
+
 @app.command("install-service")
 def install_service(
     interval: int = typer.Option(15, "--interval", help="minutes between patrols"),
@@ -3284,7 +3866,8 @@ def install_service(
              "`wrench fixxer --setup-auto` consent; safe-tier only by default)"),
     fixxer_hour: int = typer.Option(4, "--fixxer-hour", help="hour of day for the auto-fixxer run"),
 ):
-    """Schedule patrols natively: systemd (Linux), launchd (macOS), or Task Scheduler (Windows)."""
+    """Start the heartbeat: one native timer (systemd, launchd, Task Scheduler)
+    that runs the patrol and every other scheduled job."""
 
     from . import scheduler
 
@@ -3292,15 +3875,22 @@ def install_service(
         if uninstall:
             plan = scheduler.plan_uninstall()
             lines = scheduler.apply_plan(plan, uninstall=True)
-            console.print(Panel("\n".join(["[green]removed scheduled patrol[/green]", *lines]),
+            console.print(Panel("\n".join(["[green]removed the heartbeat timer[/green]", *lines]),
                                 border_style="green", title="🔧 wrench install-service"))
             return
         wrench_bin = _own_executable()
         if not wrench_bin:
             console.print("[red]couldn't find the wrench executable for this install[/red]")
             raise typer.Exit(1)
-        plan = scheduler.plan_install(wrench_bin, interval)
-        scheduler.apply_plan(plan)
+        from . import heartbeat as _hb
+        cfg, _store = _ctx()
+        try:
+            tick_min = max(1, min(_hb.settings(cfg)["tick_min"], interval))
+            plan = scheduler.plan_install(wrench_bin, tick_min)
+            scheduler.apply_plan(plan)
+            _hb.ensure_defaults(cfg, _store, patrol_every_min=interval)
+        finally:
+            _store.close()
         fixxer_note = ""
         if with_auto_fixxer:
             from . import fixxer as fx
@@ -3321,8 +3911,9 @@ def install_service(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     console.print(Panel(
-        f"[green]installed + started[/green] scheduled patrol via [bold]{plan.kind}[/bold] "
-        f"(every {interval}min)\n"
+        f"[green]installed + started[/green] the heartbeat via [bold]{plan.kind}[/bold] "
+        f"(beats every {tick_min}min · patrol every {interval}min)\n"
+        "[dim]jobs:      wrench jobs   (add, pause, or approve scheduled work)[/dim]\n"
         f"[dim]check:     {plan.check_hint}\n"
         f"uninstall: {plan.uninstall_hint}\n"
         "note: the service needs your provider API key; set\n"

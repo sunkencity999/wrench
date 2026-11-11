@@ -20,6 +20,56 @@ import time
 from pathlib import Path
 
 
+def _seed_learning(cfg, store, now: float) -> None:
+    """Memory, scheduled jobs and a heartbeat pulse for the demo machine."""
+    from wrench import heartbeat, memory
+    for kind, text, src, pin in [
+        ("preference", "Never restart postgresql without asking — it is the primary for billing.",
+         "user", True),
+        ("fact", "The 02:00 load spike is the nightly pg_dump; expected, do not page on it.",
+         "user", False),
+        ("procedure", "When /var/log passes 85%, rotate first (logrotate -f), then look for the "
+                      "noisy unit.", "user", False),
+        ("observation", "The operator usually runs `wrench security` around 09:00.",
+         "learned", False),
+    ]:
+        memory.add(store, text, kind, source=src, pinned=pin, now=now - 86400 * 3)
+    memory.add(store, "reports.service is restarted by deploys on Tuesdays; a stop outside "
+                      "Tuesday is unusual.", "observation", source="agent", status="pending",
+               origin="patrol", now=now - 5400)
+    store.db.execute("UPDATE memories SET uses = id * 7 + 3 WHERE status = 'active'")
+    heartbeat.add_job(store, "patrol", "every 15m", "patrol", created_by="system", now=now - 86400)
+    heartbeat.add_job(store, "morning-brief", "weekdays 08:30", "brief", now=now - 86400)
+    heartbeat.add_job(store, "tls-check", "mon 09:00", "certs", now=now - 86400)
+    heartbeat.add_job(store, "pg-growth", "every 6h", "ask",
+                      {"prompt": "Is /var/lib/postgresql growing faster than its 30-day trend?"},
+                      now=now - 86400)
+    heartbeat.add_job(store, "auto-security", "daily 08:45", "security", status="proposed",
+                      created_by="learned", now=now - 3600,
+                      note="You run `wrench security` around 09:00 most days (7 times over 6 "
+                           "days). I can have it done beforehand and tell you only what needs "
+                           "attention.")
+    runs = [("patrol", 240, "attention", "postgresql data volume at 88% and growing 1.2 GB/day"),
+            ("pg-growth", 5400, "attention", "Yes — 1.2 GB/day against a 0.4 GB/day trend; the "
+             "audit_log table accounts for most of it."),
+            ("morning-brief", 30600, "ok", "health 78/100 C, -4 this week"),
+            ("patrol", 1140, "ok", "all clear")]
+    for name, age, status, summary in runs:
+        job = heartbeat.get_job(store, name)
+        store.db.execute("INSERT INTO job_runs (job_id, name, ts, duration_s, status, summary) "
+                         "VALUES (?, ?, ?, ?, ?, ?)", (job["id"], name, now - age, 3.2, status,
+                                                       summary))
+        store.db.execute("UPDATE jobs SET last_run = ?, last_status = ?, last_summary = ?, "
+                         "runs = runs + 1 WHERE id = ? AND COALESCE(last_run, 0) < ?",
+                         (now - age, status, summary, job["id"], now - age))
+    for job in heartbeat.list_jobs(store, "active"):
+        store.db.execute("UPDATE jobs SET next_run = ? WHERE id = ?",
+                         (heartbeat.parse_schedule(job["schedule"]).next_after(now), job["id"]))
+    store.db.commit()
+    store.cache_put(heartbeat.PULSE_KEY, {"last_tick": now - 95, "ticks": 2311, "tick_min": 5,
+                                          "host": "app-prod-01", "last_ran": ["patrol"]})
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
@@ -127,6 +177,7 @@ def main() -> None:
                      "/var will cross 95% in about six days; the WAL archive is the cause.",
                      findings, report_md, 18240)
     store.add_tokens("ollama", "qwen2.5:14b", 150000, 32000, 182000, "patrol")
+    _seed_learning(cfg, store, now)
     store.add_action("suggest", "diag:disk usage", "du -sh /var/lib/postgresql", True, "41G")
     store.add_action("suggest", "diag:journal read", "journalctl -u postgresql -n 50 --no-pager",
                      True, "")

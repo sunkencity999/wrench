@@ -89,6 +89,27 @@
     </div>
   </div>
 
+  <div class="row two">
+    <section class="card" aria-labelledby="h-memory">
+      <header><h2 id="h-memory">Memory</h2><span class="meta" id="memory-meta"></span></header>
+      <div class="feed" id="memory-pending" style="max-height:none"></div>
+      <div class="feed" id="memory-list" style="max-height:300px"></div>
+      <form class="memform" id="memory-form" hidden>
+        <input class="input" id="memory-text" maxlength="500" autocomplete="off"
+          placeholder="Tell wrench something to keep in mind…" aria-label="something to remember">
+        <select class="input" id="memory-kind" aria-label="kind">
+          <option value="fact">fact</option><option value="preference">preference</option>
+          <option value="procedure">procedure</option><option value="lesson">lesson</option></select>
+        <button class="btn primary" type="submit">Remember</button></form>
+    </section>
+    <section class="card" aria-labelledby="h-jobs">
+      <header><h2 id="h-jobs">Schedule</h2><span class="meta" id="jobs-meta"></span></header>
+      <div class="feed" id="jobs-proposed" style="max-height:none"></div>
+      <div class="feed" id="jobs-list" style="max-height:300px"></div>
+      <details class="runs" id="jobs-runs-wrap" hidden><summary>Recent runs</summary><div class="feed" id="jobs-runs" style="max-height:220px"></div></details>
+    </section>
+  </div>
+
   <div class="row three">
     <section class="card" aria-labelledby="h-drift">
       <header><h2 id="h-drift">What changed</h2><span class="meta">last 7 days</span></header>
@@ -314,6 +335,48 @@ function renderFeeds(drift, wi, actions, o) {
     : '<div class="empty">No agent actions recorded yet.</div>';
 }
 
+const WHO = { user: 'from you', agent: 'noted by wrench', learned: 'learned from what you do' };
+const until = (ts) => { if (!ts) return '—'; const d = ts - Date.now() / 1000; return d <= 0 ? 'due now' : 'in ' + dur(d); };
+function renderMemory(m) {
+  const admin = me.role === 'admin';
+  $('memory-meta').textContent = m.enabled === false ? 'disabled' : `${m.counts.active} remembered${m.counts.pending ? ` · ${m.counts.pending} to review` : ''}`;
+  $('memory-form').hidden = !admin || m.enabled === false;
+  $('memory-pending').innerHTML = m.pending.map((x) => `
+    <div class="item proposal"><div class="head">${badge('unknown', 'Wants to remember')}<span class="tag">${esc(x.kind)}</span><span class="when">${ago(x.ts)}</span></div>
+      <div class="body">${esc(x.text)}</div>
+      ${admin ? `<div class="acts"><button class="btn sm primary" data-mem="approve" data-id="${x.id}">Keep</button><button class="btn sm" data-mem="reject" data-id="${x.id}">Discard</button></div>`
+        : `<div class="sub">Review with ${cmd('wrench memory review')}</div>`}</div>`).join('');
+  $('memory-list').innerHTML = m.memories.length ? m.memories.map((x) => `
+    <div class="item"><div class="head"><span class="tag">${esc(x.kind)}</span><span class="dim" style="font-size:12px">${esc(WHO[x.source] || x.source)}${x.pinned ? ' · pinned' : ''}</span>
+        <span class="when">${x.uses ? `used ${x.uses}×` : 'not used yet'}</span></div>
+      <div class="body">${esc(x.text)}</div>
+      ${admin ? `<div class="acts quiet"><button class="btn sm" data-mem="${x.pinned ? 'unpin' : 'pin'}" data-id="${x.id}">${x.pinned ? 'Unpin' : 'Pin'}</button><button class="btn sm danger" data-mem="forget" data-id="${x.id}">Forget</button></div>` : ''}</div>`).join('')
+    : (m.pending.length ? '' : `<div class="empty">Nothing remembered yet. Tell wrench how you want things done, or what is unusual about this machine — ${cmd('wrench remember "…"')}. It also keeps notes of its own, which you approve first.</div>`);
+}
+function renderJobs(j) {
+  const admin = me.role === 'admin', hb = j.heartbeat;
+  $('jobs-meta').innerHTML = hb.alive == null ? badge('unknown', 'Heartbeat not running')
+    : badge(hb.alive ? 'ok' : 'critical', hb.alive ? 'Heartbeat alive' : 'Heartbeat silent') + ` <span class="dim">${ago(hb.last_tick)}</span>`;
+  const proposed = j.jobs.filter((x) => x.status === 'proposed'), rest = j.jobs.filter((x) => x.status !== 'proposed');
+  const does = (x) => esc(x.action) + (x.args && (x.args.prompt || x.args.text) ? `: ${esc(x.args.prompt || x.args.text)}` : '');
+  $('jobs-proposed').innerHTML = proposed.map((x) => `
+    <div class="item proposal"><div class="head">${badge('unknown', 'Proposed')}<b>${esc(x.name)}</b><span class="tag">${esc(x.schedule)}</span></div>
+      <div class="body">${esc(x.note || '')}</div><div class="sub">would run: ${does(x)}</div>
+      ${admin ? `<div class="acts"><button class="btn sm primary" data-job="approve" data-name="${esc(x.name)}">Approve</button><button class="btn sm" data-job="rm" data-name="${esc(x.name)}">Decline</button></div>`
+        : `<div class="sub">Approve with ${cmd('wrench jobs approve ' + x.name)}</div>`}</div>`).join('');
+  $('jobs-list').innerHTML = rest.length ? rest.map((x) => `
+    <div class="item"><div class="head"><b>${esc(x.name)}</b><span class="tag">${esc(x.schedule)}</span>${x.status === 'paused' ? badge('attention', 'Paused') : ''}
+        <span class="when">${x.status === 'active' ? 'next ' + until(x.next_run) : ''}</span></div>
+      <div class="body">${does(x)}</div>
+      <div class="sub">${x.last_run ? `${badge(x.last_status)} ${ago(x.last_run)} — ${esc((x.last_summary || '').split('\n')[0].slice(0, 140))}` : 'has not run yet'}</div>
+      ${admin ? `<div class="acts quiet"><button class="btn sm" data-job="${x.status === 'paused' ? 'resume' : 'pause'}" data-name="${esc(x.name)}">${x.status === 'paused' ? 'Resume' : 'Pause'}</button><button class="btn sm danger" data-job="rm" data-name="${esc(x.name)}">Remove</button></div>` : ''}</div>`).join('')
+    : (proposed.length ? '' : `<div class="empty">No scheduled jobs. Start the heartbeat with ${cmd('wrench install-service')}, then add work: ${cmd('wrench jobs add morning-brief "weekdays 08:30" brief')}</div>`);
+  if (hb.alive == null && rest.length) $('jobs-list').insertAdjacentHTML('afterbegin', `<div class="item sub">Nothing will fire until the heartbeat is started: ${cmd('wrench install-service')}</div>`);
+  $('jobs-runs-wrap').hidden = !j.runs.length;
+  $('jobs-runs').innerHTML = j.runs.map((r) => `<div class="item"><div class="head">${badge(r.status)}<b>${esc(r.name)}</b><span class="when">${ago(r.ts)}</span></div>
+    <div class="sub">${esc((r.summary || '').slice(0, 200))}</div></div>`).join('');
+}
+
 function renderNotifs(list) {
   const unread = list.filter((n) => !n.read);
   const c = $('bell-count'); c.hidden = !unread.length; c.textContent = unread.length > 99 ? '99+' : unread.length;
@@ -333,9 +396,10 @@ function renderNotifs(list) {
 
 async function refresh() {
   try {
-    const [o, tl, drift, patrols, actions, wi, notifs] = await Promise.all([
+    const [o, tl, drift, patrols, actions, wi, notifs, mem, jobs] = await Promise.all([
       api('/api/overview'), api('/api/timeline?hours=' + hours), api('/api/drift'),
-      api('/api/patrols'), api('/api/actions'), api('/api/webintel'), api('/api/notifications?all=1')]);
+      api('/api/patrols'), api('/api/actions'), api('/api/webintel'), api('/api/notifications?all=1'),
+      api('/api/memory'), api('/api/jobs')]);
     me = o;
     $('host').textContent = o.host; $('oslabel').textContent = o.os_label || '';
     $('version').textContent = 'v' + o.version;
@@ -356,6 +420,7 @@ async function refresh() {
       <dt>Unread notifications</dt><dd class="num">${unread}</dd>
       <dt>Volumes at 90% or more</dt><dd class="num">${hot}</dd>`;
     renderFeeds(drift, wi, actions, o); renderNotifs(notifs);
+    renderMemory(mem); renderJobs(jobs);
     firstLoad = false;
   } catch (e) { if (e.message !== 'auth') { $('updated').textContent = 'connection lost — retrying'; $('live').classList.add('stale'); } }
 }
@@ -374,11 +439,12 @@ $('welcome-hide').addEventListener('click', () => { try { localStorage.setItem('
 const jump = (id) => () => { const el = $(id).closest('.card'); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
 const COMMANDS = ['wrench patrol', 'wrench score', 'wrench status', 'wrench security', 'wrench comply', 'wrench backups',
   'wrench certs', 'wrench cve', 'wrench forecast', 'wrench drift', 'wrench fixxer', 'wrench doctor',
-  'wrench install-service', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
+  'wrench install-service', 'wrench memory', 'wrench memory review', 'wrench jobs', 'wrench heartbeat --status', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
 initPalette(() => [
   ...(me.posture ? me.posture.pillars.map((x) => ({ group: 'Pillar', label: x.label, hint: x.score == null ? 'not measured' : String(Math.round(x.score)), run: () => openPillar(x.key) })) : []),
   { group: 'Go to', label: 'Vitals', run: jump('h-vitals') }, { group: 'Go to', label: 'Patrols', run: jump('h-patrol') },
   { group: 'Go to', label: 'Storage', run: jump('h-disks') }, { group: 'Go to', label: 'What changed', run: jump('h-drift') },
+  { group: 'Go to', label: 'Memory', run: jump('h-memory') }, { group: 'Go to', label: 'Schedule', run: jump('h-jobs') },
   { group: 'Go to', label: 'Vulnerabilities & end of life', run: jump('h-intel') }, { group: 'Go to', label: 'Trust & activity', run: jump('h-trust') },
   ...(me.fleet_hub ? [{ group: 'Go to', label: 'Fleet console', hint: 'f', run: () => { location.href = '/fleet'; } }] : []),
   { group: 'Open', label: 'Notifications', hint: 'n', run: () => openDrawer('notifs') },
@@ -389,6 +455,17 @@ initPalette(() => [
   ...COMMANDS.map((c) => ({ group: 'Copy', label: c, hint: 'copy', run: () => copyText(c) })),
 ]);
 $('mark-all').addEventListener('click', async () => { await post('/api/notifications/read'); refresh(); });
+const act = async (path, body, errEl) => {
+  try { await post(path, body); await refresh(); return true; }
+  catch (e) { const t = document.createElement('div'); t.className = 'toast attention'; t.innerHTML = `<div class="t">Not done</div>${esc(e.message || 'request failed')}`;
+    $('toasts').appendChild(t); setTimeout(() => t.remove(), 9000); return false; }
+};
+$('h-memory').closest('.card').addEventListener('click', (e) => { const b = e.target.closest('[data-mem]'); if (b) act('/api/memory', { action: b.dataset.mem, id: Number(b.dataset.id) }); });
+$('h-jobs').closest('.card').addEventListener('click', (e) => { const b = e.target.closest('[data-job]'); if (b) act('/api/jobs', { action: b.dataset.job, name: b.dataset.name }); });
+$('memory-form').addEventListener('submit', async (e) => {
+  e.preventDefault(); const text = $('memory-text').value.trim(); if (!text) return;
+  if (await act('/api/memory', { action: 'add', text, kind: $('memory-kind').value })) $('memory-text').value = '';
+});
 let greeted = false, busy = false;
 function addMsg(cls, text, meta) {
   const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;

@@ -472,6 +472,50 @@ def emit_event(cfg, kind: str, severity: str, summary: str,
         return None
 
 
+def deliver(cfg, kind: str, severity: str, summary: str,
+            data_dir: Path | None = None) -> dict | None:
+    """Deliver something the operator *asked* to be told (a scheduled brief, a
+    reminder, the answer to a scheduled question), whatever its severity.
+
+    ``emit_event`` drops anything below ``min_severity`` — right for alerts,
+    wrong for a morning brief that is "info" by nature. This always writes the
+    inbox and sends to the desktop and the webhook; the SIEM sinks (syslog,
+    http_jsonl) keep their own thresholds. Returns the record. Never raises.
+    """
+    try:
+        st = settings_from(cfg)
+        if not st.enabled:
+            return None
+        dd = Path(data_dir) if data_dir is not None else cfg.data_dir
+        rec = record(dd, severity, summary, kind=kind)
+        from . import offline as _offline
+        block_public = _offline.is_offline(cfg)
+        if st.desktop:
+            send_desktop(f"🔧 wrench [{kind}]", rec["summary"], dd)
+        if st.webhook_url:
+            if block_public and not _offline.url_is_private(st.webhook_url):
+                _log(dd, "offline mode: webhook sink skipped (public host)")
+            else:
+                send_webhook(st.webhook_url, rec, dd)
+        # the SIEM sinks keep their own thresholds
+        if st.syslog_address and should_notify(severity,
+                                               st.syslog_min_severity or st.min_severity):
+            if block_public and not _offline.host_is_private(
+                    parse_syslog_address(st.syslog_address)[1]):
+                _log(dd, "offline mode: syslog sink skipped (public host)")
+            else:
+                send_syslog(st.syslog_address, rec, dd)
+        if st.http_jsonl_url and should_notify(severity,
+                                               st.http_jsonl_min_severity or st.min_severity):
+            if block_public and not _offline.url_is_private(st.http_jsonl_url):
+                _log(dd, "offline mode: http_jsonl sink skipped (public host)")
+            else:
+                send_http_jsonl(st.http_jsonl_url, rec, dd)
+        return rec
+    except Exception:  # noqa: BLE001 — a notification must never break the caller
+        return None
+
+
 # ---------------- dispatch (hooked into patrol completion) ----------------
 
 def dispatch(cfg, patrol: dict, report_id: float | None = None,

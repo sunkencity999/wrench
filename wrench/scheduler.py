@@ -1,4 +1,9 @@
-"""install-service: schedule `wrench patrol` natively on each OS.
+"""install-service: schedule the wrench heartbeat natively on each OS.
+
+The timer runs `wrench heartbeat` every few minutes; the heartbeat decides
+which jobs are due (the patrol is one of them — see wrench/heartbeat.py).
+Unit / label / task names keep "patrol" so a reinstall replaces a 2.x or
+3.0 timer in place instead of leaving two behind.
 
 Linux   → user systemd service + timer (~/.config/systemd/user/)
 macOS   → launchd user agent plist (~/Library/LaunchAgents/)
@@ -105,16 +110,16 @@ def _launchd_commands(label: str, plist_path: Path) -> list[list[str]]:
 def _systemd_plan(wrench_bin: str, interval_min: int, home: Path) -> InstallPlan:
     unit_dir = home / ".config" / "systemd" / "user"
     service = f"""[Unit]
-Description=wrench patrol — the sysadmin's right hand
+Description=wrench heartbeat — the sysadmin's right hand
 
 [Service]
 Type=oneshot
 Nice=10
 Environment="PATH={_scheduler_path()}"
-ExecStart="{wrench_bin}" patrol --quiet --no-html
+ExecStart="{wrench_bin}" heartbeat --quiet
 """
     timer = f"""[Unit]
-Description=wrench patrol every {interval_min} minutes
+Description=wrench heartbeat every {interval_min} minutes
 
 [Timer]
 OnBootSec=3min
@@ -144,7 +149,7 @@ WantedBy=timers.target
 def _launchd_plan(wrench_bin: str, interval_min: int, home: Path) -> InstallPlan:
     plist_path = home / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
     plist = _launchd_plist(
-        LAUNCHD_LABEL, wrench_bin, ["patrol", "--quiet", "--no-html"],
+        LAUNCHD_LABEL, wrench_bin, ["heartbeat", "--quiet"],
         f"  <key>StartInterval</key><integer>{interval_min * 60}</integer>")
     return InstallPlan(
         kind="launchd",
@@ -157,7 +162,7 @@ def _launchd_plan(wrench_bin: str, interval_min: int, home: Path) -> InstallPlan
 
 
 def _schtasks_plan(wrench_bin: str, interval_min: int, home: Path) -> InstallPlan:  # noqa: ARG001
-    tr = f'"{wrench_bin}" patrol --quiet --no-html'
+    tr = f'"{wrench_bin}" heartbeat --quiet'
     return InstallPlan(
         kind="schtasks",
         files={},
