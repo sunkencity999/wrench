@@ -504,8 +504,9 @@ wrench install-service</pre></div></div>
 <section class="alt" id="trust"><div class="wrap">
   <p class="eyebrow">Security model</p>
   <h2>An agent on a leash you hold.</h2>
-  <p class="lead">Something that can touch your systems has to earn it. wrench's whole permission model is one line of config,
-    and the defaults are the cautious ones.</p>
+  <p class="lead">Something that can touch your systems has to earn it. wrench starts as an advisor, and one command —
+    <code>wrench policy repair</code> — or one click in the dashboard moves it from observer to actor and back.
+    The defaults are the cautious ones.</p>
   <div class="tiers">
     <div class="tier"><code>observe</code><span>Look. Never touch, never even suggest commands.</span></div>
     <div class="tier def"><code>suggest</code><span>Diagnose and propose exact fixes. Never executes.</span></div>

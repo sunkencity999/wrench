@@ -60,6 +60,7 @@ _HELP_PANELS = {
     "forecast": ARC_PREDICT, "certs": ARC_PREDICT, "cve": ARC_PREDICT,
     "audit": ARC_PROVE, "backups": ARC_PROVE, "comply": ARC_PROVE, "bundle": ARC_PROVE,
     "fixxer": ARC_FIX, "blueprint": ARC_FIX, "approve": ARC_FIX, "approvals": ARC_FIX,
+    "policy": ARC_FIX,
     "remember": ARC_LEARN, "memory": ARC_LEARN, "jobs": ARC_LEARN, "heartbeat": ARC_LEARN,
     "fleet": ARC_SCALE, "web": ARC_SCALE, "metrics": ARC_SCALE,
     "init": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
@@ -161,7 +162,7 @@ def _home() -> None:
         ("see", "status · score · patrol · ask \"…\" · drift · security"),
         ("predict", "forecast · certs · cve"),
         ("prove", "audit verify · backups · comply · bundle"),
-        ("fix", "fixxer · blueprint \"…\""),
+        ("fix", "policy <tier> · fixxer · blueprint \"…\""),
         ("learn", "remember \"…\" · memory · jobs · heartbeat"),
         ("scale", "web · fleet enroll / join / serve · metrics"),
         ("setup", "init · doctor · install-service"),
@@ -652,9 +653,11 @@ def web(
     tls_cert = tls_cert or str(web_cfg.get("tls_cert", "") or "")
     tls_key = tls_key or str(web_cfg.get("tls_key", "") or "")
     try:
+        from . import config as _config
         httpd = serve(cfg.db_path, port=port, host_label=platform.node() or "localhost",
                       bind=bind, sample_thread=not no_sample, cfg=cfg,
-                      tls_cert=tls_cert, tls_key=tls_key)
+                      tls_cert=tls_cert, tls_key=tls_key,
+                      tier_io=(lambda: load_config().policy_tier, _config.set_policy_tier))
     except OSError as e:
         console.print(f"[red]could not start the dashboard on {bind}:{port} — {e}[/red]\n"
                       "[dim]is another wrench (or something else) using that port? "
@@ -2550,6 +2553,104 @@ def audit_verify(json_out: bool = JSON_OPT):
 
 
 app.add_typer(audit_app, name="audit")
+
+
+# ---------------- policy tier ----------------
+
+@app.command("policy")
+def policy_cmd(
+    tier: str = typer.Argument(None, help="observe | suggest | repair | autonomous "
+                                          "(omit to see the current tier)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="skip the confirmation (for scripts)"),
+    json_out: bool = JSON_OPT,
+):
+    """Show or change how much wrench may do on its own — observer to actor.
+
+    wrench policy               where the leash is now, and what each tier allows
+    wrench policy repair        let it run allowlisted fixes, asking you each time
+    wrench policy autonomous    let it run them unattended
+    wrench policy suggest       back to advice only
+    """
+    from . import audit as _amod, config as _config, policy as _pol
+    cfg, store = _ctx()
+    store.close()
+    forced = _config.policy_env_override()
+    current = cfg.policy_tier if cfg.policy_tier in _pol.TIERS else "suggest"
+    if tier is None:
+        if json_out:
+            jsonout.emit("policy", {
+                "tier": current, "env_override": bool(forced),
+                "tiers": [{"tier": t, "name": _pol.TIER_INFO[t][0], "allows": _pol.TIER_INFO[t][1],
+                           "current": t == current} for t in _pol.TIERS]})
+            return
+        t = Table(box=box.SIMPLE_HEAD, title="🔧 policy tier — how much wrench may do on its own",
+                  title_justify="left")
+        t.add_column("")
+        t.add_column("tier")
+        t.add_column("role")
+        t.add_column("what it may do", overflow="fold")
+        for name in _pol.TIERS:
+            here = name == current
+            t.add_row("[bold green]▶[/]" if here else "", f"[bold]{name}[/]" if here else name,
+                      _pol.TIER_INFO[name][0], _pol.TIER_INFO[name][1],
+                      style="" if here else "dim")
+        console.print(t)
+        if forced:
+            console.print(f"[yellow]WRENCH_POLICY={forced} is set in the environment and "
+                          "overrides the config file.[/yellow]")
+        console.print(Text.assemble(("change it:  ", "dim"), ("wrench policy <tier>", "bold"),
+                                    ("   e.g. wrench policy repair", "dim")))
+        return
+    tier = tier.strip().lower()
+    if tier not in _pol.TIERS:
+        console.print(f"[red]✖ unknown tier '{tier}'[/red] — one of: {', '.join(_pol.TIERS)}")
+        raise typer.Exit(2)
+    if forced:
+        console.print(f"[red]✖ WRENCH_POLICY={forced} is set in the environment and overrides "
+                      "the config file.[/red] Unset it (or change it there) first.")
+        raise typer.Exit(2)
+    if tier == current:
+        if json_out:
+            jsonout.emit("policy", {"tier": current, "changed": False})
+        else:
+            console.print(f"already at [bold]{current}[/bold] — {_pol.TIER_INFO[current][1]}")
+        return
+    raising = _pol.tier_rank(tier) > _pol.tier_rank(current)
+    if raising and tier in ("repair", "autonomous") and not yes:
+        if not sys.stdin.isatty():
+            console.print("[red]✖ raising the tier needs a person at a terminal, or --yes[/red]")
+            raise typer.Exit(2)
+        body = Text.assemble(
+            (f"{current} → {tier}\n\n", "bold"), (_pol.TIER_INFO[tier][1], ""),
+            ("\n\nIt can only ever run commands on the built-in allowlist — service start / "
+             "restart / reload and journal trimming — never a command it wrote itself. "
+             "Every action is logged (wrench audit).", "dim"))
+        console.print(Panel(body, border_style="yellow", title="⚠ give wrench hands",
+                            title_align="left"))
+        if tier == "autonomous":
+            typed = typer.prompt("type 'autonomous' to let it act with nobody watching",
+                                 default="", show_default=False)
+            if typed.strip().lower() != "autonomous":
+                console.print("[dim]unchanged[/dim]")
+                raise typer.Exit(1)
+        elif not typer.confirm(f"switch to {tier}?", default=False):
+            console.print("[dim]unchanged[/dim]")
+            raise typer.Exit(1)
+    path = _config.set_policy_tier(tier)
+    _amod.log_event(cfg, "policy.tier_change", {"from": current, "to": tier, "via": "cli"})
+    if json_out:
+        jsonout.emit("policy", {"tier": tier, "changed": True, "from": current})
+        return
+    console.print(Text.assemble(("✔ ", "green"), ("policy tier ", ""), (current, "dim"),
+                                (" → ", "dim"), (tier, "bold"),
+                                (f"  {_pol.TIER_INFO[tier][0]}", "dim")))
+    console.print(Text(f"{_pol.TIER_INFO[tier][1]}\nsaved to {path} · a running dashboard picks "
+                       "it up on its next refresh", style="dim"))
+    if tier == "repair":
+        console.print(Text("scheduled patrols have nobody to ask, so they still only suggest; "
+                           "`wrench chat` and `wrench ask` will offer fixes and wait for your OK.",
+                           style="dim"))
+
 
 
 @app.command("approve")

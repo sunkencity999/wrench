@@ -55,6 +55,10 @@ deterministic mode and say so.
 tier = "suggest"    # observe | suggest | repair | autonomous
 ```
 
+Change it with `wrench policy <tier>` (it edits this line for you, asks before
+raising, and records the change in the audit chain) or from the dashboard's
+policy-tier panel. `WRENCH_POLICY` in the environment overrides the file.
+
 | tier | may look | may propose commands | may execute |
 |---|---|---|---|
 | `observe` | yes | no | no |
@@ -111,6 +115,8 @@ patrol. In offline mode, sinks pointing at public hosts are skipped.
 # allowed_hosts = ["wrench.example.com"]   # extra Host names to answer to (behind a proxy)
 # tls_cert = "/etc/wrench/tls/fullchain.pem"
 # tls_key  = "/etc/wrench/tls/privkey.pem"
+# allow_tier_raise = false   # true: an admin may RAISE the policy tier from the dashboard
+                             # (lowering it is always allowed; default is terminal-only)
 ```
 
 | situation | behaviour |

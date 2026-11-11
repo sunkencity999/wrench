@@ -766,3 +766,109 @@ def test_web_rejects_non_finite_ids(tmp_path):
         assert code == 400
     finally:
         httpd.shutdown()
+
+
+# ============================ policy tier: observer → actor ============================
+
+def _wrench(tmp_path, *args, env_extra=None, stdin=None):
+    import os
+    import subprocess
+    import sys
+    (tmp_path / "c").mkdir(exist_ok=True)
+    cfgfile = tmp_path / "c" / "config.toml"
+    if not cfgfile.exists():
+        cfgfile.write_text('# keep me\n[provider]\nname = "none"\n', encoding="utf-8")
+    env = dict(os.environ, WRENCH_CONFIG_DIR=str(tmp_path / "c"),
+               WRENCH_DATA_DIR=str(tmp_path / "d"), PYTHONIOENCODING="utf-8")
+    env.pop("WRENCH_POLICY", None)
+    env.update(env_extra or {})
+    return subprocess.run([sys.executable, "-m", "wrench.cli", *args], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", env=env, timeout=120,
+                          input=stdin if stdin is not None else "")
+
+
+def test_policy_command_shows_and_changes_the_tier(tmp_path):
+    out = json.loads(_wrench(tmp_path, "policy", "--json").stdout)
+    assert out["tier"] == "suggest" and [t["tier"] for t in out["tiers"]] == [
+        "observe", "suggest", "repair", "autonomous"]
+    # raising needs a person or --yes; a script cannot do it by accident
+    r = _wrench(tmp_path, "policy", "repair")
+    assert r.returncode == 2 and "--yes" in r.stdout
+    assert json.loads(_wrench(tmp_path, "policy", "--json").stdout)["tier"] == "suggest"
+    r = _wrench(tmp_path, "policy", "repair", "--yes", "--json")
+    assert r.returncode == 0 and json.loads(r.stdout)["changed"] is True
+    text = (tmp_path / "c" / "config.toml").read_text(encoding="utf-8")
+    assert 'tier = "repair"' in text and "# keep me" in text       # comments survive
+    # lowering never needs confirmation
+    assert _wrench(tmp_path, "policy", "observe").returncode == 0
+    assert json.loads(_wrench(tmp_path, "policy", "--json").stdout)["tier"] == "observe"
+    assert _wrench(tmp_path, "policy", "godmode").returncode == 2
+    # every change is in the audit chain
+    kinds = [r["kind"] for r in json.loads(_wrench(tmp_path, "audit", "--json").stdout)["entries"]]
+    assert kinds.count("policy.tier_change") == 2
+
+
+def test_policy_command_respects_the_environment_override(tmp_path):
+    r = _wrench(tmp_path, "policy", "suggest", "--yes", env_extra={"WRENCH_POLICY": "autonomous"})
+    assert r.returncode == 2 and "WRENCH_POLICY" in r.stdout
+    assert "tier" not in (tmp_path / "c" / "config.toml").read_text(encoding="utf-8")
+
+
+def _serve_tier(tmp_path, raw=None, auth=None):
+    import threading
+    from wrench import webapp
+    db = tmp_path / "w.db"
+    Store(db).close()
+    cfg = Cfg(tmp_path, raw if raw is not None else {})
+    saved = []
+    httpd = webapp.serve(db, port=0, bind="127.0.0.1", sample_thread=False, cfg=cfg, auth=auth,
+                         tier_io=(lambda: cfg.policy_tier, saved.append))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd, f"http://127.0.0.1:{httpd.server_address[1]}", cfg, saved
+
+
+def test_dashboard_can_lower_the_tier_but_not_raise_it_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("WRENCH_POLICY", raising=False)
+    httpd, url, cfg, saved = _serve_tier(tmp_path)
+    try:
+        o = json.loads(_req(url + "/api/overview")[2])
+        assert o["policy_tier"] == "suggest" and o["policy"]["raise_allowed"] is False
+        code, d = _post(url, "/api/policy", {"tier": "autonomous"})
+        assert code == 403 and d["command"] == "wrench policy autonomous"
+        assert cfg.policy_tier == "suggest" and saved == []
+        code, d = _post(url, "/api/policy", {"tier": "observe"})
+        assert code == 200 and d["changed"] and saved == ["observe"] and cfg.policy_tier == "observe"
+        assert _post(url, "/api/policy", {"tier": "observe"})[1]["changed"] is False
+        assert _post(url, "/api/policy", {"tier": "root"})[0] == 400
+        from wrench import audit
+        rec = [r for r in audit.read_records(tmp_path) if r["kind"] == "policy.tier_change"]
+        assert len(rec) == 1 and rec[0]["detail"]["via"] == "web"
+    finally:
+        httpd.shutdown()
+
+
+def test_dashboard_tier_raise_is_opt_in_admin_only_and_blocked_by_env(tmp_path, monkeypatch):
+    from wrench import webauth
+    monkeypatch.delenv("WRENCH_POLICY", raising=False)
+    auth = webauth.AuthConfig(bind="127.0.0.1", admin_token="admin-secret-token",
+                              viewer_token="viewer-secret-token")
+    httpd, url, cfg, saved = _serve_tier(tmp_path, {"web": {"allow_tier_raise": True}}, auth)
+    try:
+        assert _post(url, "/api/policy", {"tier": "repair"})[0] == 401
+        assert _post(url, "/api/policy", {"tier": "observe"}, "viewer-secret-token")[0] == 403
+        assert _post(url, "/api/policy", {"tier": "repair"}, "admin-secret-token")[0] == 200
+        assert saved == ["repair"] and cfg.policy_tier == "repair"
+        monkeypatch.setenv("WRENCH_POLICY", "repair")
+        assert _post(url, "/api/policy", {"tier": "observe"}, "admin-secret-token")[0] == 409
+        assert saved == ["repair"]
+    finally:
+        httpd.shutdown()
+
+
+def test_set_policy_tier_validates(tmp_path):
+    from wrench import config
+    path = tmp_path / "config.toml"
+    config.set_policy_tier("Repair", path)
+    assert 'tier = "repair"' in path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        config.set_policy_tier("root", path)

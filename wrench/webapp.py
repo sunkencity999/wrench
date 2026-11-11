@@ -86,8 +86,22 @@ def _is_local_origin(value: str | None) -> bool:
 
 
 def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | None = None,
-                 fleet_hub: bool = False, os_label: str | None = None):
+                 fleet_hub: bool = False, os_label: str | None = None, tier_io=None):
     auth = auth or webauth.AuthConfig()
+
+    def tier_now() -> str:
+        """The policy tier in force. With ``tier_io`` it is re-read from the
+        config, so a change made in a terminal shows up here too."""
+        from . import policy
+        try:
+            t = tier_io[0]() if tier_io else getattr(cfg, "policy_tier", "suggest")
+        except Exception:  # noqa: BLE001
+            t = getattr(cfg, "policy_tier", "suggest")
+        return t if t in policy.TIERS else "suggest"
+
+    def tier_raise_allowed() -> bool:
+        web = (getattr(cfg, "raw", None) or {}).get("web", {})
+        return bool(isinstance(web, dict) and web.get("allow_tier_raise", False))
     pages = _load_pages()
     limiter = webauth.RateLimiter()
     chat_lock = threading.Lock()
@@ -324,7 +338,13 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 usable, why = agent_mod.brain_status(cfg)
                 out["brain"] = {"usable": usable, "reason": why,
                                 "provider": cfg.provider, "model": cfg.model}
-                out["policy_tier"] = cfg.policy_tier
+                from . import config as _config, policy as _policy
+                out["policy_tier"] = tier_now()
+                out["policy"] = {
+                    "tiers": [{"tier": t, "name": _policy.TIER_INFO[t][0],
+                               "allows": _policy.TIER_INFO[t][1]} for t in _policy.TIERS],
+                    "raise_allowed": tier_raise_allowed(),
+                    "env_override": bool(_config.policy_env_override()) and tier_io is not None}
                 out["offline"] = bool(getattr(cfg, "offline", False))
             else:
                 out["brain"] = {"usable": False, "reason": "no config loaded"}
@@ -393,6 +413,8 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                     return self._chat()
                 if path == "/api/fleet/forget":
                     return self._fleet_forget()
+                if path == "/api/policy":
+                    return self._policy_post()
                 if path == "/api/memory":
                     return self._memory_post()
                 if path == "/api/jobs":
@@ -475,6 +497,45 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                                    "steps": len(res["steps"]), "model": cfg.model})
             finally:
                 store.close()
+
+        def _policy_post(self):
+            """Change the policy tier. Lowering it is always allowed. Raising it
+            hands the agent the ability to act, so from the web that needs an
+            explicit opt-in ([web] allow_tier_raise) — a dashboard token alone
+            must not be enough to give wrench hands."""
+            if cfg is None:
+                return self._json({"error": "no configuration loaded"}, 503)
+            if self._gate("admin") is None:
+                return None
+            payload = self._json_body()
+            if payload is None:
+                return None
+            from . import config as _config, policy
+            want = str(payload.get("tier", "")).strip().lower()
+            if want not in policy.TIERS:
+                return self._json({"error": "unknown tier"}, 400)
+            have = tier_now()
+            if want == have:
+                return self._json({"ok": True, "tier": have, "changed": False})
+            if tier_io is not None and _config.policy_env_override():
+                return self._json({"error": "WRENCH_POLICY is set in the server's environment "
+                                            "and overrides the config file"}, 409)
+            if policy.tier_rank(want) > policy.tier_rank(have) and not tier_raise_allowed():
+                return self._json({
+                    "error": "raising the tier from the dashboard is switched off",
+                    "command": f"wrench policy {want}",
+                    "hint": "run the command in a terminal on this machine, or set "
+                            "[web] allow_tier_raise = true"}, 403)
+            try:
+                if tier_io is not None:
+                    tier_io[1](want)
+                cfg.policy_tier = want
+            except Exception as e:  # noqa: BLE001
+                return self._json({"error": f"could not save the tier ({e.__class__.__name__})"},
+                                  500)
+            self._audit("policy.tier_change", {"from": have, "to": want, "via": "web",
+                                               "client": self._client()})
+            return self._json({"ok": True, "tier": want, "changed": True})
 
         def _memory_post(self):
             """add / approve / reject / forget / pin / unpin. Admin only: what is
@@ -682,7 +743,8 @@ def tls_context(cert: str, key: str) -> ssl.SSLContext:
 def serve(db_path, port: int = 8787, host_label: str = "localhost",
           bind: str = "127.0.0.1", sample_thread: bool = True, cfg=None,
           auth: webauth.AuthConfig | None = None, fleet_hub: bool = False,
-          tls_cert: str = "", tls_key: str = "", os_label: str | None = None):
+          tls_cert: str = "", tls_key: str = "", os_label: str | None = None,
+          tier_io=None):
     """Build the HTTP(S) server. Optionally keep sampling in the background.
 
     Returns the server; the caller runs ``serve_forever()``. The resolved
@@ -722,7 +784,7 @@ def serve(db_path, port: int = 8787, host_label: str = "localhost",
 
     httpd = _QuietServer(
         (bind, port), make_handler(db_path, host_label, cfg=cfg, auth=auth, fleet_hub=fleet_hub,
-                                   os_label=os_label))
+                                   os_label=os_label, tier_io=tier_io))
     httpd.daemon_threads = True
     if use_tls:
         httpd.socket = tls_context(tls_cert, tls_key).wrap_socket(

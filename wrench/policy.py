@@ -17,6 +17,22 @@ import shlex
 
 TIERS = ("observe", "suggest", "repair", "autonomous")
 
+# What each tier means, in the words shown to the operator (CLI + dashboard).
+TIER_INFO = {
+    "observe": ("Observer", "Looks only. Runs read-only diagnostics; proposes nothing, "
+                            "changes nothing."),
+    "suggest": ("Advisor", "Diagnoses and proposes the exact fix for you to run. "
+                           "Never changes the machine itself."),
+    "repair": ("Actor, with your OK", "May run allowlisted fixes (restart / start a service, "
+                                      "trim the journal) — each one only after you confirm it."),
+    "autonomous": ("Actor, unattended", "Runs allowlisted fixes on its own, including during "
+                                        "scheduled patrols. Maintenance windows still apply."),
+}
+
+
+def tier_rank(tier: str) -> int:
+    return TIERS.index(tier) if tier in TIERS else TIERS.index("suggest")
+
 # A unit / service name: never starts with "-" (so it can never be read as an
 # option, e.g. `systemctl status -Hroot@evil`).
 _UNIT = r"[\w@][\w@.\-]*"

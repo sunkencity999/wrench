@@ -146,6 +146,11 @@
   <div class="content"><div class="feed" id="notif-list" style="max-height:none"></div></div>
 </aside>
 
+<aside class="drawer" id="tier" role="dialog" aria-label="policy tier">
+  <header><h2>Policy tier</h2><button class="iconbtn" data-close aria-label="close">✕</button></header>
+  <div class="content" id="tier-body"></div>
+</aside>
+
 <aside class="drawer" id="pillar" role="dialog" aria-label="pillar detail">
   <header><h2 id="p-title">Pillar</h2><span id="p-state"></span>
     <button class="iconbtn" data-close aria-label="close">✕</button></header>
@@ -324,7 +329,7 @@ function renderFeeds(drift, wi, actions, o) {
   $('audit-state').innerHTML = a.count == null ? '' : badge(a.intact ? 'ok' : 'critical', a.intact ? 'Audit chain intact' : 'Audit chain broken');
   const b = o.brain || {};
   $('trust').innerHTML = `
-    <dt>Policy tier</dt><dd><b>${esc(o.policy_tier)}</b></dd>
+    <dt>Policy tier</dt><dd><button class="tierbtn" id="tier-open" title="what wrench may do on its own — click to change"><b>${esc(o.policy_tier)}</b><span>${esc(tierName(o))}</span><span class="chev" aria-hidden="true">›</span></button></dd>
     <dt>Brain</dt><dd>${b.usable ? `${esc(b.provider)} · <span class="mono">${esc(b.model)}</span>` : `<span class="dim">deterministic — ${esc(b.reason || 'not configured')}</span>`}</dd>
     <dt>Network</dt><dd>${o.offline ? 'offline mode (zero egress)' : 'normal'}</dd>
     <dt>Audit events</dt><dd class="num">${a.count ?? '—'}${a.reason && !a.intact ? ` · <span style="color:var(--critical-ink)">${esc(a.reason)}</span>` : ''}</dd>
@@ -335,6 +340,26 @@ function renderFeeds(drift, wi, actions, o) {
     : '<div class="empty">No agent actions recorded yet.</div>';
 }
 
+const tierName = (o) => ((o.policy && o.policy.tiers.find((t) => t.tier === o.policy_tier)) || {}).name || '';
+function renderTier(o) {
+  const p = o.policy; if (!p) { $('tier-body').innerHTML = '<div class="empty">No configuration loaded.</div>'; return; }
+  const admin = o.role === 'admin', cur = p.tiers.findIndex((t) => t.tier === o.policy_tier);
+  $('tier-body').innerHTML = `
+    <p class="dim" style="font-size:13.5px;margin-bottom:14px">How much wrench may do on its own, from watching to acting. At every tier it can only run commands from its built-in allowlist — it never writes its own.</p>
+    <div class="tiers">${p.tiers.map((t, i) => {
+      const here = i === cur, up = i > cur;
+      let action = '';
+      if (here) action = badge('ok', 'Current');
+      else if (!admin) action = '';
+      else if (p.env_override) action = '<span class="sub">locked by WRENCH_POLICY</span>';
+      else if (up && !p.raise_allowed) action = cmd('wrench policy ' + t.tier);
+      else action = `<button class="btn sm${up ? ' primary' : ''}" data-tier="${esc(t.tier)}" data-up="${up ? 1 : 0}">${up ? 'Raise to' : 'Lower to'} ${esc(t.tier)}</button>`;
+      return `<div class="tier${here ? ' here' : ''}"><div class="head"><b>${esc(t.tier)}</b><span class="tag">${esc(t.name)}</span><span class="when">${action}</span></div>
+        <div class="body">${esc(t.allows)}</div></div>`;
+    }).join('')}</div>
+    ${admin && !p.raise_allowed && cur < p.tiers.length - 1 && !p.env_override ? `<p class="sub" style="margin-top:14px">Giving wrench more reach is done from a terminal on this machine — click a command above to copy it. That way a dashboard sign-in alone can never hand it the ability to act. To allow it from here, set <code>allow_tier_raise = true</code> under <code>[web]</code> in the config.</p>` : ''}
+    ${!admin ? '<p class="sub" style="margin-top:14px">Changing the tier needs the admin role.</p>' : ''}`;
+}
 const WHO = { user: 'from you', agent: 'noted by wrench', learned: 'learned from what you do' };
 const until = (ts) => { if (!ts) return '—'; const d = ts - Date.now() / 1000; return d <= 0 ? 'due now' : 'in ' + dur(d); };
 function renderMemory(m) {
@@ -420,7 +445,7 @@ async function refresh() {
       <dt>Unread notifications</dt><dd class="num">${unread}</dd>
       <dt>Volumes at 90% or more</dt><dd class="num">${hot}</dd>`;
     renderFeeds(drift, wi, actions, o); renderNotifs(notifs);
-    renderMemory(mem); renderJobs(jobs);
+    renderMemory(mem); renderJobs(jobs); renderTier(o);
     firstLoad = false;
   } catch (e) { if (e.message !== 'auth') { $('updated').textContent = 'connection lost — retrying'; $('live').classList.add('stale'); } }
 }
@@ -439,7 +464,7 @@ $('welcome-hide').addEventListener('click', () => { try { localStorage.setItem('
 const jump = (id) => () => { const el = $(id).closest('.card'); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
 const COMMANDS = ['wrench patrol', 'wrench score', 'wrench status', 'wrench security', 'wrench comply', 'wrench backups',
   'wrench certs', 'wrench cve', 'wrench forecast', 'wrench drift', 'wrench fixxer', 'wrench doctor',
-  'wrench install-service', 'wrench memory', 'wrench memory review', 'wrench jobs', 'wrench heartbeat --status', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
+  'wrench install-service', 'wrench policy', 'wrench policy repair', 'wrench memory', 'wrench memory review', 'wrench jobs', 'wrench heartbeat --status', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
 initPalette(() => [
   ...(me.posture ? me.posture.pillars.map((x) => ({ group: 'Pillar', label: x.label, hint: x.score == null ? 'not measured' : String(Math.round(x.score)), run: () => openPillar(x.key) })) : []),
   { group: 'Go to', label: 'Vitals', run: jump('h-vitals') }, { group: 'Go to', label: 'Patrols', run: jump('h-patrol') },
@@ -448,6 +473,7 @@ initPalette(() => [
   { group: 'Go to', label: 'Vulnerabilities & end of life', run: jump('h-intel') }, { group: 'Go to', label: 'Trust & activity', run: jump('h-trust') },
   ...(me.fleet_hub ? [{ group: 'Go to', label: 'Fleet console', hint: 'f', run: () => { location.href = '/fleet'; } }] : []),
   { group: 'Open', label: 'Notifications', hint: 'n', run: () => openDrawer('notifs') },
+  { group: 'Open', label: 'Policy tier — what wrench may do', hint: me.policy_tier || '', run: () => openDrawer('tier') },
   ...(me.role === 'admin' && me.brain && me.brain.usable ? [{ group: 'Open', label: 'Ask wrench', hint: 'c', run: openChat }] : []),
   { group: 'Open', label: 'Keyboard shortcuts', hint: '?', run: () => openDrawer('help') },
   { group: 'View', label: 'Toggle light / dark', hint: 't', run: toggleTheme }, { group: 'View', label: 'Refresh now', hint: 'r', run: refresh },
@@ -462,6 +488,13 @@ const act = async (path, body, errEl) => {
 };
 $('h-memory').closest('.card').addEventListener('click', (e) => { const b = e.target.closest('[data-mem]'); if (b) act('/api/memory', { action: b.dataset.mem, id: Number(b.dataset.id) }); });
 $('h-jobs').closest('.card').addEventListener('click', (e) => { const b = e.target.closest('[data-job]'); if (b) act('/api/jobs', { action: b.dataset.job, name: b.dataset.name }); });
+$('trust').addEventListener('click', (e) => { if (e.target.closest('#tier-open')) openDrawer('tier'); });
+$('tier-body').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-tier]'); if (!b) return;
+  const t = b.dataset.tier;
+  if (b.dataset.up === '1' && !window.confirm(`Raise the policy tier to "${t}"?\n\nwrench will be able to run allowlisted fixes${t === 'autonomous' ? ' with nobody watching' : ' after asking'}.`)) return;
+  await act('/api/policy', { tier: t });
+});
 $('memory-form').addEventListener('submit', async (e) => {
   e.preventDefault(); const text = $('memory-text').value.trim(); if (!text) return;
   if (await act('/api/memory', { action: 'add', text, kind: $('memory-kind').value })) $('memory-text').value = '';
@@ -505,6 +538,7 @@ function route() {
   if (h.startsWith('pillar=')) openPillar(h.slice(7));
   else if (h === 'notifications') openDrawer('notifs');
   else if (h === 'ask') openChat();
+  else if (h === 'tier') openDrawer('tier');
   else if (h === 'commands') $('palette-btn').click();
 }
 addEventListener('hashchange', route);

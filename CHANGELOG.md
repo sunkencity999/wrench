@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **`wrench policy`** — show the four tiers and switch between them
+  (`wrench policy repair`). Until now the tier could only be changed by editing
+  the config file. Raising asks for confirmation; `autonomous` must be typed.
+- **Dashboard policy-tier panel** (Trust & activity → the tier, or ⌘K).
+  Lowering works at once; raising from the web needs
+  `[web] allow_tier_raise = true`, otherwise the panel gives the command.
+- The dashboard now shows the tier currently in the config, not the one read
+  when the server started.
+
 ## 3.1.0 — memory and a heartbeat
 
 wrench now remembers how you run each machine, and does scheduled work on its

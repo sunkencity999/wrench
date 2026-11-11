@@ -281,6 +281,8 @@ cadence_hours = 24
 # allowed_hosts = ["wrench.example.com"]  # extra Host names to answer to
 # tls_cert = "/etc/wrench/tls/fullchain.pem"
 # tls_key  = "/etc/wrench/tls/privkey.pem"
+# allow_tier_raise = false   # true: admins may raise the policy tier from the
+#                            # dashboard (otherwise: `wrench policy <tier>`)
 
 [fleet]
 # Fleet mode — many machines, one console. Default OFF.
@@ -374,6 +376,21 @@ def _toml_value(v) -> str:
     # JSON string escaping is valid TOML, except that JSON writes astral
     # characters as surrogate pairs — keep non-ASCII literal instead
     return _json.dumps(str(v), ensure_ascii=False)
+
+
+def set_policy_tier(tier: str, path: Path | None = None) -> Path:
+    """Persist ``[policy] tier``. Raises ValueError for an unknown tier."""
+    from .policy import TIERS
+    tier = str(tier or "").strip().lower()
+    if tier not in TIERS:
+        raise ValueError(f"unknown tier '{tier}' — one of: {', '.join(TIERS)}")
+    return set_section_values("policy", {"tier": tier}, path)
+
+
+def policy_env_override() -> str:
+    """The tier forced by the WRENCH_POLICY environment variable, or ''. While
+    it is set, the config file's tier is ignored."""
+    return (os.environ.get("WRENCH_POLICY") or "").strip().lower()
 
 
 def set_section_values(section: str, values: dict, path: Path | None = None) -> Path:

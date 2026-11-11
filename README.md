@@ -34,7 +34,7 @@
 - **See** — [status](#wrench-status) · [score](#wrench-score--one-number-with-its-reasons) · [ask](#wrench-ask-) · [patrol](#wrench-patrol) · [drift](#wrench-drift) · [explain](#wrench-explain-service--port--pid--path) · [security](#wrench-security--watch-the-doors) · [dashboard](#wrench-report--wrench-web) · [notifications](#notifications--wrench-taps-you-on-the-shoulder)
 - **Predict** — [cve](#wrench-cve--what-the-internet-already-knows-about-your-box) · [forecast](#wrench-forecast--see-the-incident-coming) · [certs](#wrench-certs--ssltls-lifecycle-from-inventory-to-renewal)
 - **Prove** — [backups](#wrench-backups--untested-backups-dont-exist) · [audit](#wrench-audit--prove-what-happened) · [comply](#wrench-comply--prove-the-box-meets-the-baseline) · [bundle](#wrench-bundle--the-air-gap-evidence-bundle)
-- **Fix** — [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
+- **Fix** — [policy tiers](#policy-tiers--the-leash) · [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
 - **Learn** — [memory](#wrench-remember--wrench-memory--it-learns-how-you-run-this-machine) · [jobs & heartbeat](#wrench-jobs--wrench-heartbeat--work-it-does-without-being-asked)
 - **Scale** — [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
 - **Understand it** — [How a patrol works](#how-a-patrol-works) · [The brain is swappable](#the-brain-is-swappable) · [Policy tiers](#policy-tiers--the-leash) · [Architecture](#architecture) · [Philosophy](#philosophy) · [FAQ](#faq)
@@ -1534,8 +1534,22 @@ Honest read of the numbers:
 
 ## Policy tiers — the leash
 
-An agent that can touch your system needs a leash you control. wrench's whole
-permission model is one line in the config:
+An agent that can touch your system needs a leash you control. wrench starts
+as an advisor; you decide if and when it becomes an actor:
+
+```bash
+wrench policy               # where the leash is now, and what each tier allows
+wrench policy repair        # let it run allowlisted fixes — it asks you each time
+wrench policy autonomous    # let it run them unattended (you type the word to confirm)
+wrench policy suggest       # back to advice only
+```
+
+The same switch is in the dashboard: click the tier under **Trust & activity**
+(or ⌘K → "Policy tier"). Lowering it works from there at once. *Raising* it from
+the dashboard is off unless you set `[web] allow_tier_raise = true` — otherwise
+the panel hands you the command to run in a terminal, so a dashboard sign-in
+alone can never give wrench hands. Every change is in the audit chain.
+
 
 | tier | may look | may suggest | may execute fixes |
 |---|---|---|---|
@@ -1543,6 +1557,13 @@ permission model is one line in the config:
 | `suggest` *(default)* | ✅ | ✅ | ❌ |
 | `repair` | ✅ | ✅ | ✅ allowlisted, **with confirmation** |
 | `autonomous` | ✅ | ✅ | ✅ allowlisted, unattended |
+
+"May look" means the read-only diagnostics on the allowlist (`df`, `ps`,
+`journalctl`, `systemctl status`, …) — wrench runs those at every tier. "May
+execute fixes" means the short repair allowlist below; no tier lets the model
+run a command of its own invention. At `repair`, a scheduled patrol has nobody
+to ask, so it still only suggests — `chat` and `ask` are where it offers a fix
+and waits for your OK.
 
 The execution layer is no-shell (`shlex` → argv — no pipes, no chaining, no
 interpolation). Both allowlists match the **whole** command and spell out

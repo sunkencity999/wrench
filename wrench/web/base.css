@@ -361,3 +361,15 @@ code.cmd.copied { border-color: var(--good); color: var(--good-ink); }
 .item.proposal + .item.proposal { border-top: 1px solid var(--line); }
 details.runs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 details.runs > summary { cursor: pointer; color: var(--text-3); font-size: 12.5px; }
+
+/* policy tier */
+.tierbtn { display: inline-flex; align-items: center; gap: 8px; font: inherit; color: var(--text); cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px 3px 10px; }
+.tierbtn:hover { border-color: var(--accent); }
+.tierbtn span { color: var(--text-3); font-size: 12px; } .tierbtn .chev { font-size: 15px; line-height: 1; }
+.tiers { display: grid; gap: 8px; }
+.tier { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; display: grid; gap: 5px; }
+.tier.here { border-color: var(--accent); background: var(--surface-2); }
+.tier .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tier .head .when { margin-left: auto; }
+.tier .body { font-size: 13.5px; color: var(--text-2, var(--text)); }
