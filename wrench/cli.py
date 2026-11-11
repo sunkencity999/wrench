@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -60,7 +61,7 @@ _HELP_PANELS = {
     "forecast": ARC_PREDICT, "certs": ARC_PREDICT, "cve": ARC_PREDICT,
     "audit": ARC_PROVE, "backups": ARC_PROVE, "comply": ARC_PROVE, "bundle": ARC_PROVE,
     "fixxer": ARC_FIX, "blueprint": ARC_FIX, "approve": ARC_FIX, "approvals": ARC_FIX,
-    "policy": ARC_FIX,
+    "policy": ARC_FIX, "commands": ARC_FIX,
     "remember": ARC_LEARN, "memory": ARC_LEARN, "jobs": ARC_LEARN, "heartbeat": ARC_LEARN,
     "fleet": ARC_SCALE, "web": ARC_SCALE, "metrics": ARC_SCALE,
     "init": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
@@ -162,7 +163,7 @@ def _home() -> None:
         ("see", "status · score · patrol · ask \"…\" · drift · security"),
         ("predict", "forecast · certs · cve"),
         ("prove", "audit verify · backups · comply · bundle"),
-        ("fix", "policy <tier> · fixxer · blueprint \"…\""),
+        ("fix", "policy <tier> · commands · fixxer · blueprint \"…\""),
         ("learn", "remember \"…\" · memory · jobs · heartbeat"),
         ("scale", "web · fleet enroll / join / serve · metrics"),
         ("setup", "init · doctor · install-service"),
@@ -2555,6 +2556,137 @@ def audit_verify(json_out: bool = JSON_OPT):
 app.add_typer(audit_app, name="audit")
 
 
+# ---------------- command catalog ----------------
+
+@app.command("commands")
+def commands_cmd(
+    pack: str = typer.Argument(None, help="a pack name (e.g. network, packages) to list in full"),
+    check: str = typer.Option(None, "--check", "-c", metavar="COMMAND",
+                              help="would the agent be allowed to run this exact command?"),
+    all_os: bool = typer.Option(False, "--all", help="every OS, not just this machine's"),
+    fixes: bool = typer.Option(False, "--fixes", help="only the commands that change things"),
+    markdown: bool = typer.Option(False, "--markdown", hidden=True),
+    json_out: bool = JSON_OPT,
+):
+    """Every command the agent may run — and a way to test one.
+
+    wrench commands                     the packs, and how many commands in each
+    wrench commands network             one pack in full, with examples
+    wrench commands --fixes             only the commands that change the machine
+    wrench commands --check "df -h"     would this exact command be allowed?
+    """
+    from . import commands as _cmds, platforms as _plat, policy as _pol
+    if markdown:
+        sys.stdout.write(_cmds.markdown() + "\n")
+        return
+    cfg, store = _ctx()
+    store.close()
+    tier = cfg.policy_tier if cfg.policy_tier in _pol.TIERS else "suggest"
+    st = _pol.settings(cfg)
+    plat = "all" if all_os else _plat.current_platform()
+
+    if check is not None:
+        look = _pol.check_diag(check, cfg)
+        fix = _pol.check_repair(check, tier, cfg)
+        fix_any = _pol.check_repair(check, "autonomous", cfg)
+        if look.allowed:
+            verdict, detail = "look", f"read-only · {look.label} · runs at every tier"
+        elif fix_any.allowed:
+            how = ("asks you every time, at any tier" if fix_any.always_ask
+                   else "asks you first at repair, runs unattended at autonomous")
+            verdict = "fix"
+            detail = f"changes the machine · {fix_any.label} · {how}"
+            if not fix.allowed:
+                detail += f"\nnot at the current tier ({tier}) — wrench policy repair"
+        else:
+            verdict = "refused"
+            if fix_any.label or look.label or "Allowed forms" not in (look.reason + fix_any.reason):
+                detail = fix_any.reason if fix_any.label else look.reason
+                if detail.startswith("not on the "):
+                    detail = "not in the command catalog — the agent cannot run it"
+            else:
+                forms = list(dict.fromkeys(_cmds.hints(check, "diag") + _cmds.hints(check, "fix")))
+                detail = ("not in the command catalog in this form. Allowed forms of this tool: "
+                          + " · ".join(forms))
+        if json_out:
+            jsonout.emit("commands.check", {
+                "command": check, "verdict": verdict, "tier": tier,
+                "allowed_now": bool(look.allowed or fix.allowed),
+                "needs_confirm": bool(not look.allowed and fix.allowed and fix.needs_confirm),
+                "label": look.label or fix_any.label, "pack": look.pack or fix_any.pack,
+                "reason": detail})
+        else:
+            mark = {"look": "[green]✔ allowed[/green]", "fix": "[yellow]✔ allowed as a fix[/yellow]",
+                    "refused": "[red]✖ refused[/red]"}[verdict]
+            console.print(f"{mark}  [bold]{escape(check)}[/bold]")
+            console.print(Text(detail, style="dim"))
+        if verdict == "refused":
+            raise typer.Exit(1)
+        return
+
+    if pack is not None:
+        pack = pack.strip().lower()
+        if pack not in _cmds.PACKS:
+            console.print(f"[red]✖ unknown pack '{escape(pack)}'[/red] — one of: "
+                          + ", ".join(_cmds.PACKS))
+            raise typer.Exit(2)
+    rows = [c for c in _cmds.entries(None, plat, pack) if not fixes or c.kind == "fix"]
+    if json_out:
+        jsonout.emit("commands", {
+            "os": plat, "tier": tier, "counts": _cmds.counts(plat),
+            "disabled_packs": sorted(st["disabled_packs"]), "sudo": st["sudo"],
+            "allow_diag": st["allow_diag"], "allow_fix": st["allow_fix"],
+            "packs": _cmds.summary(plat, st["disabled_packs"]),
+            "commands": [_cmds.as_dict(c) for c in rows] if (pack or fixes) else []})
+        return
+    if pack or fixes:
+        t = Table(box=box.SIMPLE_HEAD, title_justify="left",
+                  title=f"🔧 {_cmds.PACKS[pack] if pack else 'fixes'} — what the agent may run"
+                        + ("" if all_os else f" on {plat}"))
+        t.add_column("")
+        if not pack:
+            t.add_column("pack", style="dim")
+        t.add_column("what")
+        t.add_column("examples", overflow="fold")
+        for c in rows:
+            kind = ("[green]look[/green]" if c.kind == "diag"
+                    else "[yellow]fix · asks[/yellow]" if c.ask else "[yellow]fix[/yellow]")
+            cells = [kind] + ([c.pack] if not pack else []) + [
+                c.label, Text("\n".join(c.examples), style="bold" if c.kind == "fix" else "")]
+            t.add_row(*cells)
+        console.print(t)
+        if pack and pack in st["disabled_packs"]:
+            console.print(Text("this pack is switched off ([policy] disabled_packs)",
+                               style="yellow"))
+        console.print(Text("examples only — each entry allows a fixed set of flags. Test one: "
+                           'wrench commands --check "<command>"', style="dim"))
+        return
+    n = _cmds.counts(plat)
+    t = Table(box=box.SIMPLE_HEAD, title_justify="left",
+              title=f"🔧 what the agent may run{'' if all_os else ' on ' + plat} — "
+                    f"{n['diag']} kinds of look, {n['fix']} kinds of fix")
+    t.add_column("pack")
+    t.add_column("look", justify="right")
+    t.add_column("fix", justify="right")
+    t.add_column("tools", overflow="fold")
+    for r in _cmds.summary(plat, st["disabled_packs"]):
+        tools_ = list(dict.fromkeys(r["diag_tools"] + r["fix_tools"]))
+        shown = ", ".join(tools_[:12]) + (f", +{len(tools_) - 12}" if len(tools_) > 12 else "")
+        t.add_row(r["pack"], str(r["diag"] or ""), str(r["fix"] or ""),
+                  shown if r["enabled"] else "[yellow]switched off[/yellow]",
+                  style="" if r["enabled"] else "dim")
+    console.print(t)
+    extra = len(st["allow_diag"]) + len(st["allow_fix"])
+    if extra:
+        console.print(Text(f"plus {extra} of your own ([policy] allow_diag / allow_fix)"))
+    can = {"observe": "looks only", "suggest": "looks only, and proposes fixes for you to run",
+           "repair": "looks freely; runs a fix after you say yes",
+           "autonomous": "looks freely; runs routine fixes itself, asks for the rest"}[tier]
+    console.print(Text.assemble(("tier ", "dim"), (tier, "bold"), (f" — {can}", "dim")))
+    console.print(Text('one pack: wrench commands <pack>   ·   test one: wrench commands '
+                       '--check "<command>"   ·   change the tier: wrench policy', style="dim"))
+
+
 # ---------------- policy tier ----------------
 
 @app.command("policy")
@@ -2622,9 +2754,10 @@ def policy_cmd(
             raise typer.Exit(2)
         body = Text.assemble(
             (f"{current} → {tier}\n\n", "bold"), (_pol.TIER_INFO[tier][1], ""),
-            ("\n\nIt can only ever run commands on the built-in allowlist — service start / "
-             "restart / reload and journal trimming — never a command it wrote itself. "
-             "Every action is logged (wrench audit).", "dim"))
+            ("\n\nIt can only ever run commands from its catalog (wrench commands) — never a "
+             "command it wrote itself. Higher-impact fixes, such as installing updates or "
+             "killing a process, ask you every time at any tier. Every action is logged "
+             "(wrench audit).", "dim"))
         console.print(Panel(body, border_style="yellow", title="⚠ give wrench hands",
                             title_align="left"))
         if tier == "autonomous":

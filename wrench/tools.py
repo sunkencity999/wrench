@@ -19,33 +19,84 @@ from .store import Store
 MAX_OUTPUT = 8000  # chars returned to the model per tool call
 
 
+def _env() -> dict:
+    """Children never page, never prompt: nobody is at their stdin."""
+    env = dict(os.environ)
+    env.update({"DEBIAN_FRONTEND": "noninteractive", "PAGER": "cat", "SYSTEMD_PAGER": "",
+                "GIT_PAGER": "cat", "NEEDRESTART_MODE": "l", "HOMEBREW_NO_AUTO_UPDATE": "1",
+                "HOMEBREW_NO_ENV_HINTS": "1"})
+    return env
+
+
 def _clip(text: str, n: int = MAX_OUTPUT) -> str:
     if len(text) <= n:
         return text
     return text[: n // 2] + f"\n...[{len(text) - n} chars clipped]...\n" + text[-n // 2 :]
 
 
-def _exec(argv: list[str], timeout: int = 30) -> str:
+MAX_CAPTURE = 2_000_000  # bytes kept per stream; a chattier command is cut off
+
+
+def _run(argv: list[str], timeout: int) -> tuple[int, str, str]:
+    """Run argv with no shell and no stdin; (exit code, stdout, stderr).
+
+    Output is read with a byte cap: a command that floods (a whole journal, a
+    `find /`) is killed at the cap instead of being buffered into memory.
+    Raises FileNotFoundError / subprocess.TimeoutExpired like subprocess.run.
+    """
+    import threading
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, env=_env())
+    bufs: dict[str, bytearray] = {"out": bytearray(), "err": bytearray()}
+    flooded = threading.Event()
+
+    def pump(stream, key):
+        try:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    return
+                room = MAX_CAPTURE - len(bufs[key])
+                if room > 0:
+                    bufs[key] += chunk[:room]
+                if len(bufs[key]) >= MAX_CAPTURE:
+                    flooded.set()
+                    proc.kill()
+                    return
+        except Exception:  # noqa: BLE001 — a closed pipe ends the read
+            return
+
+    threads = [threading.Thread(target=pump, args=(proc.stdout, "out"), daemon=True),
+               threading.Thread(target=pump, args=(proc.stderr, "err"), daemon=True)]
+    for t in threads:
+        t.start()
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
-        out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr.strip() else "")
-        return _clip(out.strip() or f"(exit {r.returncode}, no output)")
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return f"(timed out after {timeout}s)"
-    except FileNotFoundError:
-        return f"(command not found: {argv[0]})"
-    except Exception as e:  # noqa: BLE001
-        return f"(error: {e.__class__.__name__}: {e})"
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+    out = bufs["out"].decode("utf-8", "replace")
+    err = bufs["err"].decode("utf-8", "replace")
+    if flooded.is_set():
+        out += f"\n...[output cut off at {MAX_CAPTURE // 1_000_000} MB; narrow the command]..."
+    return proc.returncode, out, err
 
 
 def _exec_rc(argv: list[str], timeout: int = 30) -> tuple[int, str]:
-    """Like _exec, but also returns the exit code (124 timeout, 127 missing)."""
+    """Run and return (exit code, clipped output). 124 timeout, 127 missing."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
-        out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr.strip() else "")
-        return r.returncode, _clip(out.strip() or f"(exit {r.returncode}, no output)")
+        code, stdout, stderr = _run(argv, timeout)
+        out = (stdout or "") + (("\n[stderr] " + stderr) if stderr.strip() else "")
+        return code, _clip(out.strip() or f"(exit {code}, no output)")
     except subprocess.TimeoutExpired:
         return 124, f"(timed out after {timeout}s)"
     except FileNotFoundError:
@@ -54,17 +105,51 @@ def _exec_rc(argv: list[str], timeout: int = 30) -> tuple[int, str]:
         return 1, f"(error: {e.__class__.__name__}: {e})"
 
 
+def _exec(argv: list[str], timeout: int = 30) -> str:
+    return _exec_rc(argv, timeout)[1]
+
+
 # ---------------- tool implementations ----------------
 
-def run_diag(store: Store, command: str) -> str:
+def run_diag(store: Store, command: str, cfg=None) -> str:
     """Run an allowlisted read-only diagnostic command."""
-    decision = policy.check_diag(command)
+    decision = policy.check_diag(command, cfg)
     if not decision.allowed:
         store.add_action("any", "diag-denied", command, False, decision.reason)
-        return f"DENIED: {decision.reason}. Stick to read-only diagnostics on the allowlist."
-    out = _exec(policy.split_command(command))
+        return (f"DENIED: {decision.reason} Use a form from the catalog "
+                "(list_commands shows them); do not retry the same command.")
+    out = _exec(policy.split_command(command), timeout=decision.timeout)
     store.add_action("any", f"diag:{decision.label}", command, True, out[:500])
     return out
+
+
+def list_commands(store: Store, pack: str = "", cfg=None) -> str:
+    """What the agent may run on this OS — packs, or one pack's allowed forms."""
+    from . import commands
+    plat = platforms.current_platform()
+    off = policy.settings(cfg)["disabled_packs"]
+    pack = (pack or "").strip().lower()
+    if pack and pack in commands.PACKS:
+        if pack in off:
+            return f"The '{pack}' pack is switched off by the operator."
+        rows = []
+        for c in commands.entries(plat=plat, pack=pack):
+            tag = "look" if c.kind == "diag" else ("FIX, always asks" if c.ask else "FIX")
+            rows.append(f"[{tag}] {c.label}: " + "  |  ".join(c.examples))
+        return _clip(f"{commands.PACKS[pack]} — allowed forms (examples; flags vary):\n"
+                     + "\n".join(rows))
+    rows = ["Packs — call list_commands with a pack name for the allowed forms.",
+            "look = run_diag (any tier); FIX = fix_action (repair / autonomous tier)."]
+    for r in commands.summary(plat, off):
+        if not r["enabled"]:
+            continue
+        rows.append(f"- {r['pack']}: look {', '.join(r['diag_tools'][:14]) or '—'}"
+                    + (f"; FIX {', '.join(r['fix_tools'][:10])}" if r["fix"] else ""))
+    st = policy.settings(cfg)
+    if st["allow_diag"] or st["allow_fix"]:
+        rows.append("- operator-added (exact commands): "
+                    + " · ".join(st["allow_diag"] + [f"FIX {x}" for x in st["allow_fix"]]))
+    return _clip("\n".join(rows))
 
 
 def read_logs(store: Store, unit: str = "", lines: int = 50, priority: str = "") -> str:
@@ -276,7 +361,7 @@ def _window_block(cfg, command: str) -> str | None:
 
 def fix_action(store: Store, command: str, tier: str, confirm_fn=None, cfg=None) -> str:
     """Attempt a mutation. Policy-gated, window-gated, confirm-gated, always logged."""
-    decision = policy.check_repair(command, tier)
+    decision = policy.check_repair(command, tier, cfg)
     if decision.allowed:
         blocked = _window_block(cfg, command)
         if blocked:
@@ -291,6 +376,9 @@ def fix_action(store: Store, command: str, tier: str, confirm_fn=None, cfg=None)
     if decision.needs_confirm:
         if confirm_fn is None:
             store.add_action(tier, "fix-needs-confirm", command, False, "no confirm channel")
+            if getattr(decision, "always_ask", False):
+                return ("DENIED: this kind of fix always needs a person's yes, and nobody is "
+                        "here to give it. Report the exact command for the human to run.")
             return "DENIED: interactive confirmation required but no confirmation channel available."
         approved = bool(confirm_fn(command, decision.label))
         try:      # learn from the answer (code-derived, no model involved)
@@ -302,7 +390,8 @@ def fix_action(store: Store, command: str, tier: str, confirm_fn=None, cfg=None)
         if not approved:
             store.add_action(tier, "fix-declined", command, False, "human declined")
             return "DECLINED: the human said no. Do not retry this action."
-    code, out = _exec_rc(policy.split_command(command), timeout=60)
+    code, out = _exec_rc(policy.split_command(command),
+                         timeout=getattr(decision, "timeout", 60) or 60)
     ok = code == 0
     store.add_action(tier, f"fix:{decision.label}", command, ok,
                      (out if ok else f"FAILED (exit {code}): {out}")[:1000])
@@ -343,10 +432,13 @@ TOOL_SPECS = [
     {
         "name": "run_diag",
         "args": {"command": "string — one read-only diagnostic command (no pipes/chaining)"},
-        "desc": "Run an allowlisted read-only shell diagnostic (systemctl status, journalctl, "
-                "ss, df, du, ps, free, dmesg, docker ps, nvidia-smi, smartctl on Linux; "
-                "launchctl, log show, vm_stat on macOS; tasklist, sc query, schtasks, netstat "
-                "on Windows).",
+        "desc": "Run a read-only diagnostic from the command catalog — services, logs "
+                "(journalctl, tail/grep of log files), processes, CPU/memory/IO, disks and "
+                "filesystems, find/stat, network state, connectivity probes (ping, dig, "
+                "traceroute, nc -z, curl -I), packages and pending updates, containers, "
+                "Kubernetes, firewall and security state, users, hardware, time sync, and "
+                "app config tests (nginx -t, sshd -t). Linux, macOS and Windows tools. A "
+                "'sudo -n ' prefix is accepted. If a form is refused, call list_commands.",
     },
     {
         "name": "read_logs",
@@ -406,10 +498,20 @@ TOOL_SPECS = [
     },
     {"name": "list_tasks", "args": {}, "desc": "List scheduled jobs and when they run next."},
     {
+        "name": "list_commands",
+        "args": {"pack": "string (optional) — a pack name, e.g. 'network' or 'packages'"},
+        "desc": "Show which commands run_diag and fix_action accept on this machine: with "
+                "no argument the packs and their tools, with a pack name the allowed forms.",
+    },
+    {
         "name": "fix_action",
-        "args": {"command": "string — one allowlisted mutation (e.g. 'systemctl restart foo')"},
-        "desc": "Execute a repair. Only works at repair/autonomous policy tiers; "
-                "allowlisted commands only; may require human confirmation.",
+        "args": {"command": "string — one fix from the catalog (e.g. 'systemctl restart foo')"},
+        "desc": "Execute a repair from the command catalog: service / container / compose "
+                "lifecycle, cleanup (journal vacuum, package and build caches), DNS flush, "
+                "clock resync, config reloads, certificate renewal; and — always with the "
+                "human's yes — package updates and installs, kill, enable/disable a service, "
+                "grow a volume, Kubernetes rollout restart. Only at repair/autonomous tiers. "
+                "A 'sudo -n ' prefix is accepted. list_commands shows the allowed forms.",
     },
 ]
 
@@ -418,7 +520,9 @@ def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None,
              cfg=None) -> str:
     try:
         if name == "run_diag":
-            return run_diag(store, str(args.get("command", "")))
+            return run_diag(store, str(args.get("command", "")), cfg)
+        if name == "list_commands":
+            return list_commands(store, str(args.get("pack", "") or ""), cfg)
         if name == "read_logs":
             return read_logs(
                 store, str(args.get("unit", "")), int(args.get("lines", 50) or 50),

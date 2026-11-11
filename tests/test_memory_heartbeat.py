@@ -199,7 +199,7 @@ def test_repeated_approvals_become_a_learned_memory(store, cfg):
 
 
 def test_fix_action_records_the_operators_answer(store, cfg, monkeypatch):
-    monkeypatch.setattr(tools.policy, "check_repair", lambda c, t: type(
+    monkeypatch.setattr(tools.policy, "check_repair", lambda c, t, *a: type(
         "D", (), {"allowed": True, "needs_confirm": True, "label": "restart", "reason": ""})())
     monkeypatch.setattr(tools, "_exec_rc", lambda argv, timeout=60: (0, "ok"))
     monkeypatch.setattr(tools, "_window_block", lambda c, command: None)

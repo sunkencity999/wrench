@@ -63,8 +63,30 @@ policy-tier panel. `WRENCH_POLICY` in the environment overrides the file.
 |---|---|---|---|
 | `observe` | yes | no | no |
 | `suggest` (default) | yes | yes | no |
-| `repair` | yes | yes | allowlisted fixes, each confirmed interactively |
-| `autonomous` | yes | yes | allowlisted fixes, unattended |
+| `repair` | yes | yes | catalog fixes, each confirmed interactively |
+| `autonomous` | yes | yes | routine catalog fixes unattended; higher-impact fixes still ask every time |
+
+What "look" and "execute" cover is a fixed catalog — `wrench commands`, or
+[commands.md](commands.md). Four more keys shape it:
+
+```toml
+[policy]
+sudo = true                               # accept a `sudo -n ` prefix on catalog commands
+disabled_packs = ["net-probe"]            # switch whole packs off (names: wrench commands)
+allow_diag = ["zpool status -v tank"]     # extra read-only commands
+allow_fix  = ["systemctl restart myapp"]  # extra fixes
+```
+
+| key | default | meaning |
+|---|---|---|
+| `sudo` | `true` | The agent may prefix a catalog command with `sudo -n`. `-n` never prompts: it works only where sudoers already allows that command without a password, and fails otherwise. The command behind the prefix is checked exactly as if it had none. Set `false` to refuse the prefix. |
+| `disabled_packs` | `[]` | Packs the agent may not use at all, e.g. `net-probe` (ping, dig, traceroute, `curl -I` — the only diagnostics that send packets off the machine) or `kubernetes`. |
+| `allow_diag` | `[]` | Your own read-only commands. Matched as **exact text** — no patterns, no extra arguments. They run at every tier without confirmation, so list only commands that change nothing. |
+| `allow_fix` | `[]` | Your own fixes, exact text. Treated like a routine catalog fix: confirmed at `repair`, unattended at `autonomous`. |
+
+The forbidden list (`rm`, `dd`, reboot, chaining with `;` `&` `|`, switching
+off a firewall, …) is checked first and cannot be overridden by `allow_diag`
+or `allow_fix`. Test any command with `wrench commands --check "<command>"`.
 
 The dashboard chat always runs as `suggest`, whatever this is set to.
 

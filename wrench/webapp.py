@@ -85,6 +85,20 @@ def _is_local_origin(value: str | None) -> bool:
     return host in ("127.0.0.1", "localhost", "::1")
 
 
+def _catalog_summary(cfg) -> dict:
+    """What the agent may run on this machine, by pack — for the tier panel."""
+    from . import commands, platforms, policy
+    plat = platforms.current_platform()
+    st = policy.settings(cfg)
+    packs = [{"pack": r["pack"], "title": r["title"], "look": r["diag"], "fix": r["fix"],
+              "asks": r["asks"], "enabled": r["enabled"],
+              "tools": list(dict.fromkeys(r["diag_tools"] + r["fix_tools"]))[:10]}
+             for r in commands.summary(plat, st["disabled_packs"])]
+    live = [p for p in packs if p["enabled"]]
+    return {"look": sum(p["look"] for p in live), "fix": sum(p["fix"] for p in live),
+            "custom": len(st["allow_diag"]) + len(st["allow_fix"]), "packs": packs}
+
+
 def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | None = None,
                  fleet_hub: bool = False, os_label: str | None = None, tier_io=None):
     auth = auth or webauth.AuthConfig()
@@ -343,6 +357,7 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 out["policy"] = {
                     "tiers": [{"tier": t, "name": _policy.TIER_INFO[t][0],
                                "allows": _policy.TIER_INFO[t][1]} for t in _policy.TIERS],
+                    "commands": _catalog_summary(cfg),
                     "raise_allowed": tier_raise_allowed(),
                     "env_override": bool(_config.policy_env_override()) and tier_io is not None}
                 out["offline"] = bool(getattr(cfg, "offline", False))

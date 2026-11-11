@@ -345,7 +345,7 @@ function renderTier(o) {
   const p = o.policy; if (!p) { $('tier-body').innerHTML = '<div class="empty">No configuration loaded.</div>'; return; }
   const admin = o.role === 'admin', cur = p.tiers.findIndex((t) => t.tier === o.policy_tier);
   $('tier-body').innerHTML = `
-    <p class="dim" style="font-size:13.5px;margin-bottom:14px">How much wrench may do on its own, from watching to acting. At every tier it can only run commands from its built-in allowlist — it never writes its own.</p>
+    <p class="dim" style="font-size:13.5px;margin-bottom:14px">How much wrench may do on its own, from watching to acting. At every tier it can only run commands from its built-in catalog — it never writes its own.</p>
     <div class="tiers">${p.tiers.map((t, i) => {
       const here = i === cur, up = i > cur;
       let action = '';
@@ -358,7 +358,11 @@ function renderTier(o) {
         <div class="body">${esc(t.allows)}</div></div>`;
     }).join('')}</div>
     ${admin && !p.raise_allowed && cur < p.tiers.length - 1 && !p.env_override ? `<p class="sub" style="margin-top:14px">Giving wrench more reach is done from a terminal on this machine — click a command above to copy it. That way a dashboard sign-in alone can never hand it the ability to act. To allow it from here, set <code>allow_tier_raise = true</code> under <code>[web]</code> in the config.</p>` : ''}
-    ${!admin ? '<p class="sub" style="margin-top:14px">Changing the tier needs the admin role.</p>' : ''}`;
+    ${!admin ? '<p class="sub" style="margin-top:14px">Changing the tier needs the admin role.</p>' : ''}
+    ${p.commands ? `<details class="catalog"><summary><b>What it can run on this machine</b><span class="sub">${p.commands.look} kinds of read-only check · ${p.commands.fix} kinds of fix${p.commands.custom ? ` · ${p.commands.custom} of your own` : ''}</span></summary>
+      <table class="packs"><thead><tr><th>Pack</th><th class="num">Look</th><th class="num">Fix</th><th>Tools</th></tr></thead><tbody>${p.commands.packs.map((k) => `
+        <tr${k.enabled ? '' : ' class="off"'}><td>${esc(k.title)}</td><td class="num">${k.look || ''}</td><td class="num">${k.fix || ''}</td><td class="dim">${k.enabled ? esc(k.tools.join(', ')) : 'switched off'}</td></tr>`).join('')}</tbody></table>
+      <p class="sub">Checks run at every tier. Fixes need <code>repair</code> or <code>autonomous</code>; the higher-impact ones ask every time. Full list and a tester: ${cmd('wrench commands')}</p></details>` : ''}`;
 }
 const WHO = { user: 'from you', agent: 'noted by wrench', learned: 'learned from what you do' };
 const until = (ts) => { if (!ts) return '—'; const d = ts - Date.now() / 1000; return d <= 0 ? 'due now' : 'in ' + dur(d); };
@@ -464,7 +468,7 @@ $('welcome-hide').addEventListener('click', () => { try { localStorage.setItem('
 const jump = (id) => () => { const el = $(id).closest('.card'); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
 const COMMANDS = ['wrench patrol', 'wrench score', 'wrench status', 'wrench security', 'wrench comply', 'wrench backups',
   'wrench certs', 'wrench cve', 'wrench forecast', 'wrench drift', 'wrench fixxer', 'wrench doctor',
-  'wrench install-service', 'wrench policy', 'wrench policy repair', 'wrench memory', 'wrench memory review', 'wrench jobs', 'wrench heartbeat --status', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
+  'wrench install-service', 'wrench policy', 'wrench policy repair', 'wrench commands', 'wrench memory', 'wrench memory review', 'wrench jobs', 'wrench heartbeat --status', 'wrench audit verify', 'wrench fleet enroll', 'wrench bundle'];
 initPalette(() => [
   ...(me.posture ? me.posture.pillars.map((x) => ({ group: 'Pillar', label: x.label, hint: x.score == null ? 'not measured' : String(Math.round(x.score)), run: () => openPillar(x.key) })) : []),
   { group: 'Go to', label: 'Vitals', run: jump('h-vitals') }, { group: 'Go to', label: 'Patrols', run: jump('h-patrol') },

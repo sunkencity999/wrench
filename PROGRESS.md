@@ -1,5 +1,21 @@
 # wrench — build progress
 
+## 2026-11-10 — command catalog
+
+The agent's reach was ~60 diagnostics and 7 fixes. Now `wrench/commands.py`
+holds 243 diagnostic entries and 106 fix entries in 19 packs
+(Linux, macOS, Windows), each with examples that tests run through the policy
+check, plus ~380 commands that must stay refused, about 150 of them from an
+independent review of the first draft (`tests/test_commands.py`).
+
+- `policy.py` reads the catalog; fixes marked `ask` need a yes at every tier.
+- `[policy] sudo / disabled_packs / allow_diag / allow_fix`.
+- `wrench commands` (+ `--check`), agent tool `list_commands`, dashboard panel,
+  `docs/commands.md` (generated; a test fails if it is stale).
+- Not verified: almost none of the new commands were executed for real — the
+  tests prove what is allowed and refused, not that each tool behaves on each
+  OS. Linux and Windows forms were written from documentation.
+
 ## 2026-11-10 — v3.1.0: MEMORY + HEARTBEAT
 
 wrench could watch and act but not learn or take initiative. Now:

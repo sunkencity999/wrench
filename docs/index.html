@@ -301,7 +301,7 @@ footer .wrap { display:flex; gap:24px; flex-wrap:wrap; justify-content:space-bet
   <div class="arc on" id="arc-see"><div><h3>Watch the machine, right now</h3><p>Read-only. None of these can change anything.</p>
     <div class="cmds">
       <div><code>wrench patrol</code><span>Sensors, drift, security, backups, compliance and forecast in one pass — then a report with evidence and exact next commands.</span></div>
-      <div><code>wrench ask "why is the disk filling up?"</code><span>An agent on the model you chose investigates with allowlisted diagnostics and cites what it found.</span></div>
+      <div><code>wrench ask "why is the disk filling up?"</code><span>An agent on the model you chose investigates with 243 kinds of read-only check and cites what it found.</span></div>
       <div><code>wrench drift</code><span>What changed since last time: ports, services, packages, users, scheduled jobs.</span></div>
       <div><code>wrench security</code><span>Sign-in anomalies, sudoers and authorized_keys drift, new or ownerless listeners.</span></div>
     </div></div>
@@ -510,12 +510,12 @@ wrench install-service</pre></div></div>
   <div class="tiers">
     <div class="tier"><code>observe</code><span>Look. Never touch, never even suggest commands.</span></div>
     <div class="tier def"><code>suggest</code><span>Diagnose and propose exact fixes. Never executes.</span></div>
-    <div class="tier"><code>repair</code><span>Allowlisted fixes only, each confirmed by you.</span></div>
-    <div class="tier"><code>autonomous</code><span>Allowlisted chores unattended. Explicit opt-in, fully logged.</span></div>
+    <div class="tier"><code>repair</code><span>Fixes from the command catalog only, each confirmed by you.</span></div>
+    <div class="tier"><code>autonomous</code><span>Routine fixes unattended; updates, kills and the like still ask. Explicit opt-in, fully logged.</span></div>
   </div>
   <table class="trust reveal"><thead><tr><th>Surface</th><th>What stands in the way</th></tr></thead><tbody>
-    <tr><td>The model</td><td>Never authors a command. Diagnostics and repairs are matched whole against allowlists that spell out every flag; fixes come from a hand-written catalog. Tool output is treated as untrusted data.</td></tr>
-    <tr><td>Repairs</td><td>Service lifecycle only. Shutdown and rescue units are never targets; remote access, logging and security agents can be restarted but not stopped. Your maintenance windows apply — and a window that fails to parse blocks changes rather than allowing them.</td></tr>
+    <tr><td>The model</td><td>Never authors a command. It picks from a catalog of 243 kinds of read-only check and 106 kinds of fix across Linux, macOS and Windows — services, logs, disks, network, packages, containers, Kubernetes and more — each matched whole, with every flag spelled out. <code>wrench commands</code> lists them and tests any command; you can add your own or switch packs off. Tool output is treated as untrusted data.</td></tr>
+    <tr><td>Repairs</td><td>Restarts, cleanups and reloads run on your yes. Package updates, killing a process, enabling a service and anything in Kubernetes ask every time, even when wrench is autonomous. Shutdown and rescue units are never targets; remote access, logging and security agents can be restarted but not stopped; reboots, deletions and switching a protection off are refused at every tier. Your maintenance windows apply — and a window that fails to parse blocks changes rather than allowing them.</td></tr>
     <tr><td>Config changes</td><td>Paths confined by real path, a case-insensitive denylist, and no files that root executes. Validated by the daemon's own checker, backed up, rolled back on any failure or interrupt.</td></tr>
     <tr><td>Dashboard</td><td>Loopback answers only to loopback host names. Any wider bind needs a token on every route — admin and read-only roles, same-origin checks, rate-limited sign-in, optional TLS.</td></tr>
     <tr><td>Audit log</td><td>Hash-chained, appended under a lock, with a sealed head that exposes truncation, and an optional MAC keyed outside the data directory.</td></tr>
@@ -600,7 +600,7 @@ wrench web               <span class="cmt"># dashboard at http://127.0.0.1:8787<
 
 <section id="faq"><div class="wrap" style="max-width:860px">
   <p class="eyebrow">Questions</p><h2>Fair things to ask.</h2>
-  <details class="q" open><summary>Will it run commands on my server without asking?</summary><p>No. It starts in <code>suggest</code>, where it cannot change anything. Above that, every action must match an allowlist, and <code>repair</code> confirms each one with you. The only unattended path is one you opt into deliberately, and it is logged.</p></details>
+  <details class="q" open><summary>Will it run commands on my server without asking?</summary><p>No. It starts in <code>suggest</code>, where it cannot change anything. Above that, every action must come from the built-in command catalog (<code>wrench commands</code>), and <code>repair</code> confirms each one with you. Higher-impact fixes, such as installing updates, ask every time at any tier. The only unattended path is one you opt into deliberately, and it is logged.</p></details>
   <details class="q"><summary>Do I need an LLM?</summary><p>No. Patrols, the health score, drift, security, backups, compliance, forecasting, alerts and fleet reporting are all code. A model adds investigation, narrative and chat.</p></details>
   <details class="q"><summary>Does my data leave the machine?</summary><p>Telemetry lives in a local SQLite file. If you choose a cloud model, the context for a question is sent to that provider. Use a local model, or set <code>offline = true</code>, and nothing leaves.</p></details>
   <details class="q"><summary>Can something in a log file plant a false memory?</summary><p>Not on its own. What you tell wrench is used at once. A note the model writes while nobody is watching — during a patrol or a scheduled job — goes to a review queue and is shown to no model until you approve it. What wrench learns from your habits is derived by code, not by a model. Memory never changes the policy tier and never authorises a command.</p></details>

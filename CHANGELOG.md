@@ -4,6 +4,46 @@
 
 ### New
 
+- **A much larger command catalog.** The agent could run about 60 kinds of
+  diagnostic and 7 kinds of fix. It can now run 243 kinds of diagnostic
+  and 106 kinds of fix across Linux, macOS and Windows, in 19
+  packs: services, logs (including tail / grep of log files), processes,
+  performance, storage (SMART, LVM, ZFS, btrfs, RAID), files (`find`, `stat`,
+  checksums), network, connectivity probes, packages, containers, Kubernetes,
+  security, users and directory, hardware, time, and application config
+  checks. The full list is `docs/commands.md`, generated from the code.
+- **Fixes that always ask.** Stopping a service or container, package updates and installs, `kill`, enabling
+  or disabling a service, growing a volume, and every Kubernetes change need
+  a person's yes every time — even at `autonomous`, where they are refused if
+  nobody is present.
+- **`wrench commands`** — list the catalog by pack, or test one command:
+  `wrench commands --check "systemctl restart nginx"`.
+- **`[policy]` knobs** — `sudo` (accept a `sudo -n` prefix; default on),
+  `disabled_packs`, and `allow_diag` / `allow_fix` for your own exact
+  commands.
+- Agent tool `list_commands`, and a refused command now comes back with the
+  allowed forms of that tool, so the model corrects itself instead of
+  retrying.
+- The dashboard's policy-tier panel lists what the agent can run on that
+  machine.
+
+### Changed
+
+- Stop-protection for remote access, logging and security services now also
+  covers `disable`, `service … stop`, `sc config … start= disabled` and
+  PowerShell `Stop-Service`, case-insensitively.
+- The forbidden list gained "never switch a protection off or erase
+  evidence": clearing event logs, deleting shadow copies, `setenforce 0`,
+  disabling a firewall, BitLocker, FileVault, Gatekeeper or auditing.
+- Stopping a service now always asks, at every tier (it used to run unattended
+  at `autonomous`), and `journalctl --vacuum-size` must keep at least 500 MB.
+- `systemctl cat` and a bare `systemctl show` are no longer diagnostics (they
+  print `Environment=` lines); `systemctl show <unit> -p <property>` is.
+- Command output is read with a 2 MB cap instead of being buffered whole.
+- Diagnostics and fixes run with a per-command timeout from the catalog
+  (package upgrades get an hour, not 60 seconds) and a non-interactive
+  environment.
+
 - **`wrench policy`** — show the four tiers and switch between them
   (`wrench policy repair`). Until now the tier could only be changed by editing
   the config file. Raising asks for confirmation; `autonomous` must be typed.

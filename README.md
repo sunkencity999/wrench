@@ -1539,9 +1539,11 @@ as an advisor; you decide if and when it becomes an actor:
 
 ```bash
 wrench policy               # where the leash is now, and what each tier allows
-wrench policy repair        # let it run allowlisted fixes — it asks you each time
-wrench policy autonomous    # let it run them unattended (you type the word to confirm)
+wrench policy repair        # let it run fixes from the catalog — it asks you each time
+wrench policy autonomous    # let it run routine fixes unattended (you type the word to confirm)
 wrench policy suggest       # back to advice only
+wrench commands             # everything it may run, by pack
+wrench commands --check "systemctl restart nginx"   # would this exact command be allowed?
 ```
 
 The same switch is in the dashboard: click the tier under **Trust & activity**
@@ -1555,27 +1557,67 @@ alone can never give wrench hands. Every change is in the audit chain.
 |---|---|---|---|
 | `observe` | ✅ | ❌ | ❌ |
 | `suggest` *(default)* | ✅ | ✅ | ❌ |
-| `repair` | ✅ | ✅ | ✅ allowlisted, **with confirmation** |
-| `autonomous` | ✅ | ✅ | ✅ allowlisted, unattended |
+| `repair` | ✅ | ✅ | ✅ catalog fixes, **with confirmation** |
+| `autonomous` | ✅ | ✅ | ✅ routine catalog fixes unattended; higher-impact ones still ask |
 
-"May look" means the read-only diagnostics on the allowlist (`df`, `ps`,
-`journalctl`, `systemctl status`, …) — wrench runs those at every tier. "May
-execute fixes" means the short repair allowlist below; no tier lets the model
-run a command of its own invention. At `repair`, a scheduled patrol has nobody
-to ask, so it still only suggests — `chat` and `ask` are where it offers a fix
-and waits for your OK.
+"May look" means the read-only diagnostics in the command catalog — wrench
+runs those at every tier. "May execute fixes" means the catalog's fixes; no
+tier lets the model run a command of its own invention. At `repair`, a
+scheduled patrol has nobody to ask, so it still only suggests — `chat` and
+`ask` are where it offers a fix and waits for your OK.
+
+### What the agent can run
+
+The catalog holds **243 kinds of read-only diagnostic and 106 kinds of
+fix** across Linux, macOS and Windows, in 19 packs. `wrench commands`
+lists them for this machine; [docs/commands.md](docs/commands.md) has all of them.
+
+| Pack | Looks at | Can fix |
+|---|---|---|
+| Services | systemd, launchd, Windows services, scheduled tasks | start / restart / reload; stop, enable or disable at boot *(asks)* |
+| Logs | journald, unified log, event log, tail / grep of log files | — |
+| Processes | ps, top, pgrep, open files, cgroups | lower priority; kill *(asks)* |
+| CPU, memory, disks | vmstat, iostat, sar, SMART, LVM, ZFS, btrfs, RAID | drop caches, trim, SMART self-test; grow a volume *(asks)* |
+| Files | ls, stat, find, checksums, a closed list of `/etc` files | — |
+| Network | interfaces, routes, sockets, DNS, firewall rules | flush DNS, reload firewall; bring an interface up *(asks)* |
+| Connectivity probes | ping, dig, traceroute, `nc -z`, `curl -I` | — |
+| Packages | apt, dnf, zypper, pacman, brew, winget, pip, npm | refresh metadata, clean caches; install updates or a package *(asks)* |
+| Containers, Kubernetes | docker / podman, compose, kubectl, helm | restart containers; prune, pull, rollout restart, delete a pod *(asks)* |
+| Security | SELinux / AppArmor, audit, BitLocker, FileVault, Defender, certificates | renew certificates, refresh signatures; block an address, unlock an account *(asks)* |
+| Users, hardware, time, apps | sessions, AD, sensors, IPMI, chrony, nginx / postfix / postgres checks | resync the clock, graceful reloads |
+
+Three levels of trust:
+
+- **Look** — read-only, any tier, no confirmation.
+- **Fix** — after your yes at `repair`; unattended at `autonomous`.
+- **Fix that always asks** — stopping anything, package updates, killing a
+  process, enabling a service, anything in Kubernetes: a person says yes every time, even at
+  `autonomous`. With nobody there, it is refused and reported instead.
+
+Shape the catalog under `[policy]` in the config:
+
+```toml
+[policy]
+sudo = true                               # accept a `sudo -n ` prefix (never prompts)
+disabled_packs = ["net-probe"]            # switch whole packs off
+allow_diag = ["zpool status -v tank"]     # your own read-only commands, exact text
+allow_fix  = ["systemctl restart myapp"]  # your own fixes, exact text
+```
 
 The execution layer is no-shell (`shlex` → argv — no pipes, no chaining, no
-interpolation). Both allowlists match the **whole** command and spell out
-every permitted flag, so nothing can ride in behind an allowed prefix
+interpolation). Every catalog entry matches the **whole** command and spells
+out every permitted flag, so nothing can ride in behind an allowed prefix
 (`journalctl --vacuum-time`, `ss -D /etc/shadow`, `ps e` are all refused as
-"diagnostics"). The repair allowlist is deliberately tiny — service lifecycle
-and journal vacuum — and even there shutdown/rescue/debug units are never
-targets, and remote access, logging and security agents can be restarted but
-not stopped. A forbidden-pattern list hard-blocks the scary stuff (`rm`, `dd`,
-`mkfs`, `format C:`, `diskpart`, `csrutil`, …) at **every** tier, the agent's
-own fixes obey your maintenance windows, and every action — allowed, denied,
-declined, or failed — is logged and shown in the dashboard.
+"diagnostics"). Diagnostics never print where secrets live — process
+environments, `docker inspect` environment, Kubernetes secrets or
+`-o yaml`. Shutdown/rescue/debug units are never targets, and remote access,
+logging and security agents can be restarted but not stopped or disabled. A
+forbidden-pattern list hard-blocks the scary stuff (`rm`, `dd`, `mkfs`,
+`format C:`, `diskpart`, reboot, clearing event logs, switching off a
+firewall or disk encryption, …) at **every** tier — your own `allow_fix`
+entries cannot override it. The agent's own fixes obey your maintenance
+windows, and every action — allowed, denied, declined, or failed — is logged
+and shown in the dashboard.
 
 ## Architecture
 

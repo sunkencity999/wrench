@@ -211,6 +211,11 @@ deep_model = "{deep_model}"
 # repair    — may run allowlisted fixes after interactive confirmation
 # autonomous — may run allowlisted fixes unattended (logged, bounded)
 tier = "suggest"
+# What it may run is a fixed catalog: `wrench commands`. To shape it:
+# sudo = true                       # accept a `sudo -n ` prefix (never prompts)
+# disabled_packs = ["net-probe"]    # switch whole packs off
+# allow_diag = ["zpool status -v"]  # your own read-only commands, exact text
+# allow_fix = ["systemctl restart myapp"]   # your own fixes, exact text
 
 [general]
 patrol_interval_min = {interval}

@@ -373,3 +373,14 @@ details.runs > summary { cursor: pointer; color: var(--text-3); font-size: 12.5p
 .tier .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .tier .head .when { margin-left: auto; }
 .tier .body { font-size: 13.5px; color: var(--text-2, var(--text)); }
+.catalog { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.catalog summary { cursor: pointer; display: grid; gap: 2px; list-style-position: outside; }
+.catalog summary { color: var(--text); }
+.catalog summary .sub { display: block; color: var(--text-3); }
+.catalog .packs { margin: 12px 0 10px; }
+.catalog .packs td, .catalog .packs th { padding: 5px 8px 5px 0; vertical-align: top; }
+.catalog .packs .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.catalog .packs tr.off td { opacity: .55; }
+.catalog .packs tbody tr { cursor: default; }
+.catalog .packs tbody tr:hover { background: none; }
+.catalog .packs th { position: static; }
