@@ -1,5 +1,16 @@
 # wrench — build progress
 
+## 2026-11-11 — dashboard password
+
+`wrench password` and a step in `wrench init` put a password on the web
+surfaces. `webauth.py` hashes with stdlib scrypt (PBKDF2 where OpenSSL lacks
+it) into `<data dir>/web_password`; `AuthConfig` re-reads the file when it
+changes and mixes the hash into the session key, so a change needs no restart
+and signs everyone out. A network bind with no credentials left locks rather
+than opens. Tests: `tests/test_web_password.py`. Verified live on macOS
+against a scratch install; the interactive prompt was exercised only through
+the test runner.
+
 ## 2026-11-10 — command catalog
 
 The agent's reach was ~60 diagnostics and 7 fixes. Now `wrench/commands.py`

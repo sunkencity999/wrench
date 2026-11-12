@@ -8,10 +8,11 @@
   <form class="card" id="f" autocomplete="off">
     <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z"/></svg>wrench</span>
     <div><h1>Sign in to <span id="host">this machine</span></h1>
-      <p class="dim" style="margin-top:6px;font-size:13px">Paste the access token. It was printed when the server
-        started, or is set as <code>[web] auth_token</code> in the config.</p></div>
-    <label><span class="sr">access token</span>
-      <input class="input" id="token" type="password" placeholder="access token" autofocus required></label>
+      <p class="dim" style="margin-top:6px;font-size:13px">Enter the dashboard password, or paste an access token. Forgot the password?
+        Run <code>wrench password</code> on this machine to set a new one.</p></div>
+    <label><span class="sr">password or access token</span>
+      <input class="input" id="token" type="password" placeholder="password or access token"
+        autocomplete="current-password" autofocus required></label>
     <div class="err" id="err" role="alert"></div>
     <button class="btn primary" type="submit">Sign in</button>
   </form>
@@ -24,7 +25,7 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   try {
     const r = await fetch('/login', { method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: document.getElementById('token').value }) });
+      body: JSON.stringify({ password: document.getElementById('token').value }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { err.textContent = d.error || 'Sign-in failed.'; return; }
     // only ever land on this origin: resolve `next` and compare origins, so

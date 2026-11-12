@@ -141,15 +141,34 @@ patrol. In offline mode, sinks pointing at public hosts are skipped.
                              # (lowering it is always allowed; default is terminal-only)
 ```
 
+### The dashboard password
+
+```bash
+wrench password             # set or change it (asks twice, never echoes)
+wrench password --status    # exit 0 when one is set, 1 when not
+wrench password --clear     # remove it
+wrench password --stdin     # read it from a pipe
+```
+
+`wrench init` asks for one in a terminal. For an unattended install, export
+`WRENCH_WEB_PASSWORD` before `wrench init`; it is read once, hashed, and not
+needed again. The password is not a config key: only a salted scrypt hash is
+kept, at `<data dir>/web_password`, owner-only. The rule is length: 8 to 256
+characters. A running server notices a change at once, and a changed or
+removed password signs out every browser. The password signs in as admin; for
+a read-only login use `viewer_token`. Every set, change and removal is sealed
+in the audit chain (never the password itself).
+
 | situation | behaviour |
 |---|---|
-| bound to loopback, no token set | no sign-in; the server answers only to loopback host names |
-| bound anywhere else | every page and API call needs a credential. With no token set, one is generated, stored at `<data dir>/web_token` (owner-only), and printed at startup |
+| a password is set | sign-in is required on every bind, loopback included |
+| bound to loopback, no password, no token set | no sign-in; the server answers only to loopback host names |
+| bound anywhere else | every page and API call needs a credential. With no password and no token set, a token is generated, stored at `<data dir>/web_token` (owner-only), and printed at startup |
 | a token is set | sign-in is required even on loopback |
 
-Browsers sign in at `/login` and receive a signed, `HttpOnly`,
+Browsers sign in at `/login` with the password or a token and receive a signed, `HttpOnly`,
 `SameSite=Strict` session cookie valid for 12 hours. Scripts send
-`Authorization: Bearer <token>`. `/healthz` is the only route with no
+`Authorization: Bearer <token>` (a token, never the password). `/healthz` is the only route with no
 credential, and it carries no data.
 
 ## `[fleet]`

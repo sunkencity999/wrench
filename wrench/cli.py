@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
 import time
@@ -63,7 +64,7 @@ _HELP_PANELS = {
     "fixxer": ARC_FIX, "blueprint": ARC_FIX, "approve": ARC_FIX, "approvals": ARC_FIX,
     "policy": ARC_FIX, "commands": ARC_FIX,
     "remember": ARC_LEARN, "memory": ARC_LEARN, "jobs": ARC_LEARN, "heartbeat": ARC_LEARN,
-    "fleet": ARC_SCALE, "web": ARC_SCALE, "metrics": ARC_SCALE,
+    "fleet": ARC_SCALE, "web": ARC_SCALE, "password": ARC_SCALE, "metrics": ARC_SCALE,
     "init": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
 }
 
@@ -616,14 +617,22 @@ def _serve_banner(httpd, bind: str, port: int, title: str, lines: list[str]) -> 
             body.append(
                 f"[yellow]access token[/yellow] (generated, stored owner-only in the data dir):\n"
                 f"[bold bright_green]{auth.admin_token}[/bold bright_green]")
-        else:
+        elif auth.has_password:
+            body.append("[dim]access control: on — sign in with the dashboard password "
+                        "(change it: [bold]wrench password[/bold])"
+                        + (", or an access token" if auth.admin_token else "") + "[/dim]")
+        elif auth.admin_token or auth.viewer_token:
             body.append("[dim]access control: on — sign in with the token from "
                         "[bold][web] auth_token[/bold] / WRENCH_WEB_TOKEN[/dim]")
+        else:
+            body.append("[yellow]access control: on, but nothing can sign in[/yellow] — "
+                        "set a password with [bold]wrench password[/bold]")
         if auth.viewer_token:
             body.append("[dim]a read-only viewer token is also configured[/dim]")
     else:
         body.append("[dim]access: this machine only (loopback), no sign-in. "
-                    "Binding wider turns sign-in on automatically.[/dim]")
+                    "[bold]wrench password[/bold] puts a password on it; binding wider "
+                    "turns sign-in on automatically.[/dim]")
     if not auth.loopback and httpd.scheme == "http":
         body.append("[yellow]serving plain HTTP on a network address[/yellow] — add "
                     "[bold]--tls-cert/--tls-key[/bold] (or a TLS reverse proxy) so tokens "
@@ -642,8 +651,9 @@ def web(
     """Serve the dashboard: health score, posture, vitals, patrols — and the
     fleet console when this box is a hub.
 
-    Loopback needs no sign-in. Any wider bind requires a token (one is
-    generated if you have not set [web] auth_token)."""
+    With a password set (`wrench password`) every visit signs in. Without
+    one, loopback needs no sign-in and any wider bind requires a token (one
+    is generated if you have not set [web] auth_token)."""
     from .webapp import serve
 
     cfg, store = _ctx()
@@ -960,7 +970,6 @@ def _custom_guided_setup(interactive: bool,
     LM Studio / LiteLLM path. Returns (base_url, model, complete). complete=False
     means the caller must NOT print the success greeting. In non-TTY mode with
     no URL supplied, returns (None, model, False) — never hangs."""
-    import os
     from . import localsetup
     base_url = (os.environ.get("WRENCH_BASE_URL") or "").strip().rstrip("/")
     if interactive and not base_url:
@@ -1054,6 +1063,148 @@ def _azure_guided_setup(interactive: bool,
     return endpoint.rstrip("/"), api_version, api_key, model
 
 
+def _read_new_password() -> str | None:
+    """Ask twice for a new dashboard password. None when the operator gives up."""
+    from . import webauth
+    for _ in range(3):
+        pw = typer.prompt("new dashboard password", hide_input=True, default="",
+                          show_default=False)
+        problem = webauth.password_problem(pw)
+        if problem:
+            console.print(f"[yellow]{problem}[/yellow]")
+            continue
+        if typer.prompt("again, to confirm", hide_input=True, default="",
+                        show_default=False) != pw:
+            console.print("[yellow]those did not match[/yellow]")
+            continue
+        return pw
+    return None
+
+
+def _store_web_password(cfg, password: str, source: str) -> bool:
+    """Hash and store the dashboard password, and seal the change in the audit
+    chain. The password itself is never written, logged or printed."""
+    from . import audit, webauth
+    changed = webauth.password_is_set(cfg.data_dir)
+    try:
+        webauth.set_password(cfg.data_dir, password)
+    except ValueError as e:
+        console.print(f"[red]password not set — {e}[/red]")
+        return False
+    except OSError as e:
+        console.print(f"[red]password not set — could not write to {cfg.data_dir}: {e}[/red]")
+        return False
+    audit.append(cfg.data_dir, "web.password.changed" if changed else "web.password.set",
+                 {"source": source}, actor="cli")
+    return True
+
+
+def _init_web_password(cfg, interactive: bool) -> str:
+    """The dashboard-password step of `wrench init`. Returns one line for the
+    closing panel."""
+    from . import webauth
+    if webauth.password_is_set(cfg.data_dir):
+        return "password set ✔ (change it: wrench password)"
+    env_pw = os.environ.get("WRENCH_WEB_PASSWORD", "")
+    if env_pw:
+        if _store_web_password(cfg, env_pw, "init-env"):
+            console.print("[green]✔ dashboard password set[/green] from WRENCH_WEB_PASSWORD "
+                          "[dim]— only a salted hash is stored; unset the variable now[/dim]")
+            return "password set ✔ (change it: wrench password)"
+        return "[yellow]no password — WRENCH_WEB_PASSWORD was not usable[/yellow]"
+    if interactive:
+        try:
+            pw = _read_new_password() if typer.confirm(
+                "Put a password on the web dashboard? (recommended if anyone else can "
+                "reach this machine)", default=True) else None
+        except (typer.Abort, EOFError):
+            pw = None          # Ctrl-C here skips the question, it does not undo the setup
+            console.print()
+        if pw and _store_web_password(cfg, pw, "init"):
+            console.print("[green]✔ dashboard password set[/green] "
+                          "[dim]— only a salted hash is stored[/dim]")
+            return "password set ✔ (change it: wrench password)"
+    return "no password — open on this machine only (set one: wrench password)"
+
+
+@app.command("password")
+def password_cmd(
+    clear: bool = typer.Option(False, "--clear", help="remove the password"),
+    status: bool = typer.Option(False, "--status", help="only say whether one is set"),
+    stdin: bool = typer.Option(False, "--stdin",
+                               help="read the new password from standard input (for scripts)"),
+    json_out: bool = JSON_OPT,
+):
+    """Set, change or remove the password on the web dashboard.
+
+    \b
+    wrench password             set one, or change it (asks twice, never echoes)
+    wrench password --status    is one set?
+    wrench password --clear     remove it
+    wrench password --stdin     read it from a pipe, for config management
+
+    With a password set, every visit to the dashboard or the fleet console
+    signs in — on this machine too. Changing or removing it takes effect on a
+    running server straight away and signs out every browser. Only a salted
+    scrypt hash is kept, owner-only, in the data dir.
+
+    Forgot it? Just run this again: being able to run wrench as its owner on
+    this machine is the proof of who you are."""
+    from . import audit, webauth
+    cfg = load_config()
+    was_set = webauth.password_is_set(cfg.data_dir)
+
+    def done(state: str, changed: bool) -> None:
+        if json_out:
+            jsonout.emit("password", {"set": state == "set", "changed": changed})
+
+    if status:
+        if json_out:
+            done("set" if was_set else "none", False)
+        elif was_set:
+            console.print("[green]✔[/green] the dashboard has a password "
+                          f"[dim]({webauth.password_path(cfg.data_dir)})[/dim]")
+        else:
+            console.print("the dashboard has [bold]no password[/bold] "
+                          "[dim]— set one: wrench password[/dim]")
+        raise typer.Exit(0 if was_set else 1)
+
+    if clear:
+        if stdin:
+            console.print("[red]--clear and --stdin do not go together[/red]")
+            raise typer.Exit(2)
+        if webauth.clear_password(cfg.data_dir):
+            audit.append(cfg.data_dir, "web.password.cleared", {}, actor="cli")
+        done("none", was_set)
+        if not json_out:
+            console.print("[green]✔[/green] dashboard password removed"
+                          if was_set else "there was no dashboard password")
+            console.print(Text("on this machine the dashboard is open again; on a network "
+                               "address it needs an access token ([web] auth_token).",
+                               style="dim"))
+        return
+
+    if stdin:
+        pw = sys.stdin.readline().rstrip("\r\n")
+    elif _isatty():
+        pw = _read_new_password()
+        if pw is None:
+            console.print("[red]password not changed[/red]")
+            raise typer.Exit(1)
+    else:
+        console.print("[red]no terminal to ask in[/red] — pipe the password in: "
+                      "[bold]wrench password --stdin[/bold]")
+        raise typer.Exit(2)
+    if not _store_web_password(cfg, pw, "stdin" if stdin else "cli"):
+        raise typer.Exit(1)
+    done("set", True)
+    if not json_out:
+        console.print(f"[green]✔[/green] dashboard password {'changed' if was_set else 'set'}")
+        console.print(Text("a running dashboard picks it up now"
+                           + (" and every browser is signed out" if was_set else "")
+                           + " · sign in at the address `wrench web` prints", style="dim"))
+
+
 @app.command()
 def init(
     provider: str = typer.Option(None, "--provider", "-p",
@@ -1074,7 +1225,10 @@ def init(
                                   "(consents to ollama install + model pull)"),
     force: bool = typer.Option(False, "--force", help="overwrite existing config"),
 ):
-    """Set up wrench: pick a provider (interactive menu), write config, record baselines."""
+    """Set up wrench: pick a provider (interactive menu), write config, record baselines.
+
+    In a terminal it also offers to put a password on the web dashboard. For
+    an unattended install, export WRENCH_WEB_PASSWORD before running it."""
     interactive = _isatty() and not yes
     model = model or azure_deployment
     if provider is None:
@@ -1130,6 +1284,8 @@ def init(
         sensors.sample_all(store)
         driftscan.scan(store)
 
+    web_note = _init_web_password(cfg, interactive)
+
     if not setup_complete:
         console.print(Panel(
             f"[yellow]⚠ setup is NOT complete:[/yellow] {incomplete_reason}\n"
@@ -1170,6 +1326,7 @@ def init(
         f"provider: [bold]{cfg.provider}[/bold] · model: [bold]{cfg.model}[/bold] · "
         f"policy: [bold]{cfg.policy_tier}[/bold]\n"
         f"data: {cfg.db_path}{smoke_note}\n"
+        f"dashboard: {web_note}\n"
         + ("api key: none needed — it's your hardware\n"
            if cfg.provider in ("ollama", "lmstudio", "litellm")
            else "api key: configured ✔\n" if cfg.api_key

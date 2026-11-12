@@ -277,9 +277,11 @@ cadence_hours = 24
 # propose_routines = true        # offer to schedule what you do by hand each day
 
 [web]
-# The dashboard (`wrench web`). On 127.0.0.1 it needs no sign-in. On any other
-# bind address every page and API call needs a token — if you set none, one is
-# generated and stored owner-only in the data dir.
+# The dashboard (`wrench web`). Put a password on it with `wrench password`
+# (it is not a config key: only a salted hash is kept, in the data dir). With
+# no password, 127.0.0.1 needs no sign-in, and any other bind address needs a
+# token on every page and API call — if you set none, one is generated and
+# stored owner-only in the data dir.
 # bind         = "127.0.0.1"
 # auth_token   = "<long random string>"   # full access (or env WRENCH_WEB_TOKEN)
 # viewer_token = "<another>"              # read-only: no chat, no changes

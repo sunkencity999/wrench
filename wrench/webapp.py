@@ -6,7 +6,7 @@ stdlib ``http.server`` only: no framework, no build step, no CDN. Pages live in
 Pages
   /                     this machine: health score, posture, vitals, patrols
   /fleet                fleet console (when this install is a hub)
-  /login                token sign-in (only when access control is on)
+  /login                password or token sign-in (only when access control is on)
 
 API (JSON; every route needs a credential when access control is on)
   GET  /healthz                   liveness for load balancers (no auth, no data)
@@ -448,11 +448,11 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
             payload = self._json_body()
             if payload is None:
                 return None
-            role = auth.role_for_token(str(payload.get("token", "")))
+            role = auth.role_for_secret(str(payload.get("password") or payload.get("token") or ""))
             if role is None:
                 limiter.fail(client)
                 self._audit("web.login.failed", {"client": client})
-                return self._json({"error": "that token is not valid"}, 401)
+                return self._json({"error": "that password or token is not valid"}, 401)
             self._audit("web.login", {"client": client, "role": role})
             return self._json({"ok": True, "role": role},
                               extra=[("Set-Cookie", auth.session_cookie(role))])

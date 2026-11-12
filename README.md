@@ -183,7 +183,7 @@ irm https://raw.githubusercontent.com/sunkencity999/wrench/main/scripts/install.
 Then, on any OS:
 
 ```bash
-wrench init                 # pick a brain (local or API), write config, record baselines
+wrench init                 # pick a brain (local or API), set a dashboard password, record baselines
 # bringing an API mind? export its key — OPENAI_API_KEY / ANTHROPIC_API_KEY /
 # META_API_KEY / AZURE_OPENAI_API_KEY — or none at all for Ollama / LM Studio
 wrench doctor               # verify sensors, platform capabilities, provider liveness
@@ -510,14 +510,30 @@ Keyboard shortcuts: <kbd>⌘K</kbd> or <kbd>/</kbd> command palette ·
 <kbd>c</kbd> ask · <kbd>n</kbd> notifications · <kbd>r</kbd> refresh ·
 <kbd>t</kbd> theme · <kbd>f</kbd> fleet · <kbd>?</kbd> help · <kbd>Esc</kbd> close.
 
-**Who can see it.** On `127.0.0.1` (the default) there is no sign-in, and the
+**Who can see it.** Put a password on it. `wrench init` offers to, and
+`wrench password` sets, changes or removes one at any time:
+
+```bash
+wrench password             # set or change it (asks twice, never echoes)
+wrench password --status    # is one set?
+wrench password --clear     # remove it
+echo "$PW" | wrench password --stdin    # from a secret store, for scripted installs
+```
+
+With a password set, every visit to the dashboard or the fleet console signs
+in — on this machine too. A change reaches a running server straight away and
+signs out every browser. Only a salted scrypt hash is stored, owner-only, in
+the data dir. Forgot it? Run `wrench password` again.
+
+Without a password, on `127.0.0.1` (the default) there is no sign-in, and the
 server answers only to loopback host names, so a web page cannot reach it
 through DNS rebinding. Bind it anywhere else and every page and API call needs
 a credential — you cannot accidentally publish a machine's telemetry:
 
 ```bash
 wrench web --bind 0.0.0.0 --tls-cert fullchain.pem --tls-key privkey.pem
-# prints the access token (generated once, stored owner-only) unless you set one
+# without a password or a token of your own, prints an access token
+# (generated once, stored owner-only)
 ```
 
 ```toml
@@ -526,8 +542,9 @@ auth_token   = "…"   # full access   (or env WRENCH_WEB_TOKEN)
 viewer_token = "…"   # read-only: the wall display — no chat, no changes
 ```
 
-Browsers sign in once and get a signed, HttpOnly, SameSite=Strict session;
-scripts and Prometheus send `Authorization: Bearer <token>`. `/healthz` is the
+Browsers sign in once, with the password or a token, and get a signed,
+HttpOnly, SameSite=Strict session; scripts and Prometheus send
+`Authorization: Bearer <token>` (the password is for people, not for headers). `/healthz` is the
 only unauthenticated route and carries no data. Details: [SECURITY.md](SECURITY.md).
 
 

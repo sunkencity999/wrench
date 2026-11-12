@@ -383,7 +383,7 @@ apply which? [a]ll / [n]one / numbers ▸ <span class="c-cyan">1,2</span>
   <div class="arc" id="arc-scale"><div><h3>Many machines, your stack</h3><p>Run it everywhere, and plug it into what you already operate.</p>
     <div class="cmds">
       <div><code>wrench fleet enroll</code> → <code>wrench fleet join</code><span>One command on the hub, one line on each machine. Signed reports, replay protection, revocable keys.</span></div>
-      <div><code>wrench web</code><span>The dashboard and fleet console. Sign-in, roles and TLS the moment you bind beyond localhost.</span></div>
+      <div><code>wrench web</code><span>The dashboard and fleet console, behind a password you set at install (<code>wrench password</code> changes it). Roles and TLS for anything beyond localhost.</span></div>
       <div><code>--json</code> · <code>/metrics</code> · syslog<span>Stable JSON on every command, a Prometheus exporter, RFC 5424 and JSON-lines sinks for your SIEM.</span></div>
       <div><code>offline = true</code><span>A declared zero-egress mode for networks that have never seen the internet.</span></div>
     </div></div>
@@ -517,7 +517,7 @@ wrench install-service</pre></div></div>
     <tr><td>The model</td><td>Never authors a command. It picks from a catalog of 243 kinds of read-only check and 106 kinds of fix across Linux, macOS and Windows — services, logs, disks, network, packages, containers, Kubernetes and more — each matched whole, with every flag spelled out. <code>wrench commands</code> lists them and tests any command; you can add your own or switch packs off. Tool output is treated as untrusted data.</td></tr>
     <tr><td>Repairs</td><td>Restarts, cleanups and reloads run on your yes. Package updates, killing a process, enabling a service and anything in Kubernetes ask every time, even when wrench is autonomous. Shutdown and rescue units are never targets; remote access, logging and security agents can be restarted but not stopped; reboots, deletions and switching a protection off are refused at every tier. Your maintenance windows apply — and a window that fails to parse blocks changes rather than allowing them.</td></tr>
     <tr><td>Config changes</td><td>Paths confined by real path, a case-insensitive denylist, and no files that root executes. Validated by the daemon's own checker, backed up, rolled back on any failure or interrupt.</td></tr>
-    <tr><td>Dashboard</td><td>Loopback answers only to loopback host names. Any wider bind needs a token on every route — admin and read-only roles, same-origin checks, rate-limited sign-in, optional TLS.</td></tr>
+    <tr><td>Dashboard</td><td>Set a password at install or with <code>wrench password</code> and every visit signs in; only a salted hash is stored. Without one, loopback answers only to loopback host names, and any wider bind needs a credential on every route — admin and read-only roles, same-origin checks, rate-limited sign-in, optional TLS.</td></tr>
     <tr><td>Audit log</td><td>Hash-chained, appended under a lock, with a sealed head that exposes truncation, and an optional MAC keyed outside the data directory.</td></tr>
     <tr><td>Data at rest</td><td>Owner-only data directory, database, config and tokens. API keys and fleet tokens never reach the database or the logs.</td></tr>
   </tbody></table>

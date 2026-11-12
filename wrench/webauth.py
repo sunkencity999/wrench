@@ -15,6 +15,12 @@ Model
   (scrapers, curl) or a signed session cookie (browsers, set by the login
   page). With no token configured for a non-loopback bind, one is generated
   and stored owner-only in the data dir, and printed at startup.
+* **A password.** `wrench password` (or the prompt in `wrench init`) sets a
+  dashboard password. Once one is set, sign-in is required on *every* bind,
+  loopback included, and the password signs in as ``admin``. Only a salted
+  scrypt hash is kept, owner-only, at ``<data_dir>/web_password``; the file is
+  re-read when it changes, so setting, changing or clearing the password takes
+  effect on a running server and signs out every browser session.
 * **Two roles.** ``admin`` may read everything and act (chat with the agent,
   mark notifications read, retire fleet nodes). ``viewer`` is read-only — the
   wall display, the manager's bookmark.
@@ -29,6 +35,7 @@ per client address.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -42,6 +49,13 @@ from pathlib import Path
 COOKIE_NAME = "wrench_session"
 SESSION_TTL_S = 12 * 3600
 TOKEN_FILE = "web_token"
+PASSWORD_FILE = "web_password"
+PASSWORD_MIN = 8
+PASSWORD_MAX = 256
+# scrypt cost: 64 MiB, roughly 0.1-0.2 s per guess on current hardware
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 16, 8, 1
+_PBKDF2_ITERS = 600_000          # fallback where OpenSSL was built without scrypt
+_verify_lock = threading.Lock()  # one 64 MiB derivation at a time
 ROLES = ("admin", "viewer")
 _LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -65,6 +79,102 @@ def host_header_name(host_header: str) -> str:
     return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
 
 
+# --------------------------------------------------------------- password
+def password_problem(password: str) -> str | None:
+    """Why this password cannot be used, or None when it can. Length is the
+    only rule: composition rules make passwords worse, not better."""
+    if not isinstance(password, str) or len(password) < PASSWORD_MIN:
+        return f"use at least {PASSWORD_MIN} characters"
+    if len(password) > PASSWORD_MAX:
+        return f"use at most {PASSWORD_MAX} characters"
+    if "\n" in password or "\r" in password or "\0" in password:
+        return "a password cannot contain a line break"
+    return None
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _derive(scheme: str, params: list[int], salt: bytes, password: str) -> bytes | None:
+    pw = password.encode("utf-8", "replace")
+    try:
+        if scheme == "scrypt":
+            n, r, p = params
+            if not (2 ** 10 <= n <= 2 ** 20 and 1 <= r <= 32 and 1 <= p <= 16):
+                return None        # a tampered file must not become a memory bomb
+            return hashlib.scrypt(pw, salt=salt, n=n, r=r, p=p, dklen=32,
+                                  maxmem=256 * 1024 * 1024)
+        if scheme == "pbkdf2-sha256":
+            (iters,) = params
+            if not 10_000 <= iters <= 10_000_000:
+                return None
+            return hashlib.pbkdf2_hmac("sha256", pw, salt, iters, dklen=32)
+    except (ValueError, AttributeError, MemoryError, OverflowError):
+        return None
+    return None
+
+
+def hash_password(password: str) -> str:
+    """A self-describing salted hash: ``scheme$params$salt$digest``."""
+    salt = secrets.token_bytes(16)
+    dk = _derive("scrypt", [_SCRYPT_N, _SCRYPT_R, _SCRYPT_P], salt, password)
+    if dk is not None:
+        return f"scrypt${_SCRYPT_N},{_SCRYPT_R},{_SCRYPT_P}${_b64(salt)}${_b64(dk)}"
+    dk = _derive("pbkdf2-sha256", [_PBKDF2_ITERS], salt, password)
+    return f"pbkdf2-sha256${_PBKDF2_ITERS}${_b64(salt)}${_b64(dk)}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Constant-time check of a password against a stored hash. Anything
+    malformed is simply a mismatch."""
+    try:
+        scheme, params, salt, digest = (stored or "").strip().split("$")
+        want = base64.b64decode(digest, validate=True)
+        dk = _derive(scheme, [int(x) for x in params.split(",")],
+                     base64.b64decode(salt, validate=True), password)
+    except (ValueError, TypeError):
+        return False
+    return dk is not None and hmac.compare_digest(dk, want)
+
+
+def password_path(data_dir: Path | str) -> Path:
+    return Path(data_dir) / PASSWORD_FILE
+
+
+def password_is_set(data_dir: Path | str) -> bool:
+    return bool(_read_token_file(password_path(data_dir)))
+
+
+def set_password(data_dir: Path | str, password: str) -> Path:
+    """Store the hash of ``password`` owner-only. Raises ValueError when the
+    password is unusable, OSError when the file cannot be written."""
+    problem = password_problem(password)
+    if problem:
+        raise ValueError(problem)
+    path = password_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".new")
+    # created owner-only from the first byte, then swapped in whole: a server
+    # reading mid-write sees the old hash or the new one, never half of one
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(hash_password(password) + "\n")
+    if os.name == "posix":
+        os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return path
+
+
+def clear_password(data_dir: Path | str) -> bool:
+    """Remove the password. True when there was one."""
+    try:
+        password_path(data_dir).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 @dataclass
 class AuthConfig:
     """Resolved web access policy for one server instance."""
@@ -74,20 +184,46 @@ class AuthConfig:
     allowed_hosts: list[str] = field(default_factory=list)
     tls: bool = False
     generated: bool = False        # the admin token was minted at startup
+    password_file: Path | None = None
+    _pw_cache: tuple = field(default=(None, ""), repr=False, compare=False)
+
+    @property
+    def password_hash(self) -> str:
+        """The stored password hash ("" when none). Re-read when the file
+        changes, so `wrench password` reaches a server that is already up."""
+        if self.password_file is None:
+            return ""
+        try:
+            st = os.stat(self.password_file)
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            self._pw_cache = (None, "")
+            return ""
+        if self._pw_cache[0] != stamp:
+            self._pw_cache = (stamp, _read_token_file(self.password_file))
+        return self._pw_cache[1]
+
+    @property
+    def has_password(self) -> bool:
+        return bool(self.password_hash)
 
     @property
     def required(self) -> bool:
-        return bool(self.admin_token or self.viewer_token)
+        # a network bind is never open: if its credentials vanish while it is
+        # serving (password cleared), it locks rather than opens
+        return bool(self.admin_token or self.viewer_token or self.password_hash) \
+            or not self.loopback
 
     @property
     def loopback(self) -> bool:
         return is_loopback_bind(self.bind)
 
     def _session_key(self) -> bytes:
-        # derived from the tokens: rotating a token invalidates its sessions
+        # derived from the credentials: rotating a token or changing the
+        # password invalidates every session
         return hashlib.sha256(
             b"wrench-web-session\0" + self.admin_token.encode() + b"\0"
-            + self.viewer_token.encode()).digest()
+            + self.viewer_token.encode() + b"\0" + self.password_hash.encode()).digest()
 
     # ---- credentials ----
     def role_for_token(self, token: str) -> str | None:
@@ -100,6 +236,17 @@ class AuthConfig:
                 and role is None:
             role = "viewer"
         return role
+
+    def role_for_secret(self, secret: str) -> str | None:
+        """What the sign-in form accepts: an access token, or the password."""
+        role = self.role_for_token(secret)
+        if role is not None:
+            return role
+        stored = self.password_hash
+        if not stored or not secret or len(secret) > PASSWORD_MAX:
+            return None
+        with _verify_lock:
+            return "admin" if verify_password(secret, stored) else None
 
     def make_session(self, role: str, now: float | None = None) -> str:
         exp = int((now if now is not None else time.time()) + SESSION_TTL_S)
@@ -193,9 +340,10 @@ def _read_token_file(path: Path) -> str:
 def resolve(cfg, bind: str, data_dir: Path | None = None, tls: bool = False) -> AuthConfig:
     """Build the access policy from ``[web]`` config, env, and the bind address.
 
-    Precedence for the admin token: WRENCH_WEB_TOKEN → ``[web] auth_token`` →
-    ``[web] auth_token_file`` → (non-loopback only) a generated token persisted
-    at ``<data_dir>/web_token``.
+    A password set with `wrench password` (``<data_dir>/web_password``) turns
+    sign-in on for every bind. Precedence for the admin token: WRENCH_WEB_TOKEN → ``[web] auth_token`` →
+    ``[web] auth_token_file`` → (non-loopback, and no password set) a generated
+    token persisted at ``<data_dir>/web_token``.
     """
     sec = (getattr(cfg, "raw", None) or {}).get("web", {})
     if not isinstance(sec, dict):
@@ -208,12 +356,13 @@ def resolve(cfg, bind: str, data_dir: Path | None = None, tls: bool = False) -> 
     hosts = sec.get("allowed_hosts") or []
     if isinstance(hosts, str):
         hosts = [hosts]
+    dd = Path(data_dir) if data_dir is not None else Path(cfg.data_dir)
     ac = AuthConfig(bind=bind, admin_token=admin, viewer_token=viewer,
-                    allowed_hosts=[str(h) for h in hosts], tls=tls)
-    if not ac.loopback and not ac.admin_token:
+                    allowed_hosts=[str(h) for h in hosts], tls=tls,
+                    password_file=password_path(dd))
+    if not ac.loopback and not ac.admin_token and not ac.has_password:
         # Never serve a machine's telemetry (or its agent) to a network
         # unauthenticated. Mint a token once and keep it, Jupyter-style.
-        dd = Path(data_dir) if data_dir is not None else Path(cfg.data_dir)
         path = dd / TOKEN_FILE
         tok = _read_token_file(path)
         if not tok:

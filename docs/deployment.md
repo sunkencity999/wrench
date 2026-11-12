@@ -170,10 +170,14 @@ has not had a native hands-on pass yet — see [PLATFORMS.md](../PLATFORMS.md).
 
 ## Putting the hub or dashboard on a network
 
-Bound to `127.0.0.1` there is no sign-in. The moment you bind anywhere else,
-every page and API call requires a token.
+Bound to `127.0.0.1` with no password there is no sign-in. The moment you
+bind anywhere else, every page and API call requires a credential.
 
-- **Give people their own access level.** Set `[web] auth_token` for operators
+- **Set a password.** `wrench password` (or `WRENCH_WEB_PASSWORD` in the
+  environment of an unattended `wrench init`). People sign in with it; it is
+  stored only as a salted hash and can be changed without a restart.
+
+- **Give scripts and viewers their own credential.** Set `[web] auth_token` for scripts and scrapers
   and `viewer_token` for read-only use (a wall display, a manager's bookmark).
 - **Use TLS.** Either pass `--tls-cert`/`--tls-key`, or terminate TLS at a
   reverse proxy and add the public name to `[web] allowed_hosts`.

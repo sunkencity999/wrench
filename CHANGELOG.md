@@ -4,6 +4,14 @@
 
 ### New
 
+- **A password on the dashboard.** `wrench init` offers to set one (or takes
+  it from `WRENCH_WEB_PASSWORD` in an unattended install), and
+  `wrench password` sets, changes or removes it (`--status`, `--clear`,
+  `--stdin`). With a password set, the dashboard and fleet console ask for it
+  on every bind, loopback included. Only a salted scrypt hash is stored,
+  owner-only; a change reaches a running server at once and signs out every
+  browser; sign-in attempts are rate-limited and every change is in the audit
+  chain. Access tokens keep working for scripts and read-only viewers.
 - **A much larger command catalog.** The agent could run about 60 kinds of
   diagnostic and 7 kinds of fix. It can now run 243 kinds of diagnostic
   and 106 kinds of fix across Linux, macOS and Windows, in 19

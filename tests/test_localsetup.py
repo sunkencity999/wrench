@@ -180,6 +180,9 @@ def test_init_non_interactive_defaults_to_meta(tmp_path, monkeypatch, capsys):
     from wrench import cli
     monkeypatch.setenv("WRENCH_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("WRENCH_DATA_DIR", str(tmp_path / "data"))
+    # the env var is read at import: without this, init opens the real data dir
+    monkeypatch.setattr("wrench.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.delenv("WRENCH_WEB_PASSWORD", raising=False)
     # re-point module-level paths that were resolved at import time
     cfgdir = tmp_path / "cfg"
     monkeypatch.setattr("wrench.config.CONFIG_DIR", cfgdir)
@@ -203,6 +206,9 @@ def test_init_provider_flag_skips_menu(tmp_path, monkeypatch):
     cfgdir = tmp_path / "cfg"
     monkeypatch.setenv("WRENCH_CONFIG_DIR", str(cfgdir))
     monkeypatch.setenv("WRENCH_DATA_DIR", str(tmp_path / "data"))
+    # the env var is read at import: without this, init opens the real data dir
+    monkeypatch.setattr("wrench.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.delenv("WRENCH_WEB_PASSWORD", raising=False)
     monkeypatch.setattr("wrench.config.CONFIG_DIR", cfgdir)
     monkeypatch.setattr("wrench.config.CONFIG_PATH", cfgdir / "config.toml")
     monkeypatch.setattr("wrench.cli.CONFIG_PATH", cfgdir / "config.toml")
@@ -210,8 +216,12 @@ def test_init_provider_flag_skips_menu(tmp_path, monkeypatch):
     with mock.patch.object(cli, "_choose_provider") as menu, \
          mock.patch.object(cli.sensors, "sample_all"), \
          mock.patch.object(cli.driftscan, "scan"):
-        result = CliRunner().invoke(cli.app, ["init", "-p", "openai", "-m", "gpt-4.1-mini"])
+        result = CliRunner().invoke(cli.app, ["init", "-p", "openai", "-m", "gpt-4.1-mini"],
+                                    input="n\n")       # the dashboard-password question
     assert result.exit_code == 0, result.output
+    assert "Put a password on the web dashboard?" in result.output
+    assert "no password" in result.output
+    assert not (tmp_path / "data" / "web_password").exists()
     menu.assert_not_called()
     text = (cfgdir / "config.toml").read_text()
     assert 'name = "openai"' in text and 'model = "gpt-4.1-mini"' in text
@@ -235,6 +245,9 @@ def test_init_ollama_runs_guided_setup_and_smoke(tmp_path, monkeypatch):
     cfgdir = tmp_path / "cfg"
     monkeypatch.setenv("WRENCH_CONFIG_DIR", str(cfgdir))
     monkeypatch.setenv("WRENCH_DATA_DIR", str(tmp_path / "data"))
+    # the env var is read at import: without this, init opens the real data dir
+    monkeypatch.setattr("wrench.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.delenv("WRENCH_WEB_PASSWORD", raising=False)
     monkeypatch.setattr("wrench.config.CONFIG_DIR", cfgdir)
     monkeypatch.setattr("wrench.config.CONFIG_PATH", cfgdir / "config.toml")
     monkeypatch.setattr("wrench.cli.CONFIG_PATH", cfgdir / "config.toml")
