@@ -66,7 +66,7 @@ class Runner:
 def test_helper_source_carries_no_alert_text_and_escapes_paths(_env, monkeypatch):
     monkeypatch.setattr(toast, "show_command", lambda: 'run "the show" \\ now')
     src = toast.applet_source(_env / 'odd "dir"')
-    assert 'odd \\"dir\\"/notifier' in src                 # a path cannot end the string
+    assert 'odd \\"dir\\"' in src and 'odd "dir"' not in src   # a path cannot end the string
     assert 'run \\"the show\\" \\\\ now' in src
     assert "display notification b with title t" in src    # text comes from files, not source
     assert "on reopen" in src and "-mmin -1" in src        # stale requests are not re-posted
