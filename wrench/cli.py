@@ -604,6 +604,11 @@ def report_cmd(
         pass
 
 
+def is_loopback_hint(bind: str) -> bool:
+    from . import webauth
+    return webauth.is_loopback_bind(bind)
+
+
 def _serve_banner(httpd, bind: str, port: int, title: str, lines: list[str]) -> None:
     """Print where the server is and how to get in (token shown once if minted)."""
     auth = httpd.auth
@@ -3227,17 +3232,26 @@ def fleet_join(
     ca_file: str = typer.Option(None, "--ca-file", help="CA bundle for a hub with a private certificate"),
     no_verify: bool = typer.Option(False, "--no-test", help="write the config without a test report"),
 ):
-    """NODE: point this machine at a hub. Tests the connection, then saves the
-    [fleet] settings so every patrol reports from now on."""
-    from . import fleet as fmod, audit as _amod
-    from .config import set_section_values, CONFIG_PATH as _CP
+    """NODE: point this machine at a hub with an enrollment key. Tests the
+    connection, then saves the [fleet] settings so every patrol reports from
+    now on. (No key to hand? `wrench fleet connect` uses the hub's password.)"""
     hub_url = hub_url.rstrip("/")
     if not hub_url.lower().startswith(("http://", "https://")):
         console.print("[red]the hub address must start with http:// or https://[/red]")
         raise typer.Exit(2)
+    _fleet_attach(hub_url, token.strip(), node_id, tags, ca_file, no_verify,
+                  title="\U0001f527 wrench fleet join", event="fleet.join")
+
+
+def _fleet_attach(hub_url: str, token: str, node_id: str | None, tags: str,
+                  ca_file: str | None, no_verify: bool, title: str, event: str) -> None:
+    """Shared tail of `fleet join` and `fleet connect`: send a test report
+    with the key, then save the [fleet] settings."""
+    from . import fleet as fmod, audit as _amod
+    from .config import set_section_values, CONFIG_PATH as _CP
     cfg, store = _ctx()
     st = fmod.settings_from(cfg)
-    st.hub_url, st.token = hub_url, token.strip()
+    st.hub_url, st.token = hub_url, token
     if node_id:
         st.node_id = node_id
     if tags:
@@ -3254,7 +3268,7 @@ def fleet_join(
                 f"[red]the hub did not accept a test report[/red] — {detail}\n"
                 "[dim]nothing was saved. Check the address, that the hub is running "
                 "(`wrench fleet serve`), and that the key was copied whole.[/dim]",
-                border_style="red", title="\U0001f527 wrench fleet join"))
+                border_style="red", title=title))
             raise typer.Exit(1)
     store.close()
     values: dict = {"hub_url": hub_url, "token": st.token}
@@ -3272,16 +3286,129 @@ def fleet_join(
             "[dim]add these lines under [bold][fleet][/bold] yourself:[/dim]\n"
             + "\n".join(f"{k} = {json.dumps(v)}" for k, v in values.items() if k != "token")
             + "\ntoken = \"<the enrollment key you just used>\"",
-            border_style="red", title="\U0001f527 wrench fleet join"))
+            border_style="red", title=title))
         raise typer.Exit(1) from None
-    _amod.log_event(cfg, "fleet.join", {"hub_url": hub_url, "node_id": st.node_id,
-                                        "key_id": fmod.key_id_of(st.token)})
+    _amod.log_event(cfg, event, {"hub_url": hub_url, "node_id": st.node_id,
+                                 "key_id": fmod.key_id_of(st.token)})
     console.print(Panel(
-        f"[green]joined[/green] {hub_url} as [bold]{st.node_id}[/bold]"
+        f"[green]{'connected to' if event == 'fleet.connect' else 'joined'}[/green] "
+        f"{hub_url} as [bold]{st.node_id}[/bold]"
         + (f" [dim](tags: {', '.join(st.tags)})[/dim]" if st.tags else "") + "\n"
         f"[dim]saved to {_CP} (owner-only) · every patrol now reports · "
         "schedule them with [bold]wrench install-service[/bold][/dim]",
-        border_style="green", title="\U0001f527 wrench fleet join"))
+        border_style="green", title=title))
+
+
+@fleet_app.command("connect")
+def fleet_connect(
+    hub: str = typer.Argument(..., help="the hub's address: an IP or name (192.168.1.10), "
+                                        "or a full URL (https://hub.example:8788)"),
+    port: int = typer.Option(None, "--port", help="hub port when the address has none (default 8788)"),
+    node_id: str = typer.Option(None, "--node-id", help="name for this machine (default: hostname)"),
+    tags: str = typer.Option("", "--tags", help="comma-separated labels, e.g. prod,web,eu"),
+    ca_file: str = typer.Option(None, "--ca-file", help="CA bundle for a hub with a private certificate"),
+    password_stdin: bool = typer.Option(False, "--password-stdin",
+                                        help="read the hub password from standard input"),
+    allow_http: bool = typer.Option(False, "--allow-http",
+                                    help="send the password to a hub that has no TLS "
+                                         "(anyone on the network path can read it)"),
+):
+    """NODE: connect this machine to a hub with the hub's dashboard password.
+
+    \b
+    wrench fleet connect 192.168.1.10            asks for the hub password
+    wrench fleet connect https://hub.example:8788 --tags prod,web
+    echo "$PW" | wrench fleet connect hub.lan --password-stdin
+
+    The password is sent once, to get this machine a key of its own; it is
+    never written here. From then on every patrol reports to the hub, signed
+    with that key, and the hub can revoke this machine alone
+    (`wrench fleet keys` / `revoke`). Connecting again later keeps the
+    machine's name and history.
+
+    On the hub: `wrench password`, then `wrench fleet serve --host 0.0.0.0`."""
+    from . import audit as _amod, fleet as fmod, offline as _offline
+    title = "\U0001f527 wrench fleet connect"
+
+    def fail(msg: str, hint: str = "", code: int = 1):
+        console.print(Panel(f"[red]{msg}[/red]" + (f"\n[dim]{hint}[/dim]" if hint else ""),
+                            border_style="red", title=title))
+        raise typer.Exit(code)
+
+    cfg = load_config()
+    candidates = fmod.hub_candidates(hub, port)
+    if not candidates:
+        fail(f"{hub!r} is not an address I can use",
+             "give an IP or host name (192.168.1.10), optionally with :port, or a full "
+             "http(s):// URL", 2)
+    if _offline.is_offline(cfg) and not _offline.egress_allowed(cfg, candidates[0]):
+        fail("offline mode is on and that hub is not a local or private address",
+             "set offline = false, or connect to a hub on your own network", 2)
+
+    # find the hub without sending anything secret; never step down from a
+    # TLS endpoint whose certificate we could not verify
+    hub_url, problems = "", []
+    with console.status("[cyan]looking for the hub..."):
+        for url in candidates:
+            verdict, detail = fmod.probe_hub(url, ca_file or "")
+            if verdict == "ok":
+                hub_url = url
+                break
+            if verdict == "cert":
+                fail(f"{url} answered, but its certificate is not trusted — {detail}",
+                     "if the hub uses a private or self-signed certificate, pass "
+                     "--ca-file <its CA or certificate .pem>")
+            problems.append(f"{url} — {detail}")
+    if not hub_url:
+        fail("no wrench hub answered at " + ", ".join(candidates),
+             "\n".join(problems) + "\ncheck the address and port, that the hub is "
+             "running (`wrench fleet serve --host 0.0.0.0`), and that a firewall is not "
+             "in the way")
+
+    if hub_url.lower().startswith("http://") and not fmod.is_local_url(hub_url) \
+            and not allow_http:
+        warn = (f"{hub_url} has no TLS: the hub password would cross the network "
+                "unencrypted, readable by anyone on the path.")
+        if _isatty() and not password_stdin:
+            console.print(f"[yellow]{warn}[/yellow]")
+            if not typer.confirm("Send it anyway?", default=False):
+                fail("not connected — nothing was sent",
+                     "give the hub a certificate (`wrench fleet serve --tls-cert … "
+                     "--tls-key …`), or use an enrollment key instead: `wrench fleet "
+                     "enroll` on the hub")
+        else:
+            fail(warn, "re-run with --allow-http to accept that, or give the hub a "
+                       "certificate (`wrench fleet serve --tls-cert … --tls-key …`)", 2)
+
+    if password_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+    elif os.environ.get("WRENCH_HUB_PASSWORD"):
+        password = os.environ["WRENCH_HUB_PASSWORD"]
+    elif _isatty():
+        password = typer.prompt(f"password for the hub at {hub_url}", hide_input=True,
+                                default="", show_default=False)
+    else:
+        fail("no terminal to ask for the hub password in",
+             "pipe it in with --password-stdin, or set WRENCH_HUB_PASSWORD", 2)
+    if not password:
+        fail("no password given — nothing was sent", code=2)
+
+    name = fmod.clean_node_id(node_id) or fmod.settings_from(cfg).node_id
+    with console.status("[cyan]asking the hub for this machine's key..."):
+        res = fmod.connect_request(hub_url, password, name, ca_file or "")
+    del password
+    if not res["ok"]:
+        _amod.log_event(cfg, "fleet.connect.failed", {"hub_url": hub_url, "node_id": name,
+                                                      "code": res["code"]})
+        hint = {401: "that is the password set with `wrench password` on the hub",
+                429: "too many wrong passwords from this address — wait a minute",
+                }.get(res["code"], "")
+        fail(f"the hub did not connect this machine — {res['detail']}", hint)
+    if res.get("reconnected"):
+        console.print(f"[dim]{name} was already known to the hub — it keeps its history "
+                      "and its previous key was retired[/dim]")
+    _fleet_attach(hub_url, res["token"], node_id, tags, ca_file, False,
+                  title=title, event="fleet.connect")
 
 
 @fleet_app.command("keys")
@@ -3457,9 +3584,23 @@ def fleet_serve(
              f"[dim]{n_keys} enrollment key(s)"
              + (f" + {len(st.authorized_tokens)} legacy token(s)" if st.authorized_tokens else "")
              + " · silent-node sweep every 30s · Ctrl-C to stop[/dim]"]
-    if not n_keys and not st.authorized_tokens:
-        lines.append("[yellow]no enrollment keys yet[/yellow] — in another terminal: "
-                     "[bold]wrench fleet enroll[/bold]")
+    if not st.connect:
+        if not n_keys and not st.authorized_tokens:
+            lines.append("[yellow]no enrollment keys yet[/yellow] — in another terminal: "
+                         "[bold]wrench fleet enroll[/bold]")
+    elif httpd.auth.has_password:
+        lines.append("add a machine — run on it: [bold]wrench fleet connect "
+                     + (platform.node() or "<this hub's address>")
+                     + (f" --port {port}" if port != fmod.DEFAULT_LISTEN_PORT else "")
+                     + "[/bold] [dim](asks for the dashboard password)[/dim]")
+    else:
+        lines.append("[yellow]no dashboard password yet[/yellow] — set one with "
+                     "[bold]wrench password[/bold] and machines can join with "
+                     "[bold]wrench fleet connect <this hub's address>[/bold] "
+                     "[dim](or mint keys: wrench fleet enroll)[/dim]")
+    if is_loopback_hint(bind):
+        lines.append("[dim]listening on this machine only — other machines cannot reach "
+                     "it; use [bold]--host 0.0.0.0[/bold] to accept them[/dim]")
     _serve_banner(httpd, bind, port, "\U0001f527 wrench fleet serve", lines)
     try:
         httpd.serve_forever()

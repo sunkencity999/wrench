@@ -784,6 +784,14 @@ class Store:
                             disk_max_pct=_max_number(gauges.get("disk_pct"))))
         return out
 
+    def rebind_fleet_node(self, node_id: str, token_hash: str, key_id: str) -> bool:
+        """Hand an existing node to a new credential (an admin re-connected it)."""
+        cur = self.db.execute(
+            "UPDATE fleet_nodes SET token_hash=?, key_id=? WHERE node_id=?",
+            (token_hash, key_id, node_id))
+        self.db.commit()
+        return cur.rowcount > 0
+
     def delete_fleet_node(self, node_id: str) -> bool:
         """Forget a node (decommissioned box): its row and its report history."""
         cur = self.db.execute("DELETE FROM fleet_nodes WHERE node_id=?", (node_id,))

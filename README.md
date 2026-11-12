@@ -213,7 +213,7 @@ predict  forecast · certs · cve
 prove    audit verify · backups · comply · bundle
 fix      fixxer · blueprint "…"
 learn    remember "…" · memory · jobs · heartbeat
-scale    web · fleet enroll / join / serve · metrics
+scale    web · password · fleet connect / serve · metrics
 setup    init · doctor · install-service
 ```
 
@@ -1157,7 +1157,35 @@ dead-man's switch. It is **default OFF** — no `[fleet]` config means zero chan
   signed reports, stores them in sqlite, serves the fleet console and a
   Prometheus rollup, and watches for nodes that stop reporting.
 
-**Run a fleet in three commands.**
+**Run a fleet in three commands.** Set a password on the hub, start it, and
+connect each machine with the hub's address and that password:
+
+```console
+# on the hub
+$ wrench password
+$ wrench fleet serve --host 0.0.0.0 --tls-cert fullchain.pem --tls-key privkey.pem
+
+# on each machine
+$ wrench fleet connect hub.example
+password for the hub at https://hub.example:8788:
+✔ connected to https://hub.example:8788 as web-01
+$ wrench install-service      # patrol on a schedule → report on a schedule
+```
+
+`connect` sends the password once, to get that machine a key of its own, and
+writes the password nowhere. Each machine can then be revoked on its own, and
+connecting a rebuilt machine again keeps its name and history. A bare address
+is tried over HTTPS first; `connect` will not send the password to a hub
+without TLS unless you say so (`--allow-http`, or a yes at the prompt), and it
+never steps down from HTTPS because a certificate did not verify (use
+`--ca-file`). For scripts: `--password-stdin` or `WRENCH_HUB_PASSWORD`.
+
+The hub's console lists every machine, the hub itself included, and the
+machine picker in the top bar of the dashboard switches between this
+machine, all machines, and any one connected machine.
+
+**Or enroll with keys**, when you would rather put a key than a password in
+your MDM or config management:
 
 ```console
 # on the hub

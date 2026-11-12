@@ -294,14 +294,16 @@ cadence_hours = 24
 [fleet]
 # Fleet mode — many machines, one console. Default OFF.
 #
-#   on the hub:   wrench fleet enroll          → prints a `wrench fleet join …` line
+#   on the hub:   wrench password              (the dashboard password)
 #                 wrench fleet serve --host 0.0.0.0
-#   on each node: wrench fleet join <hub-url> <key>     (writes the lines below)
+#   on each node: wrench fleet connect <hub-address>    (asks for that password
+#                 once, gets this machine its own key, writes the lines below)
+#   or with keys: wrench fleet enroll → wrench fleet join <hub-url> <key>
 #
 # Every report is HMAC-signed with a timestamp; the hub rejects replays, stale
 # clocks, revoked keys, and a node id claimed by a different key.
 #
-# --- node side (written by `wrench fleet join`) ---
+# --- node side (written by `wrench fleet connect` / `join`) ---
 # hub_url  = "https://hub.example:8788"
 # token    = "wfl_…"
 # node_id  = "web-01"            # optional; defaults to hostname
@@ -316,6 +318,7 @@ cadence_hours = 24
 # silent_factor     = 2.0        # SILENT when last report > factor × cadence
 # max_skew_s        = 300        # accepted clock difference between node and hub
 # report_retention  = 200        # per-node report history cap
+# connect           = true       # false: refuse `wrench fleet connect` (keys only)
 # authorized_tokens = ["…"]      # legacy 2.x shared tokens (still accepted)
 """
 

@@ -8,6 +8,7 @@
 <div class="topbar">
   <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z"/></svg>wrench</span>
   <span class="hostchip"><span class="live" id="live"></span><b id="host">…</b><span id="oslabel" class="dim"></span></span>
+  <select class="input machine" id="machine" hidden aria-label="choose a machine" title="choose a machine"></select>
   <nav class="nav" aria-label="sections"><a class="on" href="/">Overview</a><a id="nav-fleet" href="/fleet" hidden>Fleet</a></nav>
   <span class="spacer"></span>
   <span class="dim" id="updated" style="font-size:12px"></span>
@@ -434,6 +435,8 @@ async function refresh() {
     $('version').textContent = 'v' + o.version;
     document.title = `${o.posture.score == null ? '' : Math.round(o.posture.score) + ' · '}${o.host} — wrench`;
     $('nav-fleet').hidden = !o.fleet_hub;
+    if (o.fleet_hub) api('/api/fleet/nodes').then((d) => fillMachines(d.nodes, '/')).catch(() => {});
+    else $('machine').hidden = true;
     $('chat-btn').hidden = o.role !== 'admin' || !o.brain.usable;
     $('chat-model').textContent = o.brain.usable ? `${o.brain.provider} · ${o.brain.model}` : '';
     $('role').hidden = $('signout').hidden = !o.auth_required; $('role').textContent = o.role;
@@ -456,6 +459,7 @@ async function refresh() {
 
 /* ---- interactions ---- */
 wireChrome();
+$('machine').addEventListener('change', (e) => { location.href = e.target.value; });
 $('range').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   hours = Number(b.dataset.h);

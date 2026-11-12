@@ -4,6 +4,18 @@
 
 ### New
 
+- **`wrench fleet connect <hub-address>`** — connect a machine to a hub with
+  the hub's dashboard password. The password is sent once and exchanged for a
+  key that belongs to that machine alone; it is never stored on the machine.
+  A bare address is tried over HTTPS first; the password is not sent to a hub
+  without TLS unless you allow it, and never after a certificate failed to
+  verify. Connecting a machine again keeps its name and history and retires
+  its old key. `[fleet] connect = false` turns it off on a hub.
+- **One console for every machine.** The fleet console now lists the hub
+  itself beside the machines that report to it, and a machine picker in the
+  top bar of the dashboard and the console switches between this machine,
+  all machines, and any one connected machine (`/fleet?node=<name>` links
+  straight to one).
 - **A password on the dashboard.** `wrench init` offers to set one (or takes
   it from `WRENCH_WEB_PASSWORD` in an unattended install), and
   `wrench password` sets, changes or removes it (`--status`, `--clear`,

@@ -173,11 +173,12 @@ credential, and it carries no data.
 
 ## `[fleet]`
 
-You rarely write this by hand: `wrench fleet join` fills in the node side.
+You rarely write this by hand: `wrench fleet connect` (hub address + hub
+password) or `wrench fleet join` (an enrollment key) fills in the node side.
 
 ```toml
 [fleet]
-# --- node (written by `wrench fleet join`) ---
+# --- node (written by `wrench fleet connect` / `wrench fleet join`) ---
 hub_url = "https://hub.example:8788"
 token   = "wfl_…"
 # node_id = "web-01"             # default: hostname
@@ -194,6 +195,7 @@ token   = "wfl_…"
 # report_retention = 200    # reports kept per node
 # max_findings     = 8      # findings a node sends per report
 # hub              = true   # accept reports even before any key exists
+# connect          = true   # false: refuse `wrench fleet connect` (keys only)
 # authorized_tokens = ["…"] # legacy 2.x shared tokens
 ```
 

@@ -1,5 +1,19 @@
 # wrench — build progress
 
+## 2026-11-11 — fleet connect and the machine picker
+
+`wrench fleet connect <hub>` posts the hub's admin password to
+`POST /api/fleet/connect` and gets back a single-node enrollment key
+(`fleet.connect_grant`); `fleet join` and `connect` share `_fleet_attach`.
+The node probes `/healthz` first (https, then http for a bare address), will
+not send the password over plain HTTP to another machine without
+`--allow-http`, and stops on an untrusted certificate. The console API adds
+the hub's own machine as a `local` row (`fleet.local_state`, never stored),
+and `base.js` `fillMachines` drives a picker on both pages. Tests:
+`tests/test_fleet_connect.py`. Verified live between two scratch installs on
+one Mac, over loopback HTTP and over HTTPS with a self-signed certificate;
+not exercised across two real machines.
+
 ## 2026-11-11 — dashboard password
 
 `wrench password` and a step in `wrench init` put a password on the web

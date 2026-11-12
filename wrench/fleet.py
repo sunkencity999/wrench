@@ -81,6 +81,8 @@ DEFAULT_SILENT_FACTOR = 2.0      # SILENT when last_seen older than factor × ca
 DEFAULT_REPORT_RETENTION = 200   # per-node history cap
 DEFAULT_MAX_FINDINGS = 8         # compact: top-N findings pushed per report
 REPORT_PATH = "/api/fleet/report"
+CONNECT_PATH = "/api/fleet/connect"
+CONNECT_LABEL = "connect: "      # label prefix of keys minted by `wrench fleet connect`
 OUTBOX_NAME = "fleet_outbox.json"
 PUSH_TIMEOUT_S = 8
 
@@ -159,6 +161,192 @@ def enroll(store, label: str = "", single_node: bool = False,
     return {"token": token, "key_id": key_id, "label": label, "single_node": single_node}
 
 
+def clean_node_id(node_id) -> str:
+    """A node name as the hub stores it: printable, trimmed, at most 120 chars."""
+    return "".join(c for c in str(node_id or "") if c.isprintable()).strip()[:120]
+
+
+def connect_grant(store, node_id: str, now: float | None = None) -> dict:
+    """Hub side of `wrench fleet connect`: the caller has already proved the
+    hub's admin password. Mint a key that belongs to this one node.
+
+    A machine that connects again (reinstalled, config lost) keeps its name
+    and history: its previous connect key is revoked and the node is re-bound
+    to the new one. Returns {token, key_id, node_id, reconnected}.
+    """
+    node_id = clean_node_id(node_id)
+    if not node_id:
+        raise ValueError("a node name is required")
+    now = now if now is not None else time.time()
+    existing = store.get_fleet_node(node_id)
+    res = enroll(store, label=(CONNECT_LABEL + node_id)[:200], single_node=True, now=now)
+    if existing:
+        old = existing.get("key_id") or ""
+        old_key = store.get_fleet_key(old) if old else None
+        store.rebind_fleet_node(node_id, "key:" + res["key_id"], res["key_id"])
+        # only retire a key that was this node's alone; a shared enrollment
+        # key keeps working for the other machines that use it
+        if old_key and old_key.get("single_node") and not store.fleet_nodes_for_key(old):
+            store.revoke_fleet_key(old, now)
+    return {"token": res["token"], "key_id": res["key_id"], "node_id": node_id,
+            "reconnected": bool(existing)}
+
+
+def _split_host_port(rest: str) -> tuple[str, str]:
+    rest = rest.strip().strip("/")
+    if rest.startswith("["):                     # [::1]:8788
+        host, _, tail = rest[1:].partition("]")
+        return host, tail.lstrip(":")
+    if rest.count(":") == 1:
+        host, _, port = rest.partition(":")
+        return host, port
+    return rest, ""                              # a name, an IPv4, or a bare IPv6
+
+
+def hub_candidates(hub: str, port: int | None = None) -> list[str]:
+    """The URLs to try for what the operator typed: a full URL is taken as
+    written; a bare address means https first, then http, on the hub port."""
+    hub = (hub or "").strip().rstrip("/")
+    if not hub:
+        return []
+    low = hub.lower()
+    if low.startswith(("http://", "https://")):
+        return [hub]
+    if "://" in hub or "/" in hub or any(c.isspace() for c in hub):
+        return []
+    host, typed_port = _split_host_port(hub)
+    if not host:
+        return []
+    p = typed_port or str(port or DEFAULT_LISTEN_PORT)
+    if not p.isdigit() or not 0 < int(p) < 65536:
+        return []
+    h = f"[{host}]" if ":" in host else host
+    return [f"https://{h}:{p}", f"http://{h}:{p}"]
+
+
+def is_local_url(url: str) -> bool:
+    """True when the URL points at this machine (nothing crosses a network)."""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        import ipaddress
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _ctx_for(url: str, ca_file: str = "") -> ssl.SSLContext | None:
+    if not url.lower().startswith("https://"):
+        return None
+    ctx = ssl.create_default_context()
+    if ca_file:
+        ctx.load_verify_locations(cafile=ca_file)
+    return ctx
+
+
+def probe_hub(url: str, ca_file: str = "", timeout: float = PUSH_TIMEOUT_S,
+              opener=None) -> tuple[str, str]:
+    """Is a wrench server answering at ``url``? Sends no secret.
+
+    Returns (verdict, detail): ``ok``; ``cert`` — TLS answered but the
+    certificate was not trusted (never fall back to http from here);
+    ``unreachable`` — nothing usable at this URL.
+    """
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/healthz",
+                                     headers={"User-Agent": f"wrench-fleet/{__version__}"})
+        if opener is not None:
+            cm = opener(req, timeout=timeout)
+        else:
+            cm = urllib.request.urlopen(req, timeout=timeout,  # noqa: S310 — http(s) only
+                                        context=_ctx_for(url, ca_file))
+        with cm as resp:
+            body = resp.read(4096)
+        try:
+            ok = json.loads(body.decode("utf-8", "replace")).get("ok") is True
+        except (ValueError, AttributeError):
+            ok = False
+        return ("ok", "") if ok else ("unreachable", "something answered, but it is not wrench")
+    except urllib.error.HTTPError as e:
+        return "unreachable", f"HTTP {e.code}"
+    except Exception as e:  # noqa: BLE001
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return "cert", str(getattr(reason, "verify_message", "") or reason)
+        return "unreachable", f"{reason.__class__.__name__}: {reason}"
+
+
+def connect_request(hub_url: str, password: str, node_id: str, ca_file: str = "",
+                    timeout: float = 20, opener=None) -> dict:
+    """Node side of `wrench fleet connect`: trade the hub password for this
+    node's own key. The password is sent once and kept nowhere.
+
+    Returns {ok, token, key_id, reconnected} or {ok: False, code, detail}.
+    Never raises."""
+    body = json.dumps({"password": password, "node_id": node_id}).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            hub_url.rstrip("/") + CONNECT_PATH, data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": f"wrench-fleet/{__version__}"})
+        if opener is not None:
+            cm = opener(req, timeout=timeout)
+        else:
+            cm = urllib.request.urlopen(req, timeout=timeout,  # noqa: S310 — http(s) only
+                                        context=_ctx_for(hub_url, ca_file))
+        with cm as resp:
+            data = json.loads(resp.read(8192).decode("utf-8", "replace"))
+        token = str(data.get("token") or "")
+        if not is_v2_token(token):
+            return {"ok": False, "code": 502, "detail": "the hub's reply held no key"}
+        return {"ok": True, "token": token, "key_id": str(data.get("key_id") or ""),
+                "reconnected": bool(data.get("reconnected"))}
+    except urllib.error.HTTPError as e:
+        reason = ""
+        try:
+            reason = json.loads(e.read(2048).decode("utf-8", "replace")).get("error", "")
+        except Exception:  # noqa: BLE001
+            pass
+        if e.code == 404 and not reason:
+            reason = "that hub runs an older wrench without `fleet connect` — upgrade it, " \
+                     "or use `wrench fleet enroll` there and `wrench fleet join` here"
+        return {"ok": False, "code": e.code, "detail": reason or f"HTTP {e.code}"}
+    except Exception as e:  # noqa: BLE001
+        reason = getattr(e, "reason", e)
+        return {"ok": False, "code": 0, "detail": f"{reason.__class__.__name__}: {reason}"}
+
+
+def local_state(cfg, store, settings: FleetSettings, now: float | None = None,
+                name: str = "", os_label: str = "") -> dict:
+    """The hub's own machine as a row for the fleet console, built from the
+    same cached scans a node would report. Never stored; marked ``local``.
+
+    ``name`` / ``os_label`` are what the server shows for this machine in its
+    own header, so the row and the header agree."""
+    now = now if now is not None else time.time()
+    rep = build_report(cfg, store, settings, now=now)
+    if name and rep["node_id"] == (platform.node() or "node"):
+        rep["node_id"] = rep["hostname"] = name       # no node_id of its own configured
+    if os_label:
+        rep["meta"]["os_label"] = os_label
+    node = {
+        "node_id": rep["node_id"], "hostname": rep["hostname"], "local": True,
+        "first_seen": None, "last_seen": now, "status": rep["status"],
+        "worst_severity": rep["worst_severity"], "summary": rep["summary"],
+        "cadence_s": rep["cadence_s"], "wrench_version": rep["wrench_version"],
+        "findings": rep["findings"], "gauges": sanitize_gauges(rep["gauges"]),
+        "report_count": None, "silent": False, "meta": sanitize_meta(rep["meta"]),
+        "report_ts": rep["ts"], "age_s": 0.0,
+        "effective_cadence_s": float(rep["cadence_s"] or DEFAULT_CADENCE_S),
+    }
+    node["color"] = node_color(node, now, settings)
+    return node
+
+
 def report_bytes(report: dict) -> bytes:
     """Canonical, deterministic JSON bytes of a report (stable sign/verify)."""
     return json.dumps(report, sort_keys=True, separators=(",", ":"),
@@ -189,6 +377,7 @@ class FleetSettings:
     tls_cert: str = ""         # hub: serve https with this certificate …
     tls_key: str = ""          # … and private key
     hub: bool = False          # hub: explicit opt-in without legacy tokens
+    connect: bool = True       # hub: accept `wrench fleet connect` (password → node key)
 
     @property
     def node_enabled(self) -> bool:
@@ -252,6 +441,7 @@ def settings_from(cfg) -> FleetSettings:
         tls_cert=str(sec.get("tls_cert", "") or ""),
         tls_key=str(sec.get("tls_key", "") or ""),
         hub=bool(sec.get("hub", False)),
+        connect=bool(sec.get("connect", True)),
     )
 
 

@@ -382,7 +382,7 @@ apply which? [a]ll / [n]one / numbers ▸ <span class="c-cyan">1,2</span>
 
   <div class="arc" id="arc-scale"><div><h3>Many machines, your stack</h3><p>Run it everywhere, and plug it into what you already operate.</p>
     <div class="cmds">
-      <div><code>wrench fleet enroll</code> → <code>wrench fleet join</code><span>One command on the hub, one line on each machine. Signed reports, replay protection, revocable keys.</span></div>
+      <div><code>wrench fleet serve</code> → <code>wrench fleet connect</code><span>Start the hub, then connect each machine with its address and password. Signed reports, replay protection, a revocable key per machine.</span></div>
       <div><code>wrench web</code><span>The dashboard and fleet console, behind a password you set at install (<code>wrench password</code> changes it). Roles and TLS for anything beyond localhost.</span></div>
       <div><code>--json</code> · <code>/metrics</code> · syslog<span>Stable JSON on every command, a Prometheus exporter, RFC 5424 and JSON-lines sinks for your SIEM.</span></div>
       <div><code>offline = true</code><span>A declared zero-egress mode for networks that have never seen the internet.</span></div>
@@ -479,16 +479,16 @@ wrench_fleet_nodes_silent 1</pre></div></div>
 
 <section id="fleet"><div class="wrap">
   <div class="center"><p class="eyebrow">Fleet</p><h2>One line per machine.</h2>
-    <p class="lead">Any wrench install can be a hub. Enrollment is a command, not a config file you paste into two places.</p></div>
+    <p class="lead">Any wrench install can be a hub. Connecting a machine is one command: the hub's address and its password.</p></div>
   <figure class="shot reveal"><div class="bar"><i></i><i></i><i></i><span>hub.example:8788/fleet</span></div>
     <img src="assets/fleet.png" alt="The fleet console: ten machines with status, health score, operating system, disk and memory, and what needs attention; one machine is silent" loading="lazy" width="1440" height="1100" style="aspect-ratio:1440/860;object-fit:cover;object-position:top"></figure>
   <div class="grid g2" style="margin-top:56px;align-items:start">
     <div class="steps3">
-      <div><div><b>On the hub — mint a key</b><pre>wrench fleet enroll --label "web tier"
+      <div><div><b>On the hub — set a password, start it</b><pre>wrench password
 wrench fleet serve --host 0.0.0.0 --tls-cert … --tls-key …</pre></div></div>
-      <div><div><b>On each machine — paste the line it printed</b><pre>wrench fleet join https://hub.example:8788 wfl_9bbe…0d7b --tags prod,web
+      <div><div><b>On each machine — the hub's address and password</b><pre>wrench fleet connect hub.example --tags prod,web
 wrench install-service</pre></div></div>
-      <div><div><b>Done</b><span class="dim" style="font-size:15px">Every patrol reports. Put the join line in your MDM, Ansible or image and the fleet builds itself.</span></div></div>
+      <div><div><b>Done</b><span class="dim" style="font-size:15px">Every patrol reports, and the dashboard's machine picker shows any machine or all of them. The password is used once to get each machine its own key. Rolling out by MDM or Ansible? Use <code>wrench fleet enroll</code> keys instead.</span></div></div>
     </div>
     <div><h3>What a report can and cannot do</h3>
       <ul class="ticks">

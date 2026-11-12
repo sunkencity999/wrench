@@ -23,6 +23,7 @@ API (JSON; every route needs a credential when access control is on)
   GET  /api/fleet/export.csv      node inventory as CSV
   POST /api/fleet/forget          retire a node                     [admin]
   POST /api/fleet/report          node report ingest (HMAC-signed, no session)
+  POST /api/fleet/connect         hub password -> that node's own key (no session)
   GET  /metrics                   Prometheus exposition
 
 Access control, Host validation, CSRF and response headers: wrench/webauth.py.
@@ -381,6 +382,15 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 return self._json({"error": "fleet hub not enabled"}, 503)
             st = fleet.settings_from(cfg)
             states = [_public_node(n) for n in fleet.node_states(store, st)]
+            # the hub is a machine too: show it beside the ones that report in
+            # (unless it has joined itself and already has a row)
+            try:
+                me = fleet.local_state(cfg, store, st, name=host_label,
+                                       os_label=os_label or "")
+                if all(n["node_id"] != me["node_id"] for n in states):
+                    states.insert(0, me)
+            except Exception:  # noqa: BLE001 — never lose the fleet over the local row
+                pass
             if path == "/api/fleet/nodes":
                 summ = fleet.fleet_summary(states)
                 scores = [n["meta"].get("score") for n in states
@@ -419,6 +429,8 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                     return self._json({"error": "cross-origin request refused"}, 403)
                 if path == "/login":
                     return self._login()
+                if path == "/api/fleet/connect":
+                    return self._fleet_connect()
                 if path == "/logout":
                     return self._json({"ok": True},
                                       extra=[("Set-Cookie", auth.clear_cookie())])
@@ -635,6 +647,49 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 return self._json({"error": "unknown node"}, 404)
             self._audit("fleet.forget", {"node_id": node_id, "client": self._client()})
             return self._json({"ok": True})
+
+        def _fleet_connect(self):
+            """`wrench fleet connect`: a machine presents the hub's admin
+            password once and is handed a key of its own. Same rate limit and
+            audit trail as a browser sign-in; nothing here needs a session."""
+            from . import fleet
+            client = self._client()
+            if limiter.blocked(client):
+                return self._json({"error": "too many attempts — wait a minute"}, 429,
+                                  extra=[("Retry-After", "60")])
+            payload = self._json_body()
+            if payload is None:
+                return None
+            node_id = fleet.clean_node_id(payload.get("node_id"))
+            st = fleet.settings_from(cfg) if cfg is not None else None
+            store = Store(db_path)
+            try:
+                if st is None or not hub_on(store):
+                    return self._json({"error": "this machine is not running as a fleet hub — "
+                                                "start it with `wrench fleet serve`"}, 503)
+                if not st.connect:
+                    return self._json({"error": "this hub does not accept `fleet connect` "
+                                                "([fleet] connect = false) — use an enrollment "
+                                                "key: `wrench fleet enroll`"}, 403)
+                if not (auth.has_password or auth.admin_token):
+                    return self._json({"error": "this hub has no password — set one there "
+                                                "with `wrench password`"}, 403)
+                if not node_id:
+                    return self._json({"error": "a node name is required"}, 400)
+                secret = str(payload.get("password") or payload.get("token") or "")
+                if auth.role_for_secret(secret) != "admin":
+                    limiter.fail(client)
+                    self._audit("fleet.connect.failed", {"client": client, "node_id": node_id})
+                    return self._json({"error": "that password is not valid"}, 401)
+                res = fleet.connect_grant(store, node_id)
+            finally:
+                store.close()
+            self._audit("fleet.connect", {"client": client, "node_id": node_id,
+                                          "key_id": res["key_id"],
+                                          "reconnected": res["reconnected"]})
+            return self._json({"ok": True, "token": res["token"], "key_id": res["key_id"],
+                               "node_id": node_id, "reconnected": res["reconnected"],
+                               "hub": host_label})
 
         def _fleet_report(self):
             """Node report ingest. Authenticated by HMAC signature, not session."""

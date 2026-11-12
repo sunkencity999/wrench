@@ -236,8 +236,11 @@ def test_fleet_enroll_join_report_roundtrip(hub):
     assert ok, detail
     code, _, body = _req(url + "/api/fleet/nodes")
     d = json.loads(body)
-    assert d["summary"]["total"] == 1 and d["summary"]["avg_score"] == 91.0
-    node = d["nodes"][0]
+    # the hub lists itself first (marked local, never stored), then the nodes
+    assert d["nodes"][0]["local"] is True and "token_hash" not in d["nodes"][0]
+    assert d["summary"]["total"] == 2 and d["summary"]["avg_score"] == 91.0
+    assert [n["node_id"] for n in store.fleet_nodes()] == ["web-01"]
+    node = d["nodes"][1]
     assert node["node_id"] == "web-01" and node["meta"]["os_label"] == "Ubuntu 24.04"
     assert "token_hash" not in node and "key_id" not in node      # credentials stay on the hub
     # the hub never stored the token itself

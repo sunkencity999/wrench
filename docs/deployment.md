@@ -57,6 +57,22 @@ One machine is the **hub**. Every other machine is a **node** that pushes a
 small signed report after each patrol. Nodes need outbound access to the hub;
 the hub never connects to nodes.
 
+**The short way: a password.** On the hub, `wrench password` and
+`wrench fleet serve --host 0.0.0.0 --tls-cert … --tls-key …`. On each machine:
+
+```bash
+wrench fleet connect wrench.corp.example --tags prod,web    # asks for the hub password
+wrench install-service
+```
+
+The password is sent once and exchanged for a key that belongs to that
+machine alone; it is not stored on the machine. Without TLS on the hub,
+`connect` refuses to send the password unless you pass `--allow-http`. With a
+private certificate, pass `--ca-file`. Unattended: `--password-stdin` or
+`WRENCH_HUB_PASSWORD`. To switch this off on a hub, set `[fleet] connect =
+false`. For large or scripted rollouts, enrollment keys (below) keep the
+admin password out of your tooling.
+
 **1. Stand up the hub**
 
 ```bash

@@ -196,6 +196,20 @@ function initPalette(getActions) {
 const copyText = async (t) => { try { await navigator.clipboard.writeText(t); } catch (x) { /* denied */ } };
 
 /* ---- top bar wiring shared by pages ---- */
+/* ---- machine picker: this machine, all machines, or one connected machine ---- */
+function fillMachines(nodes, current) {
+  const sel = $('machine'); if (!sel) return;
+  if (document.activeElement === sel) return;          // never rebuild an open menu
+  const word = (n) => (n.silent ? 'silent' : { green: 'healthy', yellow: 'attention', red: 'critical' }[n.color] || '');
+  const others = nodes.filter((n) => !n.local);
+  sel.innerHTML = `<option value="/">This machine</option>`
+    + `<option value="/fleet">All machines (${nodes.length})</option>`
+    + (others.length ? `<optgroup label="Connected machines">${others.map((n) =>
+      `<option value="/fleet?node=${encodeURIComponent(n.node_id)}">${esc(n.node_id)} — ${word(n)}</option>`).join('')}</optgroup>` : '');
+  sel.value = current; if (sel.selectedIndex < 0) sel.value = '/fleet';
+  sel.hidden = false;
+}
+
 function wireChrome() {
   const th = $('theme-btn'); if (th) th.addEventListener('click', toggleTheme);
   const sc = $('scrim'); if (sc) sc.addEventListener('click', closeDrawers);
