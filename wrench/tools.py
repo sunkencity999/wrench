@@ -504,6 +504,30 @@ TOOL_SPECS = [
                 "no argument the packs and their tools, with a pack name the allowed forms.",
     },
     {
+        "name": "fleet_setup_status",
+        "args": {"role": "hub | node (omit to see what this machine is today)"},
+        "desc": "The checklist for setting this machine up as a fleet HUB (the machine "
+                "other machines report to) or a NODE (a machine that reports to a hub): "
+                "which steps are done, which is next, and how to do each. Call this first "
+                "whenever the human wants to monitor several machines, and again after "
+                "each step.",
+    },
+    {
+        "name": "fleet_setup",
+        "args": {"action": "set_password | hub_listen | hub_tls | hub_start | hub_stop | "
+                           "node_connect | schedule | report_now",
+                 "hub": "string — node_connect: the hub's IP, name or URL",
+                 "node_id": "string (optional) — node_connect: this machine's name on the hub",
+                 "tags": "string (optional) — node_connect: comma-separated labels",
+                 "ca_file": "string (optional) — node_connect: path to the hub's certificate",
+                 "host": "string (optional) — hub_listen: default 0.0.0.0",
+                 "port": "number (optional)"},
+        "desc": "Carry out ONE fleet setup step on this machine. Each step asks the human "
+                "to confirm. Passwords are typed by the human privately when the step runs: "
+                "never ask for a password in the conversation and never pass one as an "
+                "argument. Do one step, tell the human what happened, then continue.",
+    },
+    {
         "name": "fix_action",
         "args": {"command": "string — one fix from the catalog (e.g. 'systemctl restart foo')"},
         "desc": "Execute a repair from the command catalog: service / container / compose "
@@ -552,6 +576,13 @@ def dispatch(name: str, args: dict, store: Store, tier: str, confirm_fn=None,
             return heartbeat.tool_schedule(
                 store, cfg, str(args.get("name", "")), str(args.get("schedule", "")),
                 str(args.get("action", "")), str(args.get("prompt", "") or ""), confirm_fn)
+        if name == "fleet_setup_status":
+            from . import fleetsetup
+            return fleetsetup.tool_status(cfg, store, str(args.get("role", "") or ""))
+        if name == "fleet_setup":
+            from . import fleetsetup
+            return fleetsetup.tool_action(cfg, store, str(args.get("action", "")), args,
+                                          confirm_fn)
         if name == "list_tasks":
             from . import heartbeat
             return heartbeat.tool_jobs(store)

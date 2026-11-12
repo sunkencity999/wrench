@@ -1,5 +1,19 @@
 # wrench — build progress
 
+## 2026-11-11 — guided fleet setup
+
+`wrench/fleetsetup.py` is one engine with three front ends: agent tools
+`fleet_setup_status` / `fleet_setup`, the `wrench fleet setup` wizard, and the
+plain commands each step names. Mutating steps go through `confirm_fn` with a
+`setup: ` label and are refused without one; passwords come from
+`confirm_fn.ask_secret` (the CLI's hidden prompt), never from tool arguments.
+`hub_start` spawns `python -m wrench fleet serve` detached with a pid file and
+log in the data dir; `hub_stop` checks the pid is still a hub before signalling
+it. `fleet join` / `connect` now share `fleetsetup.attach_node`. Tests:
+`tests/test_fleet_setup.py` (a scripted model drives the agent; a real detached
+hub is started and stopped). The detached start/stop on Windows and the
+systemd / Task Scheduler step are covered only by CI and mocks.
+
 ## 2026-11-11 — fleet connect and the machine picker
 
 `wrench fleet connect <hub>` posts the hub's admin password to

@@ -242,6 +242,47 @@ def _notify_banner(cfg) -> None:
         pass
 
 
+_SPINNERS: list = []     # the "thinking…" status currently on screen, if any
+
+
+class _Thinking:
+    """A spinner that steps aside while the operator is being asked something."""
+
+    def __init__(self, text: str):
+        self._status = console.status(text)
+
+    def __enter__(self):
+        _SPINNERS.append(self._status)
+        self._status.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._status.stop()
+        if self._status in _SPINNERS:
+            _SPINNERS.remove(self._status)
+        return False
+
+
+def _asking(fn):
+    """Pause any spinner around a prompt, so the question (and a hidden
+    password prompt) is not redrawn over."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        paused = list(_SPINNERS)
+        for st in paused:
+            st.stop()
+        try:
+            return fn(*a, **k)
+        finally:
+            for st in paused:
+                if st in _SPINNERS:
+                    st.start()
+    return wrapper
+
+
+@_asking
 def _confirm(command: str, label: str) -> bool:
     if label.startswith(("memory:", "schedule:")):
         what, _, ask = label.partition(": ")
@@ -250,11 +291,44 @@ def _confirm(command: str, label: str) -> bool:
                             title_align="left"))
         # default No, like a fix: a bare Enter must not make a model's note stick
         return typer.confirm(ask + "?", default=False)
+    if label.startswith("setup: "):
+        console.print(Panel(Text(command, style="white"), border_style="bright_blue",
+                            title="🧭 setup step — " + label[7:], title_align="left"))
+        return typer.confirm("do it?", default=False)
     console.print(Panel(
         Text.assemble(("about to execute: ", "bold yellow"), (command, "bold white"),
                       (f"\n({label})", "dim")),
         border_style="yellow", title="confirmation required"))
     return typer.confirm("run it?", default=False)
+
+
+@_asking
+def _ask_secret(prompt: str, confirm: bool = False, check=None) -> str:
+    """The agent's private channel for a password: typed by the operator,
+    hidden, and handed to the step that asked — never to the model, the
+    transcript or the audit log. "" when the operator gives none."""
+    if not _isatty():
+        return ""
+    try:
+        for _ in range(3):
+            value = typer.prompt(prompt, hide_input=True, default="", show_default=False)
+            if not value:
+                return ""
+            problem = check(value) if check else None
+            if problem:
+                console.print(f"[yellow]{problem}[/yellow]")
+                continue
+            if confirm and typer.prompt("again, to confirm", hide_input=True, default="",
+                                        show_default=False) != value:
+                console.print("[yellow]those did not match[/yellow]")
+                continue
+            return value
+    except (typer.Abort, EOFError):
+        console.print()
+    return ""
+
+
+_confirm.ask_secret = _ask_secret   # read by wrench.fleetsetup.tool_action
 
 
 def _enforce_window(cfg, operation: str, override_window: bool, has_consent: bool) -> None:
@@ -395,7 +469,7 @@ def ask(
     use_model = cfg.deep_model if deep else None
     a = agent_mod.Agent(cfg, store, confirm_fn=_confirm,
                         on_step=lambda k, d: console.print(f"  [dim cyan]⚙ {d}[/dim cyan]"))
-    with console.status(f"[cyan]thinking ({use_model or cfg.model})..."):
+    with _Thinking(f"[cyan]thinking ({use_model or cfg.model})..."):
         res = a.run(q, model=use_model, purpose="ask")
     meta = f"{use_model or cfg.model} · {res['tokens']} tokens · {len(res['steps'])} tool call(s)"
     report.render_answer(console, res["answer"], meta)
@@ -424,7 +498,7 @@ def chat(provider: str = PROVIDER_OPT, model: str = MODEL_OPT):
             return
         convo = "\n".join(f"{m['role']}: {m['content'][:500]}" for m in history[-6:])
         goal = (f"Conversation so far:\n{convo}\n\nHuman's new message: {q}") if history else q
-        with console.status("[cyan]thinking..."):
+        with _Thinking("[cyan]thinking..."):
             res = a.run(goal, purpose="chat")
         report.render_answer(console, res["answer"],
                              f"{res['tokens']} tokens · {len(res['steps'])} tool call(s)")
@@ -763,7 +837,7 @@ def explain(
         goal = (f"Explain the service '{target}' on this machine: what it does, current state, "
                 "recent log activity, resource footprint, and any problems. Use service_status "
                 "and read_logs.")
-    with console.status(f"[cyan]investigating {target}..."):
+    with _Thinking(f"[cyan]investigating {target}..."):
         res = a.run(goal, purpose="explain")
     report.render_answer(console, res["answer"],
                          f"{cfg.model} · {res['tokens']} tokens · {len(res['steps'])} tool call(s)")
@@ -3247,53 +3321,34 @@ def _fleet_attach(hub_url: str, token: str, node_id: str | None, tags: str,
                   ca_file: str | None, no_verify: bool, title: str, event: str) -> None:
     """Shared tail of `fleet join` and `fleet connect`: send a test report
     with the key, then save the [fleet] settings."""
-    from . import fleet as fmod, audit as _amod
-    from .config import set_section_values, CONFIG_PATH as _CP
+    from . import fleetsetup
+    from .config import CONFIG_PATH as _CP
     cfg, store = _ctx()
-    st = fmod.settings_from(cfg)
-    st.hub_url, st.token = hub_url, token
-    if node_id:
-        st.node_id = node_id
-    if tags:
-        st.tags = fmod._clean_tags(tags)  # noqa: SLF001
-    if ca_file:
-        st.ca_file = ca_file
-    if not no_verify:
-        if store.last_sample("os") is None:
-            sensors.sample_all(store)
-        ok, detail = fmod.push_once(st, fmod.build_report(cfg, store, st))
-        if not ok:
-            store.close()
-            console.print(Panel(
-                f"[red]the hub did not accept a test report[/red] — {detail}\n"
-                "[dim]nothing was saved. Check the address, that the hub is running "
-                "(`wrench fleet serve`), and that the key was copied whole.[/dim]",
-                border_style="red", title=title))
-            raise typer.Exit(1)
-    store.close()
-    values: dict = {"hub_url": hub_url, "token": st.token}
-    if node_id:
-        values["node_id"] = node_id
-    if st.tags:
-        values["tags"] = st.tags
-    if ca_file:
-        values["ca_file"] = ca_file
     try:
-        set_section_values("fleet", values)
-    except (ValueError, OSError) as e:
+        res = fleetsetup.attach_node(cfg, store, hub_url, token, node_id or "", tags,
+                                     ca_file or "", test=not no_verify, event=event)
+    finally:
+        store.close()
+    if not res.ok and res.get("stage") == "save":
+        values = res["values"]
         console.print(Panel(
-            f"[red]the hub accepted this machine, but the config could not be saved[/red] — {e}\n"
+            "[red]the hub accepted this machine, but the config could not be saved[/red]\n"
             "[dim]add these lines under [bold][fleet][/bold] yourself:[/dim]\n"
             + "\n".join(f"{k} = {json.dumps(v)}" for k, v in values.items() if k != "token")
             + "\ntoken = \"<the enrollment key you just used>\"",
             border_style="red", title=title))
-        raise typer.Exit(1) from None
-    _amod.log_event(cfg, event, {"hub_url": hub_url, "node_id": st.node_id,
-                                 "key_id": fmod.key_id_of(st.token)})
+        raise typer.Exit(1)
+    if not res.ok:
+        console.print(Panel(
+            f"[red]{escape(res['message'])}[/red]\n"
+            "[dim]Check the address, that the hub is running (`wrench fleet serve`), "
+            "and that the key was copied whole.[/dim]",
+            border_style="red", title=title))
+        raise typer.Exit(1)
     console.print(Panel(
         f"[green]{'connected to' if event == 'fleet.connect' else 'joined'}[/green] "
-        f"{hub_url} as [bold]{st.node_id}[/bold]"
-        + (f" [dim](tags: {', '.join(st.tags)})[/dim]" if st.tags else "") + "\n"
+        f"{res['hub_url']} as [bold]{escape(res['node_id'])}[/bold]"
+        + (f" [dim](tags: {', '.join(res['tags'])})[/dim]" if res["tags"] else "") + "\n"
         f"[dim]saved to {_CP} (owner-only) · every patrol now reports · "
         "schedule them with [bold]wrench install-service[/bold][/dim]",
         border_style="green", title=title))
@@ -3569,11 +3624,34 @@ def fleet_serve(
                                    help="don't sample this hub box in the background"),
     tls_cert: str = typer.Option(None, "--tls-cert", help="serve HTTPS with this certificate (PEM)"),
     tls_key: str = typer.Option(None, "--tls-key", help="private key for --tls-cert (PEM)"),
+    detach: bool = typer.Option(False, "--detach", help="start it in the background and "
+                                "return (stop it with `wrench fleet stop`)"),
 ):
     """Run the fleet HUB: accept signed node reports, serve the fleet console,
     and watch for nodes that go silent."""
     from . import fleet as fmod
     from .webapp import serve
+    if detach:
+        from . import fleetsetup
+        argv = [sys.executable, "-m", "wrench", "fleet", "serve"]
+        for flag, val in (("--host", host), ("--port", port), ("--tls-cert", tls_cert),
+                          ("--tls-key", tls_key)):
+            if val:
+                argv += [flag, str(val)]
+        if no_sample:
+            argv.append("--no-sample")
+        cfg0 = load_config()
+        if host or port or tls_cert:      # probe where it will actually listen
+            raw = dict(cfg0.raw or {})
+            sec = dict(raw.get("fleet") or {})
+            sec.update({k: v for k, v in (("listen_host", host), ("listen_port", port),
+                                          ("tls_cert", tls_cert)) if v})
+            raw["fleet"] = sec
+            cfg0.raw = raw
+        res = fleetsetup.hub_start(cfg0, argv=argv)
+        console.print(("[green]✔[/green] " if res.ok else "[red]✖[/red] ")
+                      + escape(res["message"]))
+        raise typer.Exit(0 if res.ok else 1)
     cfg, store = _ctx()
     st = fmod.settings_from(cfg)
     n_keys = sum(1 for k in store.fleet_keys() if not k["revoked"])
@@ -3614,6 +3692,145 @@ def fleet_serve(
         httpd.serve_forever()
     except KeyboardInterrupt:
         console.print("\n[dim]fleet hub stopped[/dim]")
+
+
+@fleet_app.command("stop")
+def fleet_stop():
+    """HUB: stop a hub that was started in the background (`fleet serve --detach`,
+    the setup guide, or the agent)."""
+    from . import fleetsetup
+    res = fleetsetup.hub_stop(load_config())
+    console.print(("[green]✔[/green] " if res.ok else "[yellow]·[/yellow] ")
+                  + escape(res["message"]))
+    raise typer.Exit(0 if res.ok else 1)
+
+
+@fleet_app.command("setup")
+def fleet_setup_cmd(
+    role: str = typer.Argument(None, help="hub | node (omit to be asked)"),
+    check: bool = typer.Option(False, "--check", help="only show the checklist; change nothing"),
+    json_out: bool = JSON_OPT,
+):
+    """Guided setup: make this machine a hub, or connect it to one.
+
+    \b
+    wrench fleet setup           asks which, then walks you through each step
+    wrench fleet setup hub       this machine collects everyone's reports
+    wrench fleet setup node      this machine reports to a hub
+    wrench fleet setup hub --check     where things stand; changes nothing
+
+    Every step shows what it will do and waits for your yes. Passwords are
+    typed hidden. No model is needed — and with one, `wrench chat` will walk
+    you through the same steps in conversation ("set this machine up as a hub")."""
+    from . import fleetsetup as fs
+    cfg, store = _ctx()
+    try:
+        role = (role or "").strip().lower() or None
+        if role and role not in fs.ROLES:
+            console.print("[red]role must be hub or node[/red]")
+            raise typer.Exit(2)
+        if json_out:
+            s = fs.state(cfg, store)
+            jsonout.emit("fleet.setup", {
+                "role": role, "state": s,
+                "steps": {r: fs.steps(r, s) for r in ([role] if role else fs.ROLES)}})
+            return
+        if role is None:
+            if check or not _isatty():
+                console.print(Panel(escape(fs.overview(fs.state(cfg, store)).split("\n\n")[0])
+                                    + "\n\n[dim]choose a role: wrench fleet setup hub   ·   "
+                                      "wrench fleet setup node[/dim]",
+                                    border_style="bright_blue", title="🧭 wrench fleet setup"))
+                return
+            console.print(Panel(
+                "A fleet has one [bold]hub[/bold] — the machine every report goes to, and "
+                "whose dashboard you open — and any number of [bold]nodes[/bold], the "
+                "machines that report to it.\nSet up the hub first, then run this on each "
+                "other machine.", border_style="bright_blue", title="🧭 wrench fleet setup"))
+            role = typer.prompt("is this machine the hub or a node? [hub/node]").strip().lower()
+            role = {"h": "hub", "n": "node"}.get(role, role)
+            if role not in fs.ROLES:
+                console.print("[red]answer hub or node[/red]")
+                raise typer.Exit(2)
+
+        def show() -> dict:
+            s = fs.state(cfg_now(), store)
+            t = Table(border_style="bright_blue", show_edge=False, pad_edge=False)
+            t.add_column("", width=2)
+            t.add_column("step", style="bold")
+            t.add_column("where it stands")
+            for i, st in enumerate(fs.steps(role, s), 1):
+                mark = Text("✔", style="green") if st["done"] else \
+                    Text("·", style="dim") if st["optional"] else Text("○", style="yellow")
+                t.add_row(mark, f"{i}. {st['title']}" + (" (optional)" if st["optional"] else ""),
+                          Text(st["detail"], style="dim" if st["done"] else ""))
+            console.print(Panel(t, border_style="bright_blue",
+                                title=f"🧭 this machine as a {role}", title_align="left"))
+            return s
+
+        def cfg_now():
+            return load_config()
+
+        s = show()
+        if check or not _isatty():
+            if not check:
+                console.print("[dim]no terminal to ask in — nothing changed. The checklist "
+                              "above names the command for each step.[/dim]")
+            todo = [st for st in fs.steps(role, s) if not st["done"] and not st["optional"]]
+            raise typer.Exit(1 if todo else 0)
+
+        def run(action: str, args: dict | None = None) -> None:
+            out = fs.tool_action(cfg_now(), store, action, args or {}, _confirm,
+                                 wrench_bin=_own_executable() or "")
+            console.print(Text("→ " + out, style="cyan"))
+
+        if role == "hub":
+            if not s["password_set"]:
+                run("set_password")
+            if not fs.state(cfg_now(), store)["hub"]["reachable"]:
+                run("hub_listen")
+            s = fs.state(cfg_now(), store)
+            if not s["hub"]["tls"] and s["hub"]["openssl"]:
+                console.print("[dim]optional: a certificate keeps the password off the "
+                              "network in clear.[/dim]")
+                run("hub_tls")
+            s = fs.state(cfg_now(), store)
+            if s["hub"]["running"] and s["hub"]["pid"]:
+                console.print("[dim]the hub is running; restarting it so it picks up the "
+                              "settings above.[/dim]")
+                run("hub_stop")
+            if not fs.state(cfg_now(), store)["hub"]["running"]:
+                run("hub_start")
+        else:
+            if not s["node"]["connected"] or typer.confirm(
+                    f"already connected to {s['node']['hub_url']} — connect again?",
+                    default=False):
+                hub = typer.prompt("the hub's address (an IP or name, e.g. 192.168.1.10)").strip()
+                tags = typer.prompt("tags for this machine, comma-separated (enter for none)",
+                                    default="", show_default=False).strip()
+                ca = typer.prompt("path to the hub's certificate, if it is self-signed "
+                                  "(enter for none)", default="", show_default=False).strip()
+                run("node_connect", {"hub": hub, "tags": tags, "ca_file": ca})
+            if fs.state(cfg_now(), store)["node"]["connected"]:
+                if not fs.state(cfg_now(), store)["schedule"]["alive"]:
+                    run("schedule")
+                run("report_now")
+        s = show()
+        todo = [st for st in fs.steps(role, s) if not st["done"] and not st["optional"]]
+        if not todo:
+            console.print("[green]✅ every required step is done[/green]")
+        elif role == "hub" and [st["key"] for st in todo] == ["machines"]:
+            console.print(Panel(
+                "[green]the hub is ready.[/green] On each other machine run:\n\n"
+                f"  [bold bright_green]{escape(todo[0]['command'])}[/bold bright_green]\n\n"
+                "[dim]or `wrench fleet setup node` there for the guided version · then open "
+                f"[/dim][bold]{s['hub']['url']}[/bold]",
+                border_style="green", title="🧭 next"))
+        else:
+            console.print("[yellow]still to do:[/yellow] "
+                          + "; ".join(f"{st['title']} ({st['command']})" for st in todo))
+    finally:
+        store.close()
 
 
 @fleet_app.command("status")

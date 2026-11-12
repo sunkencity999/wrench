@@ -465,6 +465,12 @@ either way.
 The same agent, conversational — for incidents with plot twists. It keeps
 context across turns, so "what about the other disk?" works.
 
+It can also set things up with you. "Set this machine up as the hub" or
+"connect this machine to the hub at 192.168.1.10" starts a
+[guided, step-by-step setup](#the-guided-way-let-wrench-walk-you-through-it):
+it explains each step, does it when you say yes, and has you type passwords
+privately rather than into the conversation.
+
 
 ### `wrench watch`
 
@@ -1174,6 +1180,67 @@ Three things to know before you start:
 - **The hub is read-only towards the machines.** It shows what they report.
   It cannot run commands on them.
 
+#### The guided way: let wrench walk you through it
+
+Everything below can be done for you, one step at a time. There are two ways
+in, and they run the same steps.
+
+**In conversation**, if you have a model configured:
+
+```console
+$ wrench chat
+you ▸ I want to watch my servers from one place. Set this machine up as the hub.
+  ⚙ fleet_setup_status {"role": "hub"}
+  ⚙ fleet_setup {"action": "set_password"}
+╭─ 🧭 setup step — set the dashboard password ─────────────────────────────────╮
+│ Set the dashboard password on this machine. You will type it privately; it   │
+│ is not shown to the model.                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+do it? [y/N]: y
+new dashboard password:
+again, to confirm:
+```
+
+Say what you want in your own words: "make this the hub", "connect this
+machine to the hub at 192.168.1.10", "what is left to do?". The agent checks
+where the machine stands, explains the next step, does it when you say yes,
+and tells you what to run on the other machines.
+
+**Without a model**, the wizard asks the same questions:
+
+```console
+$ wrench fleet setup            # asks: hub or node?
+$ wrench fleet setup hub        # on the machine that collects the reports
+$ wrench fleet setup node       # on every other machine
+$ wrench fleet setup hub --check    # just show the checklist; change nothing
+```
+
+What the guide does, and how it is held back:
+
+| step | hub | node |
+|---|---|---|
+| 1 | set the dashboard password | connect to the hub (address, then the hub password) |
+| 2 | listen beyond this machine (`[fleet] listen_host`) | install the schedule (`wrench install-service`) |
+| 3 | optional: create a self-signed certificate and switch HTTPS on | send a first report |
+| 4 | start the hub in the background | |
+| 5 | tell you the exact `connect` line for the other machines | |
+
+- **Every step that changes something shows what it will do and waits for
+  your yes.** With nobody to ask (a scheduled job, the web chat) it is
+  refused, and the reply names the command to run instead.
+- **Passwords never go through the model.** You type them at a hidden prompt
+  in your terminal. The model is told only whether the step worked. Do not
+  type a password into the conversation itself; the agent will not ask you to.
+- **Steps are not commands.** Each takes a few checked values (an address, a
+  name, tags). The model cannot make one run something else.
+- **The firewall is yours.** The guide tells you the command to open the
+  port; it does not change firewall rules.
+- **A hub started by the guide runs in the background** until the machine
+  reboots or you run `wrench fleet stop`. To keep it across reboots, run it
+  as a service ([Deployment](docs/deployment.md)).
+
+The rest of this tutorial is the same setup by hand, with the reasons.
+
 #### Before you start
 
 | you need | notes |
@@ -1348,6 +1415,7 @@ shorten the interval on the machines that matter:
 | rename a machine or change its tags | run `wrench fleet connect` again with `--node-id` or `--tags`, or edit `[fleet]` in its config |
 | change the hub password | `wrench password` on the hub. Browsers are signed out; connected machines are not affected, because they hold keys, not the password |
 | stop accepting new machines by password | `[fleet] connect = false` on the hub. Enrollment keys still work |
+| run the hub without keeping a terminal open | `wrench fleet serve --detach`, and `wrench fleet stop` to stop it |
 | keep the hub running after a reboot | run it as a service: see [Deployment](docs/deployment.md) for a systemd unit |
 | avoid typing `--host` every time | set `listen_host = "0.0.0.0"` (and `tls_cert` / `tls_key`) under `[fleet]` on the hub |
 

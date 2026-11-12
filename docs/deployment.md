@@ -57,6 +57,10 @@ One machine is the **hub**. Every other machine is a **node** that pushes a
 small signed report after each patrol. Nodes need outbound access to the hub;
 the hub never connects to nodes.
 
+The quickest route is the guide: `wrench fleet setup hub` on the hub and
+`wrench fleet setup node` on each machine, or ask in `wrench chat` ("set this
+machine up as the hub"). Each step waits for your yes.
+
 New to this? The README has a step-by-step
 [tutorial](../README.md#tutorial-many-machines-one-dashboard), and the website
 has an interactive version of it.

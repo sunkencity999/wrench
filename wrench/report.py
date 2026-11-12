@@ -173,8 +173,19 @@ def render_patrol(console: Console, patrol: dict) -> None:
                         border_style=color, padding=(1, 2)))
 
 
+def keep_placeholders(answer: str) -> str:
+    """Markdown treats ``<hub-address>`` as an HTML tag and drops it, turning
+    "wrench fleet connect <hub-address> --port 8936" into a command with a
+    hole in it. Outside code spans, escape the bracket so it is shown."""
+    import re
+    parts = answer.split("`")
+    for i in range(0, len(parts), 2):                 # even parts are outside backticks
+        parts[i] = re.sub(r"<(?=[A-Za-z/!?])(?!https?://|mailto:)", r"\\<", parts[i])
+    return "`".join(parts)
+
+
 def render_answer(console: Console, answer: str, meta: str = "") -> None:
-    group: list = [Markdown(answer)]
+    group: list = [Markdown(keep_placeholders(answer))]
     if meta:
         group += [Text(""), Text(meta, style="dim")]
     console.print(Panel(Group(*group), title="[bold]🔧 wrench[/bold]",

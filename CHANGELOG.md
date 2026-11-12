@@ -4,6 +4,21 @@
 
 ### New
 
+- **Guided fleet setup, in conversation.** Tell `wrench chat` "set this
+  machine up as the hub" or "connect this machine to the hub at 192.168.1.10"
+  and the agent walks you through it one step at a time and carries each step
+  out: the dashboard password, where the hub listens, an optional self-signed
+  certificate, starting the hub, connecting a node, installing the schedule.
+  Every step waits for your yes, and passwords are typed at a hidden prompt —
+  they never pass through the model. `wrench fleet setup [hub|node]` is the
+  same guide with no model. New agent tools: `fleet_setup_status`,
+  `fleet_setup`.
+- **`wrench fleet serve --detach`** and **`wrench fleet stop`** — run the hub
+  in the background without keeping a terminal open.
+- The agent now retries once when a model returns an empty answer, and shows
+  the last thing it found instead of a blank panel if it is still empty.
+- Confirmation and password prompts in `chat`, `ask` and `explain` no longer
+  appear underneath the "thinking…" spinner.
 - **`wrench fleet connect <hub-address>`** — connect a machine to a hub with
   the hub's dashboard password. The password is sent once and exchanged for a
   key that belongs to that machine alone; it is never stored on the machine.

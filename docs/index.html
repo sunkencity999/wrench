@@ -511,6 +511,19 @@ wrench install-service</pre></div></div>
     <div class="card"><h3>The hub only watches</h3><p>It shows what the machines report: health, disks, findings, silence. It cannot run commands on them.</p></div>
   </div>
 
+  <div class="grid g2" style="margin-top:44px;align-items:start;gap:28px">
+    <div class="card"><h3>Or just ask</h3>
+      <p>In <code>wrench chat</code>, say <i>“set this machine up as the hub”</i> or <i>“connect this machine to the hub at 192.168.1.10”</i>. The agent checks where the machine stands, explains each step, does it when you say yes, and tells you what to run on the other machines.</p>
+      <p>No model? <code>wrench fleet setup</code> asks the same questions.</p></div>
+    <div class="card"><h3>What the guide may and may not do</h3>
+      <ul class="ticks" style="margin-top:10px">
+        <li><span><b>Every change waits for your yes</b> — and is refused where nobody can be asked.</span></li>
+        <li><span><b>Passwords never reach the model</b> — you type them at a hidden prompt; it learns only whether the step worked.</span></li>
+        <li><span><b>Steps, not commands</b> — an address, a name, tags. Nothing free-form to hijack.</span></li>
+        <li><span><b>Your firewall stays yours</b> — it tells you the command; it does not run it.</span></li>
+      </ul></div>
+  </div>
+
   <div class="center" style="margin-top:56px"><h3>Walk through it</h3>
     <p class="lead" style="font-size:1rem">A simulated session across a hub and three machines. The prompt shows which machine each command runs on.</p></div>
   <div class="term" style="max-width:980px;margin:22px auto 0"><div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>hub.example · web-01 · db-01 · win-03</span></div>

@@ -294,6 +294,7 @@ cadence_hours = 24
 [fleet]
 # Fleet mode — many machines, one console. Default OFF.
 #
+#   guided:       wrench fleet setup           (or ask in `wrench chat`)
 #   on the hub:   wrench password              (the dashboard password)
 #                 wrench fleet serve --host 0.0.0.0
 #   on each node: wrench fleet connect <hub-address>    (asks for that password

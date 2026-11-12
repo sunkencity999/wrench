@@ -228,6 +228,35 @@
   // Each step names the machine it runs on; the prompt shows it.
   var FLEET_STEPS = [
     {
+      id: "ask",
+      label: "★ or just ask",
+      host: "hub",
+      cmd: "wrench chat",
+      out: [
+        { t: "you ▸ I want to watch my servers from one place. Set this machine up as the hub.", cls: "c-cyan" },
+        { t: "  ⚙ fleet_setup_status {\"role\": \"hub\"}", cls: "c-dim" },
+        { t: "🔧 Happy to. A hub is the machine every other machine reports to, and whose", cls: "" },
+        { t: "   dashboard you open. Five steps; the first is a dashboard password. Shall I?", cls: "" },
+        { t: "you ▸ yes", cls: "c-cyan" },
+        { t: "  ⚙ fleet_setup {\"action\": \"set_password\"}", cls: "c-dim" },
+        { t: "╭─ 🧭 setup step — set the dashboard password ─────────────────────────────────╮", cls: "c-acc" },
+        { t: "│ Set the dashboard password on this machine. You will type it privately; it   │", cls: "" },
+        { t: "│ is not shown to the model.                                                   │", cls: "" },
+        { t: "╰──────────────────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "do it? [y/N]: y", cls: "c-cyan" },
+        { t: "new dashboard password: ••••••••••••••••      again, to confirm: ••••••••••••••••", cls: "c-cyan" },
+        { t: "🔧 Done — only a salted hash is stored. Next: let other machines reach this one.", cls: "" },
+        { t: "   I'll have the hub listen on every interface, port 8788. OK?", cls: "" },
+        { t: "you ▸ go ahead, and start it", cls: "c-cyan" },
+        { t: "  ⚙ fleet_setup {\"action\": \"hub_listen\"}   ⚙ fleet_setup {\"action\": \"hub_start\"}", cls: "c-dim" },
+        { t: "🔧 The hub is running. On each other machine, run:", cls: "c-ok" },
+        { t: "     wrench fleet connect 192.168.1.10", cls: "c-ok" },
+        { t: "   (or `wrench chat` there and say \"connect this machine to the hub at 192.168.1.10\").", cls: "c-dim" },
+        { t: "   If this machine runs a firewall, open TCP 8788: sudo ufw allow 8788/tcp", cls: "c-dim" },
+        { t: "The agent can do the whole setup with you: it checks where the machine stands, explains a step, does it when you say yes, and moves on. Every change waits for your yes, and passwords are typed at a hidden prompt — they never pass through the model. No model configured? `wrench fleet setup` asks the same questions. The steps that follow are what it is doing underneath.", cls: "c-dim", note: true }
+      ]
+    },
+    {
       id: "hub-password",
       label: "1 · hub: set a password",
       host: "hub",
