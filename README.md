@@ -36,6 +36,7 @@
 - **Prove** — [backups](#wrench-backups--untested-backups-dont-exist) · [audit](#wrench-audit--prove-what-happened) · [comply](#wrench-comply--prove-the-box-meets-the-baseline) · [bundle](#wrench-bundle--the-air-gap-evidence-bundle)
 - **Fix** — [policy tiers](#policy-tiers--the-leash) · [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
 - **Learn** — [memory](#wrench-remember--wrench-memory--it-learns-how-you-run-this-machine) · [jobs & heartbeat](#wrench-jobs--wrench-heartbeat--work-it-does-without-being-asked)
+- **Alerts** — [reach the admin anywhere: email, Telegram, Slack…](#wrench-notify--reach-the-admin-anywhere)
 - **Models** — [connect a frontier model](#wrench-model--connect-a-frontier-model)
 - **Scale** — [tutorial: many machines, one dashboard](#tutorial-many-machines-one-dashboard) · [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
 - **Understand it** — [How a patrol works](#how-a-patrol-works) · [The brain is swappable](#the-brain-is-swappable) · [Policy tiers](#policy-tiers--the-leash) · [Architecture](#architecture) · [Philosophy](#philosophy) · [FAQ](#faq)
@@ -567,6 +568,9 @@ JSONL inbox (`~/.local/share/wrench/notifications.jsonl`) and fans it out:
   (it asks once for permission to notify), Windows through a toast registered
   as "wrench", Linux through `notify-send`. Best-effort: silently skipped if
   unavailable; `desktop_click = false` sends a plain one.
+- **Channels** — email, Telegram, Slack, Teams, Discord or any webhook, each
+  with its own severity threshold. See
+  [`wrench notify`](#wrench-notify--reach-the-admin-anywhere) below.
 - **Webhook** — one generic JSON POST that ntfy, Slack, and Discord-style
   receivers all understand. Short timeout; failures are logged, never fatal.
 - **Dashboard** — unread notifications appear as toasts (top-right) on
@@ -592,6 +596,65 @@ desktop = true
 Severity is the worst of the patrol's status and its individual findings, so
 an "attention" patrol carrying one `[critical]` finding notifies as critical.
 
+
+### `wrench notify` — reach the admin anywhere
+
+A desktop toast only helps if you are sitting at that machine. Channels send
+the same alerts to where you actually are.
+
+```console
+$ wrench notify setup
+  1  Email (SMTP)
+  2  Telegram bot
+  3  Slack incoming webhook
+  4  Microsoft Teams webhook
+  5  Discord webhook
+  6  Generic JSON webhook (ntfy, …)
+type [1-6 or name]: 2
+╭─ 🔔 Telegram bot ────────────────────────────────────────────────────────────╮
+│ In Telegram, open a chat with @BotFather, send /newbot, follow the two       │
+│ questions, and copy the token it gives you (123456:ABC-DEF…).                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+bot token (hidden):
+✔ token accepted — the bot is @wrench_ops_bot
+  Now, in Telegram, open a chat with @wrench_ops_bot and send it any message.
+press Enter when you have sent it:
+✔ alerts will go to Ada L
+send from which severity? [attention / critical]: critical
+✔ test message sent — check that it arrived
+```
+
+| command | what it does |
+|---|---|
+| `wrench notify` | the channels that are set up, and from which severity each one fires |
+| `wrench notify setup [type]` | add a channel; a test message is sent before anything is saved |
+| `wrench notify test [name]` | send a test message to every channel, or to one |
+| `wrench notify remove <name>` | remove a channel and delete its stored secret |
+
+What to know:
+
+- **Several channels, each with its own threshold.** For example, everything
+  worth attention to a Slack channel and only `critical` to your phone on
+  Telegram. Briefs and reminders you schedule go to every channel.
+- **What reaches them:** patrol findings, security and backup alerts,
+  certificate warnings, and on a hub a machine going silent or coming back.
+- **Secrets stay private.** A webhook URL, a bot token or a mail password is
+  typed hidden, kept in an owner-only file next to the config, and never
+  appears on screen, in the audit log or in an error message.
+- **A link back to the alert** is added only if you say where the dashboard
+  can be reached from other devices: `[notify] dashboard_url =
+  "https://hub.example:8788"`. A `localhost` link would be useless on a phone.
+- **Email** works with any SMTP server (STARTTLS, SSL or plain on a trusted
+  relay). Gmail and Microsoft 365 need an app password. A password is never
+  sent without TLS.
+- **Unattended setup:** `echo "$URL" | wrench notify setup slack --secret-stdin`,
+  and for email `--host --port --security --username --from --to`.
+- **Offline mode** skips any channel whose server is not on your own network.
+- **WhatsApp** is not included: it has no simple bot route, only Meta's
+  business API or a paid gateway.
+
+Teams uses the Workflows webhook ("Post to a channel when a webhook request
+is received") and an Adaptive Card.
 
 ## PREDICT — see it coming
 

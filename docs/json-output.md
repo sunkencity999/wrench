@@ -53,6 +53,8 @@ stdout** — no banners, no spinners, no color codes — so it pipes straight in
 | `wrench model --json` | `wrench.model.v1` | `provider`, `model`, `deep_model`, `base_url`, `hosted`, `key{present, source}` — never the key | 0 |
 | `wrench model list --json` | `wrench.model.list.v1` | `provider`, `current`, `suggested{everyday, deep}`, `models[]` — id, name, created, fast | **1 when the provider cannot be asked** |
 | `wrench show [id] --json` | `wrench.show.v1` | `ok`, `url`, `started`, `detail`, `notification` | **1 when the dashboard could not be reached or started** |
+| `wrench notify --json` | `wrench.notify.v1` | `enabled`, `min_severity`, `desktop`, `webhook`, `channels[]` — name, type, destination (never the secret), min_severity, ready | 0 |
+| `wrench notify test [name] --json` | `wrench.notify.test.v1` | `ok`, `results[]` — name, ok, detail | **1 when any channel failed or none exist** |
 | `wrench password --json` | `wrench.password.v1` | `set`, `changed`. Works with `--status`, `--clear`, `--stdin`; never contains the password or its hash | `--status`: **1 when none is set** |
 | `wrench commands --json` | `wrench.commands.v1` | `os`, `tier`, `counts{diag, fix, packs}`, `disabled_packs[]`, `sudo`, `allow_diag[]`, `allow_fix[]`, `packs[]` — pack, title, enabled, diag, fix, asks, diag_tools[], fix_tools[]; with a pack name or `--fixes`, `commands[]` — kind, pack, os, label, examples[], asks_every_time, timeout_s. `--all` covers every OS | 2 for an unknown pack |
 | `wrench commands --check "<cmd>" --json` | `wrench.commands.check.v1` | `command`, `verdict` (`look` \| `fix` \| `refused`), `tier`, `allowed_now`, `needs_confirm`, `label`, `pack`, `reason` | **1 when refused** |

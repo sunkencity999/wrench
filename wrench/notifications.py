@@ -429,7 +429,7 @@ def send_http_jsonl(url: str, rec: dict, data_dir: Path,
 # ---------------- fan-out ----------------
 
 def fan_out(st: NotifySettings, rec: dict, data_dir: Path, title: str | None = None,
-            block_public: bool = False) -> dict:
+            block_public: bool = False, cfg=None) -> dict:
     """Deliver one record to every configured sink that meets its threshold.
 
     Returns {sink: bool} for sinks that were attempted. Never raises.
@@ -466,7 +466,23 @@ def fan_out(st: NotifySettings, rec: dict, data_dir: Path, title: str | None = N
             _log(data_dir, "offline mode: http_jsonl sink skipped (public host)")
         else:
             out["http_jsonl"] = send_http_jsonl(st.http_jsonl_url, rec, data_dir)
+    if cfg is not None:      # named channels: email, Telegram, Slack, Teams, Discord, …
+        try:
+            from . import channels
+            for name, (ok, _detail) in channels.deliver(
+                    cfg, rec, data_dir, block_public=block_public).items():
+                out[f"channel:{name}"] = ok
+        except Exception:  # noqa: BLE001 — channels never break the other sinks
+            pass
     return out
+
+
+def _channel_thresholds(cfg) -> list[str]:
+    try:
+        from . import channels
+        return channels.thresholds(cfg)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def emit_event(cfg, kind: str, severity: str, summary: str,
@@ -486,12 +502,13 @@ def emit_event(cfg, kind: str, severity: str, summary: str,
             thresholds.append(st.syslog_min_severity or st.min_severity)
         if st.http_jsonl_url:
             thresholds.append(st.http_jsonl_min_severity or st.min_severity)
+        thresholds += _channel_thresholds(cfg)
         if not any(should_notify(severity, t) for t in thresholds):
             return None
         dd = Path(data_dir) if data_dir is not None else cfg.data_dir
         rec = record(dd, severity, summary, report_id=report_id, kind=kind)
         from . import offline as _offline
-        fan_out(st, rec, dd, block_public=_offline.is_offline(cfg))
+        fan_out(st, rec, dd, block_public=_offline.is_offline(cfg), cfg=cfg)
         return rec
     except Exception:  # noqa: BLE001 — a notification must never break the caller
         return None
@@ -524,6 +541,11 @@ def deliver(cfg, kind: str, severity: str, summary: str,
                 _log(dd, "offline mode: webhook sink skipped (public host)")
             else:
                 send_webhook(st.webhook_url, rec, dd)
+        try:      # named channels get what the operator asked to be told, too
+            from . import channels
+            channels.deliver(cfg, rec, dd, force=True, block_public=block_public)
+        except Exception:  # noqa: BLE001
+            pass
         # the SIEM sinks keep their own thresholds
         if st.syslog_address and should_notify(severity,
                                                st.syslog_min_severity or st.min_severity):
@@ -559,6 +581,7 @@ def dispatch(cfg, patrol: dict, report_id: float | None = None,
             thresholds.append(st.syslog_min_severity or st.min_severity)
         if st.http_jsonl_url:
             thresholds.append(st.http_jsonl_min_severity or st.min_severity)
+        thresholds += _channel_thresholds(cfg)
         if not any(should_notify(sev, t) for t in thresholds):
             return None
         dd = Path(data_dir) if data_dir is not None else cfg.data_dir
@@ -566,7 +589,7 @@ def dispatch(cfg, patrol: dict, report_id: float | None = None,
         rec = record(dd, sev, summary, report_id=report_id, kind="patrol")
         from . import offline as _offline
         fan_out(st, rec, dd, title=f"🔧 wrench patrol: {sev}",
-                block_public=_offline.is_offline(cfg))
+                block_public=_offline.is_offline(cfg), cfg=cfg)
         return rec
     except Exception:  # noqa: BLE001 — a notification must never break a patrol
         return None

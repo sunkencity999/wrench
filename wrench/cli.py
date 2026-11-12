@@ -65,7 +65,7 @@ _HELP_PANELS = {
     "policy": ARC_FIX, "commands": ARC_FIX,
     "remember": ARC_LEARN, "memory": ARC_LEARN, "jobs": ARC_LEARN, "heartbeat": ARC_LEARN,
     "fleet": ARC_SCALE, "web": ARC_SCALE, "password": ARC_SCALE, "metrics": ARC_SCALE,
-    "init": ARC_SETUP, "model": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
+    "init": ARC_SETUP, "model": ARC_SETUP, "notify": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
 }
 
 
@@ -3316,6 +3316,327 @@ app.add_typer(metrics_app, name="metrics")
 
 
 # ---------------- fleet (hub + node reporting + dead-man's switch) ----------------
+
+# ---------------------------------------------------------------- wrench notify
+notify_app = typer.Typer(
+    help="🔔 where alerts go — email, Telegram, Slack, Teams, Discord, or any webhook.",
+    invoke_without_command=True, no_args_is_help=False)
+
+_NOTIFY_HOWTO = {
+    "slack": "In Slack: Apps → Incoming Webhooks → Add to Slack, choose a channel, and "
+             "copy the Webhook URL (https://hooks.slack.com/services/…).",
+    "teams": "In Teams: on the channel choose Workflows → \"Post to a channel when a "
+             "webhook request is received\", finish the steps, and copy the URL it gives you.",
+    "discord": "In Discord: channel settings → Integrations → Webhooks → New Webhook → "
+               "Copy Webhook URL.",
+    "webhook": "Any address that accepts a JSON POST. For ntfy: https://ntfy.sh/<your-topic> "
+               "(or your own ntfy server).",
+    "telegram": "In Telegram, open a chat with @BotFather, send /newbot, follow the two "
+                "questions, and copy the token it gives you (123456:ABC-DEF…).",
+    "email": "You need your mail server's address and, usually, a login. For Gmail or "
+             "Microsoft 365 use an app password, not your normal one.",
+}
+
+
+def _notify_test_record(cfg) -> dict:
+    return {"id": "test", "ts": time.time(), "severity": "info", "kind": "test",
+            "summary": f"Test message from wrench on {platform.node() or 'this machine'}. "
+                       "If you can read this, this channel works."}
+
+
+def _unique_channel_name(cfg, base: str) -> str:
+    from . import channels
+    taken = {c.name for c in channels.load(cfg)} | set(
+        ((cfg.raw or {}).get("notify", {}) or {}).get("channels", {}) or {})
+    if base not in taken:
+        return base
+    for i in range(2, 50):
+        if f"{base}-{i}" not in taken:
+            return f"{base}-{i}"
+    return base
+
+
+@notify_app.callback()
+def notify_root(ctx: typer.Context, json_out: bool = JSON_OPT):
+    """Show where alerts go. Subcommands add, test and remove channels.
+
+    \b
+    wrench notify                 the channels that are set up
+    wrench notify setup           add one: email, Telegram, Slack, Teams, Discord, webhook
+    wrench notify test            send a test message to every channel (or name one)
+    wrench notify remove <name>   remove a channel"""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import channels, notifications as notif
+    cfg = load_config()
+    st = notif.settings_from(cfg)
+    chans = channels.load(cfg)
+    if json_out:
+        jsonout.emit("notify", {
+            "enabled": st.enabled, "min_severity": st.min_severity, "desktop": st.desktop,
+            "webhook": bool(st.webhook_url),
+            "channels": [{"name": c.name, "type": c.type, "destination": c.destination,
+                          "min_severity": c.min_severity or st.min_severity,
+                          "ready": bool(c.secret) or c.type == "email"} for c in chans]})
+        return
+    t = Table(border_style="bright_blue", title="🔔 where alerts go")
+    t.add_column("channel", style="bold")
+    t.add_column("type")
+    t.add_column("to")
+    t.add_column("from severity")
+    t.add_row("desktop", "toast on this machine", "—",
+              st.min_severity if st.desktop else Text("off", style="dim"))
+    if st.webhook_url:
+        t.add_row("webhook", "generic ([notify] webhook_url)",
+                  _host_of(st.webhook_url), st.min_severity)
+    for c in chans:
+        t.add_row(c.name, channels.TYPES[c.type]["label"], escape(c.destination),
+                  (c.min_severity or st.min_severity) if (c.secret or c.type == "email")
+                  else Text("no credential stored", style="yellow"))
+    console.print(t)
+    if not st.enabled:
+        console.print("[yellow]notifications are switched off[/yellow] ([notify] enabled = false)")
+    console.print("[dim]add one: wrench notify setup   ·   prove they work: wrench notify "
+                  "test   ·   remove: wrench notify remove <name>[/dim]"
+                  if chans else
+                  "[dim]nothing reaches you away from this machine yet — add a channel: "
+                  "[/dim][bold]wrench notify setup[/bold]")
+
+
+def _host_of(url: str) -> str:
+    from urllib.parse import urlsplit
+    return urlsplit(url).hostname or "?"
+
+
+@notify_app.command("setup")
+def notify_setup(
+    kind: str = typer.Argument(None, metavar="[TYPE]",
+                               help="email | telegram | slack | teams | discord | webhook"),
+    name: str = typer.Option(None, "--name", help="a short name for the channel (default: the type)"),
+    min_severity: str = typer.Option(None, "--min-severity",
+                                     help="attention (default) or critical"),
+    secret_stdin: bool = typer.Option(False, "--secret-stdin",
+                                      help="read the webhook URL / bot token / password from stdin"),
+    chat_id: str = typer.Option(None, "--chat-id", help="telegram: the chat to write to"),
+    host: str = typer.Option(None, "--host", help="email: SMTP server"),
+    port: int = typer.Option(None, "--port", help="email: SMTP port"),
+    security: str = typer.Option(None, "--security", help="email: starttls | ssl | none"),
+    username: str = typer.Option(None, "--username", help="email: SMTP login"),
+    sender: str = typer.Option(None, "--from", help="email: From address"),
+    to: list[str] = typer.Option(None, "--to", help="email: recipient (repeatable)"),
+    no_test: bool = typer.Option(False, "--no-test", help="save without sending a test message"),
+):
+    """Add a notification channel, and prove it works with a test message.
+
+    \b
+    wrench notify setup                     choose a type, then follow along
+    wrench notify setup telegram
+    wrench notify setup slack --name ops
+    echo "$URL" | wrench notify setup slack --secret-stdin        (unattended)
+
+    Secrets (a webhook URL, a bot token, a mail password) are typed hidden and
+    stored in an owner-only file next to the config. A test message is sent
+    before anything is saved, so a channel that is listed is one that worked."""
+    from . import audit as _amod, channels, offline as _offline
+    cfg = load_config()
+    interactive = _isatty() and not secret_stdin
+    types = list(channels.TYPES)
+    if kind is None:
+        if not interactive:
+            console.print("[red]name a type:[/red] " + " | ".join(types))
+            raise typer.Exit(2)
+        t = Table(border_style="bright_blue", show_header=False, title="🔔 add a channel")
+        t.add_column(justify="right", style="bold cyan")
+        t.add_column(style="bold")
+        for i, k in enumerate(types, 1):
+            t.add_row(str(i), channels.TYPES[k]["label"])
+        console.print(t)
+        raw = typer.prompt(f"type [1-{len(types)} or name]").strip().lower()
+        kind = types[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(types) else raw
+    kind = kind.strip().lower()
+    if kind not in channels.TYPES:
+        console.print(f"[red]{escape(kind)!s} is not a channel type.[/red] [dim]choose: "
+                      f"{', '.join(types)}[/dim]")
+        raise typer.Exit(2)
+    name = (name or _unique_channel_name(cfg, kind)).strip().lower()
+    if not channels.valid_name(name):
+        console.print("[red]a channel name is lowercase letters, digits and dashes[/red]")
+        raise typer.Exit(2)
+    if min_severity and min_severity.lower() not in ("info", "attention", "error", "critical"):
+        console.print("[red]--min-severity is attention or critical[/red]")
+        raise typer.Exit(2)
+
+    info = channels.TYPES[kind]
+    if interactive:
+        console.print(Panel(_NOTIFY_HOWTO[kind], border_style="bright_blue",
+                            title=f"🔔 {info['label']}", title_align="left"))
+    settings: dict = {}
+    secret = sys.stdin.readline().rstrip("\r\n").strip() if secret_stdin else ""
+
+    def ask_secret(label: str) -> str:
+        return typer.prompt(label, hide_input=True, default="", show_default=False).strip()
+
+    try:
+        if kind in channels.URL_TYPES:
+            if not secret and interactive:
+                secret = ask_secret(f"{info['label']} URL (hidden)")
+            if not secret.lower().startswith("https://") and not (
+                    kind == "webhook" and secret.lower().startswith("http://")):
+                console.print("[red]that is not a webhook address[/red] "
+                              "[dim](it should start with https://)[/dim]")
+                raise typer.Exit(1)
+        elif kind == "telegram":
+            if not secret and interactive:
+                secret = ask_secret("bot token (hidden)")
+            with console.status("[cyan]checking the token with Telegram..."):
+                bot = channels.telegram_bot_name(secret)
+            console.print(f"[green]✔ token accepted[/green] — the bot is [bold]@{escape(bot)}[/bold]")
+            if not chat_id and interactive:
+                console.print(Panel(
+                    f"Now, in Telegram, open a chat with [bold]@{escape(bot)}[/bold] and send it "
+                    "any message (say “hi”).\nFor a group: add the bot to the group and "
+                    "write something there.", border_style="bright_blue",
+                    title="one more step", title_align="left"))
+                chats: list = []
+                for _ in range(6):
+                    typer.prompt("press Enter when you have sent it", default="",
+                                 show_default=False)
+                    chats = channels.telegram_find_chats(secret)
+                    if chats:
+                        break
+                    console.print("[yellow]no message has reached the bot yet[/yellow] — "
+                                  "send one, then press Enter again")
+                if not chats:
+                    console.print("[red]the bot has not heard from anyone[/red] — nothing saved")
+                    raise typer.Exit(1)
+                if len(chats) == 1:
+                    pick = chats[0]
+                else:
+                    for i, c in enumerate(chats, 1):
+                        console.print(f"  [bold cyan]{i}[/bold cyan]  {escape(c['name'])}")
+                    raw = typer.prompt("send alerts to which chat?", default="1").strip()
+                    pick = chats[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(chats) \
+                        else chats[0]
+                chat_id, settings["chat_name"] = pick["id"], pick["name"]
+                console.print(f"[green]✔[/green] alerts will go to [bold]{escape(pick['name'])}[/bold]")
+            if not chat_id:
+                console.print("[red]telegram needs --chat-id[/red] [dim](run this in a "
+                              "terminal and wrench finds it for you)[/dim]")
+                raise typer.Exit(2)
+            settings["chat_id"] = str(chat_id)
+        else:  # email
+            if interactive:
+                host = host or typer.prompt("mail server (e.g. smtp.gmail.com)").strip()
+                security = security or typer.prompt("security [starttls/ssl/none]",
+                                                    default="starttls").strip().lower()
+                port = port or int(typer.prompt(
+                    "port", default={"ssl": 465, "none": 25}.get(security, 587)))
+                username = username if username is not None else typer.prompt(
+                    "login (enter for none)", default="", show_default=False).strip()
+                if username and not secret:
+                    secret = ask_secret("password or app password (hidden)")
+                sender = sender or typer.prompt("From address", default=username or "").strip()
+                if not to:
+                    to = [x.strip() for x in typer.prompt(
+                        "send alerts to (comma-separated addresses)").split(",") if x.strip()]
+            if not host or not to or not (sender or username):
+                console.print("[red]email needs --host, --to and --from (or --username)[/red]")
+                raise typer.Exit(2)
+            settings.update({"host": host, "port": port, "security": security or "starttls",
+                             "username": username or "", "from": sender or username,
+                             "to": list(to)})
+    except channels.ChannelError as e:
+        console.print(f"[red]{escape(str(e))}[/red] [dim]— nothing saved[/dim]")
+        raise typer.Exit(1) from None
+
+    if min_severity is None and interactive:
+        raw = typer.prompt("send from which severity? [attention = everything worth a look / "
+                           "critical = only what cannot wait]", default="attention").strip().lower()
+        min_severity = raw if raw in ("attention", "critical") else "attention"
+    ch = channels.Channel(name=name, type=kind, min_severity=(min_severity or "").lower(),
+                          settings=settings, secret=secret)
+
+    if _offline.is_offline(cfg) and not _offline.host_is_private(ch.server_host()):
+        console.print("[yellow]offline mode is on[/yellow] and this channel's server is not "
+                      "on a local address: it would be skipped. Not saved.")
+        raise typer.Exit(1)
+    if not no_test:
+        try:
+            with console.status(f"[cyan]sending a test message to {name}..."):
+                channels.send(ch, _notify_test_record(cfg))
+            console.print("[green]✔ test message sent[/green] — check that it arrived")
+        except channels.ChannelError as e:
+            console.print(Panel(f"[red]the test message did not go through[/red] — "
+                                f"{escape(str(e))}", border_style="red", title=f"🔔 {name}"))
+            if not (interactive and typer.confirm("save the channel anyway?", default=False)):
+                console.print("[dim]nothing saved[/dim]")
+                raise typer.Exit(1) from None
+    try:
+        path = channels.save(ch)
+    except (ValueError, OSError) as e:
+        console.print(f"[red]could not save: {e}[/red]")
+        raise typer.Exit(1) from None
+    _amod.log_event(cfg, "notify.channel.added", {"name": name, "type": kind,
+                                                  "min_severity": ch.min_severity or "default"})
+    console.print(Panel(
+        f"[green]channel [bold]{name}[/bold] added[/green] — {info['label']} → "
+        f"{escape(ch.destination)}\n"
+        f"alerts from severity [bold]{ch.min_severity or 'attention'}[/bold] and up go there, "
+        "along with the briefs and reminders you schedule\n"
+        f"[dim]config: {path} · test again: wrench notify test {name} · remove: wrench "
+        f"notify remove {name}[/dim]",
+        border_style="green", title="🔔 wrench notify", title_align="left"))
+
+
+@notify_app.command("test")
+def notify_test(
+    name: str = typer.Argument(None, help="one channel (default: all of them)"),
+    json_out: bool = JSON_OPT,
+):
+    """Send a test message to every channel, and say which arrived at the server."""
+    from . import channels, offline as _offline
+    cfg = load_config()
+    chans = [c for c in channels.load(cfg) if not name or c.name == name]
+    if not chans:
+        if json_out:
+            jsonout.emit("notify.test", {"results": [], "ok": False})
+        else:
+            console.print((f"no channel named {escape(name)!s}" if name else "no channels are set up")
+                          + " — [bold]wrench notify setup[/bold]")
+        raise typer.Exit(1)
+    results = channels.deliver(cfg, _notify_test_record(cfg), cfg.data_dir, force=True,
+                               block_public=_offline.is_offline(cfg), only=name)
+    ok = all(v[0] for v in results.values())
+    if json_out:
+        jsonout.emit("notify.test", {"ok": ok, "results": [
+            {"name": n, "ok": v[0], "detail": v[1]} for n, v in results.items()]})
+        raise typer.Exit(0 if ok else 1)
+    for c in chans:
+        good, detail = results.get(c.name, (False, "not attempted"))
+        console.print(Text.assemble(("✔ " if good else "✖ ", "green" if good else "red"),
+                                    (c.name, "bold"), (f"  {c.type} → {c.destination}", "dim"),
+                                    ("" if good else f"\n    {detail}", "red")))
+    console.print("[dim]sent means the server accepted it — check it reached you.[/dim]"
+                  if ok else "[yellow]fix a failing channel with: wrench notify setup <type> "
+                             "--name <name>[/yellow]")
+    raise typer.Exit(0 if ok else 1)
+
+
+@notify_app.command("remove")
+def notify_remove(name: str = typer.Argument(..., help="the channel to remove")):
+    """Remove a channel and delete its stored secret."""
+    from . import audit as _amod, channels
+    cfg = load_config()
+    name = name.strip().lower()
+    if not channels.valid_name(name) or not channels.remove(name):
+        console.print(f"no channel named {escape(name)!s} [dim](see: wrench notify)[/dim]")
+        raise typer.Exit(1)
+    _amod.log_event(cfg, "notify.channel.removed", {"name": name})
+    console.print(f"[green]✔[/green] removed channel [bold]{name}[/bold] and its stored secret")
+
+
+app.add_typer(notify_app, name="notify")
+
 
 # ---------------------------------------------------------------- wrench model
 model_app = typer.Typer(

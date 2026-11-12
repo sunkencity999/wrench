@@ -250,6 +250,9 @@ enabled = true
 min_severity = "attention"   # attention | error | critical
 desktop = true
 # webhook_url = "https://ntfy.sh/your-topic"
+# Email, Telegram, Slack, Teams, Discord: `wrench notify setup` adds a
+# [notify.channels.<name>] section, each with its own min_severity.
+# dashboard_url = "https://hub.example:8788"   # adds a "Show" link to messages
 
 [webintel]
 # Built-in web intelligence: OSV.dev CVE lookups for installed packages and

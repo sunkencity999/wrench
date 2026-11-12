@@ -18,6 +18,15 @@
 
 ### New
 
+- **`wrench notify` — notification channels.** Alerts can now reach the admin
+  by email (SMTP), Telegram, Slack, Microsoft Teams, Discord or any JSON
+  webhook, with several channels at once and a severity threshold per channel.
+  `wrench notify setup` walks through adding one (for Telegram it finds the
+  chat for you), sends a test message before saving, and stores the secret
+  owner-only; `wrench notify test` and `wrench notify remove` complete it.
+  Patrol, security, backup, certificate and fleet alerts all go through the
+  channels, as do scheduled briefs and reminders. `[notify] dashboard_url`
+  adds a link back to the alert.
 - **`wrench show [id]`** opens the dashboard at an alert (the newest unread by
   default), starting it in the background if needed; `wrench web --detach` and
   `wrench web --stop` run the dashboard without a terminal. The dashboard

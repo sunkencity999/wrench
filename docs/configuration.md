@@ -171,6 +171,39 @@ Browsers sign in at `/login` with the password or a token and receive a signed, 
 `Authorization: Bearer <token>` (a token, never the password). `/healthz` is the only route with no
 credential, and it carries no data.
 
+### Channels — email, Telegram, Slack, Teams, Discord, webhook
+
+`wrench notify setup` writes these; you rarely type them by hand.
+
+```toml
+[notify]
+# dashboard_url = "https://hub.example:8788"   # adds a "Show" link to messages
+
+[notify.channels.ops]            # any name: lowercase letters, digits, dashes
+type = "slack"                   # email | telegram | slack | teams | discord | webhook
+# min_severity = "attention"     # default: [notify] min_severity
+secret_file = "~/.config/wrench/notify/ops.secret"   # the webhook URL
+
+[notify.channels.phone]
+type = "telegram"
+chat_id = "123456789"
+min_severity = "critical"
+secret_file = "~/.config/wrench/notify/phone.secret" # the bot token
+
+[notify.channels.mail]
+type = "email"
+host = "smtp.example.com"
+port = 587
+security = "starttls"            # starttls | ssl | none
+username = "alerts@example.com"
+from = "wrench <alerts@example.com>"
+to = ["oncall@example.com"]
+secret_file = "~/.config/wrench/notify/mail.secret"  # the password
+```
+
+The secret may instead come from `WRENCH_NOTIFY_<NAME>_SECRET`. `enabled =
+false` in a channel's section switches it off without removing it.
+
 ### Desktop notifications you can click
 
 `[notify] desktop = true` (the default) shows a desktop notification for an

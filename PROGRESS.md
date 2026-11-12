@@ -1,5 +1,18 @@
 # wrench — build progress
 
+## 2026-11-11 — notification channels
+
+`wrench/channels.py`: named channels under `[notify.channels.<name>]` (email,
+telegram, slack, teams, discord, webhook), each with `min_severity` and a
+secret in `<config dir>/notify/<name>.secret`. `notifications.fan_out`,
+`deliver` and the record thresholds include them, so every existing alert
+source (and fleet silence) reaches them. CLI: `wrench notify [setup|test|
+remove]`. Tests (`tests/test_channels.py`) run each sender over a real socket
+against local stand-ins: an HTTP server for the chat services and Telegram's
+API shape, a minimal SMTP server for email. NOT verified against the real
+Slack, Teams, Discord, Telegram or a real mail provider (no accounts), nor
+STARTTLS/SSL mail paths, which only smtplib's own behaviour covers.
+
 ## 2026-11-11 — clickable toasts
 
 `wrench/toast.py`. macOS: an AppleScript applet compiled with `osacompile`
