@@ -52,6 +52,9 @@
 
 ### Changed
 
+- `wrench fleet report` now says "the hub refused this report" (and how to
+  reconnect) when the hub rejects it, instead of "hub unreachable — queued".
+  A hub with no dashboard password says so when a machine tries to connect.
 - Stop-protection for remote access, logging and security services now also
   covers `disable`, `service … stop`, `sc config … start= disabled` and
   PowerShell `Stop-Service`, case-insensitively.
