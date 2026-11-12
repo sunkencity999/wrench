@@ -3546,10 +3546,18 @@ def fleet_report(
                       f"[dim]({res['detail']}; status={report['status']}, "
                       f"worst={report['worst_severity']})[/dim]")
     else:
-        console.print(Panel(
-            f"[yellow]hub unreachable \u2014 report queued for retry[/yellow]\n"
-            f"[dim]{res['detail']}[/dim]",
-            border_style="yellow", title="\U0001f527 wrench fleet"))
+        if res.get("rejected"):
+            head = "[red]the hub refused this report[/red]"
+            hint = ("\nthis machine's key is no longer accepted \u2014 connect it again: "
+                    "[bold]wrench fleet connect <hub-address>[/bold]"
+                    if "revoked" in res["detail"] or "invalid signature" in res["detail"]
+                    else "")
+        elif res.get("queued"):
+            head, hint = "[yellow]hub unreachable \u2014 report queued for retry[/yellow]", ""
+        else:
+            head, hint = "[yellow]not reported[/yellow]", ""
+        console.print(Panel(f"{head}\n[dim]{res['detail']}{hint}[/dim]",
+                            border_style="yellow", title="\U0001f527 wrench fleet"))
         raise typer.Exit(1)
 
 
@@ -3634,8 +3642,9 @@ def fleet_status(json_out: bool = JSON_OPT):
         raise typer.Exit(1 if summary.get("silent") or summary.get("red") else 0)
     if not states:
         console.print(Panel(
-            "[dim]no nodes have reported yet.[/dim] Configure a node with "
-            "[bold][fleet][/bold] hub_url + token and run [bold]wrench fleet report[/bold].",
+            "[dim]no machines have reported yet.[/dim] On each machine run "
+            "[bold]wrench fleet connect <this hub's address>[/bold] and enter the "
+            "dashboard password (set it here with [bold]wrench password[/bold]).",
             border_style="bright_blue", title="\U0001f527 wrench fleet status"))
         return
     t = Table(title=f"\U0001f527 fleet \u2014 {summary['total']} node(s): "

@@ -36,7 +36,7 @@
 - **Prove** — [backups](#wrench-backups--untested-backups-dont-exist) · [audit](#wrench-audit--prove-what-happened) · [comply](#wrench-comply--prove-the-box-meets-the-baseline) · [bundle](#wrench-bundle--the-air-gap-evidence-bundle)
 - **Fix** — [policy tiers](#policy-tiers--the-leash) · [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
 - **Learn** — [memory](#wrench-remember--wrench-memory--it-learns-how-you-run-this-machine) · [jobs & heartbeat](#wrench-jobs--wrench-heartbeat--work-it-does-without-being-asked)
-- **Scale** — [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
+- **Scale** — [tutorial: many machines, one dashboard](#tutorial-many-machines-one-dashboard) · [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
 - **Understand it** — [How a patrol works](#how-a-patrol-works) · [The brain is swappable](#the-brain-is-swappable) · [Policy tiers](#policy-tiers--the-leash) · [Architecture](#architecture) · [Philosophy](#philosophy) · [FAQ](#faq)
 
 | guide | read it when |
@@ -1140,6 +1140,250 @@ No systemd, launchd or Task Scheduler — a container, a tmux pane?
 ## SCALE — many machines, one view, wired into your stack
 
 Run wrench everywhere and plug it into what you already operate.
+
+New to this? Start with the tutorial below. The reference for each fleet
+command follows it.
+
+### Tutorial: many machines, one dashboard
+
+This walks through a complete multi-machine setup: one machine becomes the
+**hub**, every other machine **connects** to it, and you watch all of them
+from one dashboard. Allow about ten minutes for the hub and two minutes per
+machine. The same steps work on Linux, macOS and Windows, in any mix.
+
+```text
+                 ┌──────────────────────────────┐
+   you ────────▶ │  HUB  hub.example:8788       │   dashboard + fleet console
+   (browser)     │  wrench fleet serve          │   (behind the hub password)
+                 └──────────────▲───────────────┘
+                                │  signed report after every patrol
+            ┌───────────────────┼───────────────────┐
+        ┌───┴────┐          ┌───┴────┐          ┌───┴────┐
+        │ web-01 │          │ db-01  │          │ win-03 │   each runs wrench,
+        └────────┘          └────────┘          └────────┘   each has its own key
+```
+
+Three things to know before you start:
+
+- **Machines call the hub; the hub never calls them.** A machine needs to
+  reach the hub on one TCP port (8788 by default). Nothing has to be opened
+  on the machines themselves, so they can sit behind NAT or a firewall.
+- **The hub password is used once per machine.** `wrench fleet connect` trades
+  it for a key that belongs to that machine alone. The password is not stored
+  on the machine, and each machine can be cut off on its own.
+- **The hub is read-only towards the machines.** It shows what they report.
+  It cannot run commands on them.
+
+#### Before you start
+
+| you need | notes |
+|---|---|
+| wrench on every machine | the [one-line install](#60-second-quickstart). Update older installs first: `wrench fleet connect` is new |
+| a machine to be the hub | anything that stays on: a small VM or an existing server is plenty (a thousand machines is a few MB of SQLite) |
+| the hub's address | an IP or DNS name the other machines can reach, e.g. `192.168.1.10` or `hub.example` |
+| TCP 8788 open on the hub | inbound, from the machines and from your browser |
+
+#### Step 1 — set up the hub
+
+On the machine that will be the hub:
+
+```console
+$ wrench password
+new dashboard password:
+again, to confirm:
+✔ dashboard password set
+```
+
+This one password does two jobs: it signs you in to the dashboard, and it is
+what each machine presents, once, to connect. Use a long one (the minimum is 8
+characters). Only a salted hash is stored.
+
+Open the port if the hub runs a firewall:
+
+```bash
+sudo ufw allow 8788/tcp                                              # Ubuntu / Debian
+sudo firewall-cmd --add-port=8788/tcp --permanent && sudo firewall-cmd --reload   # RHEL / Rocky / Fedora
+```
+
+```powershell
+New-NetFirewallRule -DisplayName "wrench hub" -Direction Inbound -Protocol TCP -LocalPort 8788 -Action Allow   # Windows
+```
+
+On macOS, answer **Allow** when the system asks whether Python may accept
+incoming connections.
+
+Start the hub:
+
+```console
+$ wrench fleet serve --host 0.0.0.0
+╭─────────────────────────── 🔧 wrench fleet serve ────────────────────────────╮
+│ fleet console: http://hub.example:8788/fleet                                 │
+│ nodes report to: http://hub.example:8788/api/fleet/report                    │
+│ 0 enrollment key(s) · silent-node sweep every 30s · Ctrl-C to stop           │
+│ add a machine — run on it: wrench fleet connect hub.example                  │
+│ (asks for the dashboard password)                                            │
+│ access control: on — sign in with the dashboard password                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+`--host 0.0.0.0` is what lets other machines reach it; without it the hub
+listens on this machine only, and says so. The banner prints the exact
+`connect` line to use in step 3.
+
+Open `http://<hub-address>:8788` in a browser and sign in with the password.
+The console shows one machine so far: the hub itself.
+
+#### Step 2 — give the hub a certificate (recommended)
+
+Without TLS, the password crosses your network unencrypted each time a
+machine connects or a person signs in. On a network you do not fully control,
+do this step. On an isolated lab network you can skip it and accept the
+warning in step 3.
+
+If you already have a certificate for the hub's name (from your CA or Let's
+Encrypt), use it. Otherwise make a self-signed one, putting the hub's real
+name and IP in both places:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout hub-key.pem -out hub-cert.pem \
+  -subj "/CN=hub.example" \
+  -addext "subjectAltName=DNS:hub.example,IP:192.168.1.10"
+```
+
+Restart the hub with it:
+
+```bash
+wrench fleet serve --host 0.0.0.0 --tls-cert hub-cert.pem --tls-key hub-key.pem
+```
+
+The console is now at `https://hub.example:8788`. With a self-signed
+certificate, copy `hub-cert.pem` (never the key) to each machine; you will
+pass it as `--ca-file` in step 3. With a certificate from a public CA there is
+nothing to copy.
+
+#### Step 3 — connect each machine
+
+On every machine that should report to the hub:
+
+```console
+$ wrench fleet connect hub.example
+password for the hub at https://hub.example:8788:
+╭────────────────────────── 🔧 wrench fleet connect ───────────────────────────╮
+│ connected to https://hub.example:8788 as web-01                              │
+│ saved to ~/.config/wrench/config.toml (owner-only) · every patrol now        │
+│ reports · schedule them with wrench install-service                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+$ wrench install-service
+```
+
+`connect` finds the hub (HTTPS first, then HTTP), asks for the password, gets
+this machine its key, sends one test report, and only then saves the
+settings. If any of that fails, nothing is saved. `install-service` starts the
+schedule: a patrol every 15 minutes, and a report to the hub after each one.
+
+The address can be an IP, a name, `name:port`, or a full URL. Useful options:
+
+| option | what it does |
+|---|---|
+| `--tags prod,web` | labels you can search and filter by in the console |
+| `--node-id web-01` | the name shown on the hub (default: the hostname) |
+| `--ca-file hub-cert.pem` | trust a private or self-signed hub certificate |
+| `--port 9443` | the hub's port, when the address has none and it is not 8788 |
+| `--password-stdin` | read the password from a pipe instead of asking |
+| `--allow-http` | send the password to a hub that has no TLS, without being asked |
+
+Three situations you may meet:
+
+- **The hub has no TLS.** `connect` says the password would cross the network
+  unencrypted and asks before sending it. In a script it refuses unless you
+  pass `--allow-http`.
+- **The hub's certificate is self-signed.** `connect` stops with "its
+  certificate is not trusted". Run it again with `--ca-file hub-cert.pem`. It
+  never falls back to HTTP in this case.
+- **Windows.** The commands are the same in PowerShell:
+  `wrench fleet connect hub.example --tags windows`, then
+  `wrench install-service`.
+
+#### Step 4 — see every machine
+
+Back in the browser, at the hub's address:
+
+![wrench fleet console](docs/assets/fleet.png)
+
+- **The machine picker** in the top bar switches between **This machine** (the
+  hub's own full dashboard), **All machines** (the console), and any one
+  connected machine.
+- **The console** has a tile per status that filters the table, a search box
+  that matches name, host, OS, tag and finding text, sortable columns, and a
+  CSV export.
+- **Click a machine** for its health score and trend, volumes, findings,
+  posture pillars and recent reports. The link `…/fleet?node=web-01` opens
+  that machine directly, so you can bookmark or share it.
+
+From a terminal on the hub, `wrench fleet status` prints the same table, and
+exits non-zero when any machine is critical or silent.
+
+A machine that has only just connected shows "no patrol yet". Run
+`wrench patrol` on it, or wait for its first scheduled one.
+
+#### Step 5 — know when a machine goes quiet
+
+You do not have to configure this. The hub knows how often each machine
+reports. When a report is overdue by twice that interval (30 minutes at the
+default), the machine turns **SILENT** in the console and the hub raises a
+critical notification through whatever you have set under `[notify]`: desktop,
+webhook, syslog. When it reports again, the hub says so. To be told sooner,
+shorten the interval on the machines that matter:
+`wrench install-service --interval 5`.
+
+#### Day-to-day
+
+| you want to | do this |
+|---|---|
+| see who is connected | `wrench fleet keys` on the hub: one key per connected machine, with when it was last used |
+| cut one machine off | `wrench fleet revoke <key id>` on the hub. Its next report is refused |
+| retire a machine | `wrench fleet forget <name>` on the hub (or **Forget this node** in the console) removes it and its history |
+| rebuild or reinstall a machine | run `wrench fleet connect` on it again. It keeps its name and history, and its old key is retired |
+| rename a machine or change its tags | run `wrench fleet connect` again with `--node-id` or `--tags`, or edit `[fleet]` in its config |
+| change the hub password | `wrench password` on the hub. Browsers are signed out; connected machines are not affected, because they hold keys, not the password |
+| stop accepting new machines by password | `[fleet] connect = false` on the hub. Enrollment keys still work |
+| keep the hub running after a reboot | run it as a service: see [Deployment](docs/deployment.md) for a systemd unit |
+| avoid typing `--host` every time | set `listen_host = "0.0.0.0"` (and `tls_cert` / `tls_key`) under `[fleet]` on the hub |
+
+#### Connecting many machines at once
+
+For a handful of machines, typing the password is fine. To script it, pipe the
+password in from wherever you keep secrets:
+
+```bash
+printf '%s\n' "$HUB_PASSWORD" | wrench fleet connect hub.example --password-stdin \
+    --tags "$(hostname -s | cut -d- -f1)"
+wrench install-service
+```
+
+`WRENCH_HUB_PASSWORD` in the environment works too. For a large rollout
+through MDM, Ansible or a machine image, use an enrollment key instead, so the
+admin password never sits in your tooling: `wrench fleet enroll` on the hub
+prints a `wrench fleet join …` line to put in the script. Keys and passwords
+can be mixed on one hub. [Deployment](docs/deployment.md) has Ansible, shell
+and PowerShell examples.
+
+#### If something goes wrong
+
+| what you see | what it means | fix |
+|---|---|---|
+| `no wrench hub answered at …` | nothing reachable at that address and port | check the hub is running with `--host 0.0.0.0`, the port is open in its firewall, and the address is right. `curl http://<hub>:8788/healthz` from the machine should print `{"ok": true}` |
+| `its certificate is not trusted` | the hub uses a private or self-signed certificate | pass `--ca-file <the hub's certificate or CA>` |
+| `has no TLS: the hub password would cross the network unencrypted` | the hub is serving plain HTTP | give the hub a certificate (step 2), or answer yes / pass `--allow-http` |
+| `that password is not valid` | not the hub's dashboard password | it is the one set with `wrench password` **on the hub** |
+| `too many attempts — wait a minute` | ten wrong passwords from this address in a minute | wait, then try again |
+| `this hub has no password` | no dashboard password has been set on the hub | run `wrench password` on the hub; no restart needed |
+| `this machine is not running as a fleet hub` | you reached a plain `wrench web` dashboard (port 8787) | start `wrench fleet serve` there and use its port (8788) |
+| a machine shows **SILENT** | no report within twice its interval | on that machine: is `wrench install-service` done? Does `wrench fleet report` succeed? |
+| `the hub refused this report … enrollment key revoked` | the machine's key was revoked on the hub | run `wrench fleet connect` on it again |
+| `timestamp outside the accepted window` | the machine's clock is more than five minutes off the hub's | fix the clock (NTP) on whichever is wrong |
+| `node id … is registered to a different credential` | two machines are using the same name; the one that connected last holds it | give one of them its own name: `wrench fleet connect <hub> --node-id <name>` |
 
 ### `wrench fleet` — many nodes, one view
 

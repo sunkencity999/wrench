@@ -16,6 +16,9 @@
   top bar of the dashboard and the console switches between this machine,
   all machines, and any one connected machine (`/fleet?node=<name>` links
   straight to one).
+- **A multi-machine tutorial** in the README ("Tutorial: many machines, one
+  dashboard") and on the website, where it includes an interactive
+  walkthrough across a hub and three machines.
 - **A password on the dashboard.** `wrench init` offers to set one (or takes
   it from `WRENCH_WEB_PASSWORD` in an unattended install), and
   `wrench password` sets, changes or removes it (`--status`, `--clear`,

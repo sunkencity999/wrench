@@ -143,14 +143,14 @@ ul.ticks li b { color:var(--text); }
 .term pre { padding:18px 20px; font-size:12.8px; line-height:1.6; overflow-x:auto; white-space:pre; }
 .c-dim { color:#7d8799 } .c-ok { color:#3fb950 } .c-warn { color:#d29922 } .c-crit { color:#f85149 }
 .c-acc { color:#58a6ff } .c-mag { color:#bc8cff } .c-cyan { color:#39c5cf }
-#tut-screen { height:440px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+#tut-screen, .term pre.tut-screen { height:440px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
 .tut-note { color:#39c5cf; font-style:italic; }
 .tut-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:center; margin-top:18px; }
 .tut-chip { font:inherit; font-size:13px; padding:7px 13px; border-radius:999px; cursor:pointer; border:1px solid var(--line);
   background:var(--surface); color:var(--text-2); }
 .tut-chip.current { border-color:var(--accent); color:var(--text); } .tut-chip.done { border-color:var(--good); color:var(--good-ink); }
-#tut-run { font:inherit; font-size:13.5px; font-weight:650; padding:8px 18px; border-radius:9px; cursor:pointer; border:1px solid var(--accent);
-  background:var(--accent); color:var(--accent-ink); } #tut-run:disabled { opacity:.55; cursor:wait; }
+#tut-run, .tut-run { font:inherit; font-size:13.5px; font-weight:650; padding:8px 18px; border-radius:9px; cursor:pointer; border:1px solid var(--accent);
+  background:var(--accent); color:var(--accent-ink); } #tut-run:disabled, .tut-run:disabled { opacity:.55; cursor:wait; }
 
 /* steps, table, tiers */
 .steps3 { counter-reset:s; display:grid; gap:14px; }
@@ -204,7 +204,7 @@ footer .wrap { display:flex; gap:24px; flex-wrap:wrap; justify-content:space-bet
 
 <header class="nav"><div class="wrap">
   <a class="brand" href="#top"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7 6.3l-3.6 3.6-3-1-1-3 3.6-3.6a6 6 0 00-7.5 7.9L2.6 17.8a2.5 2.5 0 103.6 3.6l7.6-7.6a6 6 0 007.9-7.5z"/></svg>wrench</a>
-  <nav aria-label="page sections"><a href="#score">Health score</a><a href="#arcs">What it does</a><a href="#learn">Memory</a><a href="#fleet">Fleet</a>
+  <nav aria-label="page sections"><a href="#score">Health score</a><a href="#arcs">What it does</a><a href="#learn">Memory</a><a href="#fleet">Fleet</a><a href="#multi">Many machines</a>
     <a href="#trust">Security</a><a href="#tutorial">Tour</a><a href="#faq">FAQ</a></nav>
   <span class="sp"></span>
   <button class="iconbtn" id="theme" aria-label="toggle light or dark" title="toggle theme">
@@ -479,7 +479,7 @@ wrench_fleet_nodes_silent 1</pre></div></div>
 
 <section id="fleet"><div class="wrap">
   <div class="center"><p class="eyebrow">Fleet</p><h2>One line per machine.</h2>
-    <p class="lead">Any wrench install can be a hub. Connecting a machine is one command: the hub's address and its password.</p></div>
+    <p class="lead">Any wrench install can be a hub. Connecting a machine is one command: the hub's address and its password. <a href="#multi">Step-by-step tutorial ↓</a></p></div>
   <figure class="shot reveal"><div class="bar"><i></i><i></i><i></i><span>hub.example:8788/fleet</span></div>
     <img src="assets/fleet.png" alt="The fleet console: ten machines with status, health score, operating system, disk and memory, and what needs attention; one machine is silent" loading="lazy" width="1440" height="1100" style="aspect-ratio:1440/860;object-fit:cover;object-position:top"></figure>
   <div class="grid g2" style="margin-top:56px;align-items:start">
@@ -498,6 +498,67 @@ wrench install-service</pre></div></div>
         <li><span><b>Revocable</b> — <code>wrench fleet revoke</code> cuts a key off at the next report.</span></li>
         <li><span><b>Silence is loud</b> — the hub checks every 30 seconds; a machine that misses its deadline raises a critical alert.</span></li>
       </ul></div>
+  </div>
+</div></section>
+
+<section id="multi"><div class="wrap">
+  <div class="center"><p class="eyebrow">Tutorial</p><h2>Many machines, one dashboard.</h2>
+    <p class="lead">One machine becomes the hub. Every other machine connects to it with the hub's address and password. About ten minutes for the hub, two for each machine, on Linux, macOS and Windows in any mix.</p></div>
+
+  <div class="grid g3" style="margin-top:40px">
+    <div class="card"><h3>Machines call the hub</h3><p>A machine needs to reach the hub on one TCP port, 8788. Nothing is opened on the machines themselves, so they can sit behind NAT or a firewall.</p></div>
+    <div class="card"><h3>The password is used once</h3><p><code>wrench fleet connect</code> trades it for a key that belongs to that machine alone. The password is never stored on the machine, and each machine can be cut off on its own.</p></div>
+    <div class="card"><h3>The hub only watches</h3><p>It shows what the machines report: health, disks, findings, silence. It cannot run commands on them.</p></div>
+  </div>
+
+  <div class="center" style="margin-top:56px"><h3>Walk through it</h3>
+    <p class="lead" style="font-size:1rem">A simulated session across a hub and three machines. The prompt shows which machine each command runs on.</p></div>
+  <div class="term" style="max-width:980px;margin:22px auto 0"><div class="term-bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>hub.example · web-01 · db-01 · win-03</span></div>
+    <pre id="fleet-screen" class="tut-screen" aria-live="polite"></pre></div>
+  <div class="tut-controls"><div id="fleet-chips" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center"></div>
+    <button id="fleet-run" class="tut-run" type="button">▶ run</button></div>
+
+  <div class="grid g2" style="margin-top:64px;align-items:start">
+    <div>
+      <h3>The steps, to copy</h3>
+      <div class="steps3" style="margin-top:18px">
+        <div><div><b>On the hub — set the password</b><pre>wrench password</pre>
+          <span class="dim" style="font-size:14.5px">It signs you in to the dashboard, and it is what each machine presents once to connect. Only a salted hash is stored.</span></div></div>
+        <div><div><b>On the hub — open the port and start it</b><pre>sudo ufw allow 8788/tcp        <span class="cmt"># or firewall-cmd / New-NetFirewallRule</span>
+wrench fleet serve --host 0.0.0.0</pre>
+          <span class="dim" style="font-size:14.5px">The banner prints the exact <code>connect</code> line for the other machines. Sign in at <code>http://&lt;hub&gt;:8788</code>.</span></div></div>
+        <div><div><b>Recommended — give the hub a certificate</b><pre>openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout hub-key.pem -out hub-cert.pem -subj "/CN=hub.example" \
+  -addext "subjectAltName=DNS:hub.example,IP:192.168.1.10"
+wrench fleet serve --host 0.0.0.0 \
+  --tls-cert hub-cert.pem --tls-key hub-key.pem</pre>
+          <span class="dim" style="font-size:14.5px">Without TLS the password crosses the network unencrypted. With a self-signed certificate, copy <code>hub-cert.pem</code> (never the key) to each machine.</span></div></div>
+        <div><div><b>On each machine — connect and schedule</b><pre>wrench fleet connect hub.example --tags prod,web
+wrench install-service</pre>
+          <span class="dim" style="font-size:14.5px">An IP works too. Add <code>--ca-file hub-cert.pem</code> for a self-signed hub, <code>--node-id</code> to choose the name shown on the hub. Nothing is saved unless the hub accepts a test report.</span></div></div>
+        <div><div><b>In the browser — pick a machine</b>
+          <span class="dim" style="font-size:14.5px">The picker in the dashboard's top bar switches between this machine, all machines, and any one of them. <code>/fleet?node=web-01</code> links straight to one. A machine that misses two reports in a row turns silent and raises a critical alert.</span></div></div>
+      </div>
+      <p style="margin-top:22px"><a href="https://github.com/sunkencity999/wrench#tutorial-many-machines-one-dashboard">The full tutorial, with every option →</a></p>
+    </div>
+    <div>
+      <h3>Day to day</h3>
+      <table class="trust" style="margin-top:18px">
+        <tr><td>See who is connected</td><td><code>wrench fleet keys</code> on the hub: one key per machine</td></tr>
+        <tr><td>Cut one machine off</td><td><code>wrench fleet revoke &lt;key id&gt;</code></td></tr>
+        <tr><td>Retire a machine</td><td><code>wrench fleet forget &lt;name&gt;</code></td></tr>
+        <tr><td>Rebuilt a machine</td><td>Run <code>connect</code> on it again. It keeps its name and history</td></tr>
+        <tr><td>Change the hub password</td><td><code>wrench password</code>. Connected machines are not affected: they hold keys</td></tr>
+        <tr><td>Script it</td><td><code>--password-stdin</code> or <code>WRENCH_HUB_PASSWORD</code>; for MDM or Ansible use <code>wrench fleet enroll</code> keys</td></tr>
+      </table>
+      <h3 style="margin-top:34px">If something goes wrong</h3>
+      <details class="q"><summary>“no wrench hub answered at …”</summary><p>Nothing reachable at that address and port. Check the hub was started with <code>--host 0.0.0.0</code>, that TCP 8788 is open in its firewall, and the address. From the machine, <code>curl http://&lt;hub&gt;:8788/healthz</code> should print <code>{"ok": true}</code>.</p></details>
+      <details class="q"><summary>“its certificate is not trusted”</summary><p>The hub uses a private or self-signed certificate. Pass <code>--ca-file</code> with the hub's certificate or your CA. <code>connect</code> never falls back to plain HTTP here.</p></details>
+      <details class="q"><summary>“has no TLS: the hub password would cross the network unencrypted”</summary><p>The hub is serving plain HTTP. Give it a certificate, or answer yes at the prompt (<code>--allow-http</code> in a script) on a network you trust.</p></details>
+      <details class="q"><summary>“that password is not valid” or “this hub has no password”</summary><p>It is the password set with <code>wrench password</code> on the hub, not on this machine. Ten wrong tries from one address pause sign-in for a minute.</p></details>
+      <details class="q"><summary>“this machine is not running as a fleet hub”</summary><p>You reached a plain <code>wrench web</code> dashboard on port 8787. Start <code>wrench fleet serve</code> there and use its port, 8788.</p></details>
+      <details class="q"><summary>A machine shows SILENT</summary><p>No report within twice its interval. On that machine: has <code>wrench install-service</code> been run, and does <code>wrench fleet report</code> succeed? If it says the key was revoked, connect again. If it mentions the timestamp window, fix the clock.</p></details>
+    </div>
   </div>
 </div></section>
 

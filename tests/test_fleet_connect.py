@@ -184,7 +184,8 @@ def test_viewer_token_cannot_connect_but_admin_token_can(tmp_path):
                                                "viewer_token": "viewer-secret-token"}},
                         fleet_hub=True)
     try:
-        assert _connect(url, password="viewer-secret-token")[0] == 401
+        code, d = _connect(url, password="viewer-secret-token")
+        assert code == 403 and "wrench password" in d["error"]     # no password set on this hub
         assert _connect(url, password="admin-secret-token")[0] == 200
     finally:
         httpd.shutdown()

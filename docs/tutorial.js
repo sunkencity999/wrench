@@ -186,22 +186,20 @@
     {
       id: "fleet",
       label: "9 · fleet · SCALE",
-      cmd: "wrench fleet enroll --label \"web tier\"",
+      cmd: "wrench fleet connect hub.example --tags prod,web",
       out: [
-        { t: "╭──────────────────── 🔧 wrench fleet enroll ───────────────────╮", cls: "c-acc" },
-        { t: "│ run this on each machine that should report to this hub:      │", cls: "c-dim" },
-        { t: "│ wrench fleet join https://hub.example:8788 wfl_9bbe…0d7b      │", cls: "c-ok" },
-        { t: "│ key id 44c9d382ce376f27 · reusable · shown once               │", cls: "c-dim" },
-        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
-        { t: "$ wrench fleet join https://hub.example:8788 wfl_9bbe…0d7b --tags prod,web     # on web-01", cls: "c-cyan" },
-        { t: "✔ joined https://hub.example:8788 as web-01 (tags: prod, web)", cls: "c-ok" },
+        { t: "password for the hub at https://hub.example:8788: ••••••••••••", cls: "c-cyan" },
+        { t: "╭──────────────────── 🔧 wrench fleet connect ──────────────────╮", cls: "c-ok" },
+        { t: "│ connected to https://hub.example:8788 as web-01               │", cls: "c-ok" },
+        { t: "│ (tags: prod, web) · every patrol now reports                  │", cls: "c-dim" },
+        { t: "╰────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
         { t: "$ wrench fleet status                                                          # on the hub", cls: "c-cyan" },
         { t: "  fleet — 10 node(s): 5 ok / 3 attn / 1 crit / 1 SILENT", cls: "c-acc" },
         { t: "  db-01        critical   41 F   disk /var/lib/postgresql is 96% full", cls: "c-crit" },
         { t: "  web-02       attention  72 C   certificate shop.example.com expires in 9d", cls: "c-warn" },
         { t: "  web-01       ok         94 A   all clear", cls: "c-ok" },
         { t: "  dc-edge-07   SILENT     —      no report for 12m — expected every 5m", cls: "c-crit" },
-        { t: "SCALE — one command on the hub, one line on each machine (drop it in your MDM or Ansible). Every report is signed over a timestamp + body: the hub rejects replays, stale clocks, revoked keys, and a node id claimed by another key — and it stores only a derived key, never the token. The hub itself checks every 30 seconds for machines that have gone quiet, because a silent box is the one you most need to hear about.", cls: "c-dim", note: true }
+        { t: "SCALE — start a hub, then connect each machine with the hub's address and password. The password is used once, to get that machine a key of its own; it is never stored on the machine. Every report is signed over a timestamp + body: the hub rejects replays, stale clocks, revoked keys, and a name claimed by a different key. A machine that misses its deadline turns SILENT and raises a critical alert. The step-by-step version is the \"Many machines\" walkthrough further up this page.", cls: "c-dim", note: true }
       ]
     },
     {
@@ -226,130 +224,295 @@
     }
   ];
 
+  // ---- the many-machines walkthrough ------------------------------------
+  // Each step names the machine it runs on; the prompt shows it.
+  var FLEET_STEPS = [
+    {
+      id: "hub-password",
+      label: "1 · hub: set a password",
+      host: "hub",
+      cmd: "wrench password",
+      out: [
+        { t: "new dashboard password: ••••••••••••••••", cls: "c-cyan" },
+        { t: "again, to confirm: ••••••••••••••••", cls: "c-cyan" },
+        { t: "✔ dashboard password set", cls: "c-ok" },
+        { t: "a running dashboard picks it up now · sign in at the address `wrench web` prints", cls: "c-dim" },
+        { t: "One password, two jobs: it signs you in to the dashboard, and it is what each machine presents — once — to connect. Only a salted hash is stored on the hub. Pick the machine that stays on to be the hub; a small VM is plenty.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "hub-serve",
+      label: "2 · hub: start it",
+      host: "hub",
+      cmd: "wrench fleet serve --host 0.0.0.0 --tls-cert hub-cert.pem --tls-key hub-key.pem",
+      out: [
+        { t: "╭─────────────────────────── 🔧 wrench fleet serve ────────────────────────────╮", cls: "c-acc" },
+        { t: "│ fleet console: https://hub.example:8788/fleet                                │", cls: "" },
+        { t: "│ nodes report to: https://hub.example:8788/api/fleet/report                   │", cls: "" },
+        { t: "│ 0 enrollment key(s) · silent-node sweep every 30s · Ctrl-C to stop           │", cls: "c-dim" },
+        { t: "│ add a machine — run on it: wrench fleet connect hub.example                  │", cls: "c-ok" },
+        { t: "│ (asks for the dashboard password)                                            │", cls: "c-dim" },
+        { t: "│ access control: on — sign in with the dashboard password                     │", cls: "c-dim" },
+        { t: "╰──────────────────────────────────────────────────────────────────────────────╯", cls: "c-acc" },
+        { t: "--host 0.0.0.0 lets other machines reach the hub (open TCP 8788 in its firewall). The certificate keeps the password off the wire in clear; a self-signed one is fine — you will hand its public half to each machine. The banner prints the exact line to run on the others. Machines call the hub; the hub never calls them.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "connect",
+      label: "3 · web-01: connect",
+      host: "web-01",
+      cmd: "wrench fleet connect hub.example --tags prod,web",
+      out: [
+        { t: "password for the hub at https://hub.example:8788: ••••••••••••••••", cls: "c-cyan" },
+        { t: "╭────────────────────────── 🔧 wrench fleet connect ───────────────────────────╮", cls: "c-ok" },
+        { t: "│ connected to https://hub.example:8788 as web-01 (tags: prod, web)            │", cls: "c-ok" },
+        { t: "│ saved to ~/.config/wrench/config.toml (owner-only) · every patrol now        │", cls: "c-dim" },
+        { t: "│ reports · schedule them with wrench install-service                          │", cls: "c-dim" },
+        { t: "╰──────────────────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
+        { t: "web-01$ wrench install-service", cls: "c-cyan" },
+        { t: "installed + started the heartbeat via systemd (beats every 5min · patrol every 15min)", cls: "c-ok" },
+        { t: "connect finds the hub (HTTPS first), trades the password for a key that belongs to web-01 alone, sends one test report, and only then saves anything. The password is not written on this machine. install-service starts the schedule: a patrol every 15 minutes, and a report to the hub after each.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "selfsigned",
+      label: "4 · db-01: private certificate",
+      host: "db-01",
+      cmd: "wrench fleet connect 192.168.1.10",
+      out: [
+        { t: "╭────────────────────────── 🔧 wrench fleet connect ───────────────────────────╮", cls: "c-crit" },
+        { t: "│ https://192.168.1.10:8788 answered, but its certificate is not trusted —     │", cls: "c-crit" },
+        { t: "│ self-signed certificate                                                      │", cls: "c-crit" },
+        { t: "│ if the hub uses a private or self-signed certificate, pass --ca-file <its CA │", cls: "c-dim" },
+        { t: "│ or certificate .pem>                                                         │", cls: "c-dim" },
+        { t: "╰──────────────────────────────────────────────────────────────────────────────╯", cls: "c-crit" },
+        { t: "db-01$ wrench fleet connect 192.168.1.10 --ca-file hub-cert.pem --tags prod,db", cls: "c-cyan" },
+        { t: "password for the hub at https://192.168.1.10:8788: ••••••••••••••••", cls: "c-cyan" },
+        { t: "╭────────────────────────── 🔧 wrench fleet connect ───────────────────────────╮", cls: "c-ok" },
+        { t: "│ connected to https://192.168.1.10:8788 as db-01 (tags: prod, db)             │", cls: "c-ok" },
+        { t: "╰──────────────────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
+        { t: "An IP works as well as a name. When the certificate cannot be verified, connect stops before the password is asked for — it never quietly falls back to plain HTTP. If the hub has no TLS at all, it tells you the password would cross the network unencrypted and asks first (scripts must pass --allow-http).", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "scripted",
+      label: "5 · win-03: scripted",
+      host: "win-03 PS>",
+      cmd: "$pw | wrench fleet connect hub.example --password-stdin --tags windows,ci",
+      out: [
+        { t: "╭────────────────────────── 🔧 wrench fleet connect ───────────────────────────╮", cls: "c-ok" },
+        { t: "│ connected to https://hub.example:8788 as win-03 (tags: windows, ci)          │", cls: "c-ok" },
+        { t: "╰──────────────────────────────────────────────────────────────────────────────╯", cls: "c-ok" },
+        { t: "win-03 PS> wrench install-service", cls: "c-cyan" },
+        { t: "installed + started the heartbeat via schtasks (beats every 5min · patrol every 15min)", cls: "c-ok" },
+        { t: "Same command on Windows, macOS and Linux. For a few machines, pipe the password from your secret store (or set WRENCH_HUB_PASSWORD). For a rollout through MDM or Ansible, use `wrench fleet enroll` on the hub instead: it prints a join line with a key, so the admin password never sits in your tooling.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "see",
+      label: "6 · hub: see every machine",
+      host: "hub",
+      cmd: "wrench fleet status",
+      out: [
+        { t: "  🔧 fleet — 3 node(s): 1 ok / 1 attn / 1 crit / 0 silent", cls: "c-acc" },
+        { t: "  node     host                  status      last seen   worst finding", cls: "c-dim" },
+        { t: "  db-01    db-01.corp.example    critical    12s ago     disk /var/lib/postgresql is 96% full", cls: "c-crit" },
+        { t: "  win-03   win-03.corp.example   attention   40s ago     compliance: SMBv1 server protocol is enabled", cls: "c-warn" },
+        { t: "  web-01   web-01.corp.example   ok          1m ago      all clear", cls: "c-ok" },
+        { t: "", cls: "" },
+        { t: "  in the browser → https://hub.example:8788", cls: "c-acc" },
+        { t: "  ┌ machine ▾ ─────────────┐", cls: "c-dim" },
+        { t: "  │ This machine           │   the hub's own full dashboard", cls: "" },
+        { t: "  │ All machines (4)       │   the console: filter, search, sort, export CSV", cls: "" },
+        { t: "  │ db-01 — critical       │   one machine: score and trend, volumes, findings", cls: "c-crit" },
+        { t: "  │ web-01 — healthy       │", cls: "c-ok" },
+        { t: "  │ win-03 — attention     │", cls: "c-warn" },
+        { t: "  └────────────────────────┘", cls: "c-dim" },
+        { t: "The console lists every machine, the hub included, and the picker in the top bar switches between this machine, all machines, and any one of them. A link like /fleet?node=db-01 opens one machine directly. `wrench fleet status` exits non-zero when anything is critical or silent, so it drops into a script or a check.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "silent",
+      label: "7 · a machine goes quiet",
+      host: "hub",
+      cmd: "wrench fleet status",
+      out: [
+        { t: "  🔧 fleet — 3 node(s): 1 ok / 1 attn / 0 crit / 1 SILENT", cls: "c-acc" },
+        { t: "  db-01    db-01.corp.example    SILENT      31m ago     no report for 31m — expected every 15m", cls: "c-crit" },
+        { t: "  win-03   win-03.corp.example   attention   2m ago      compliance: SMBv1 server protocol is enabled", cls: "c-warn" },
+        { t: "  web-01   web-01.corp.example   ok          4m ago      all clear", cls: "c-ok" },
+        { t: "🔔 critical · fleet: node db-01 is SILENT — no report for ~31m (cadence 900s)", cls: "c-crit" },
+        { t: "Nothing to configure. The hub knows each machine's interval, and when a report is overdue by twice that, the machine turns SILENT and the hub raises a critical alert through your notification sinks — desktop, webhook, syslog. A machine that cannot report is exactly the one you need to hear about. To hear sooner: `wrench install-service --interval 5` on the machines that matter.", cls: "c-dim", note: true }
+      ]
+    },
+    {
+      id: "revoke",
+      label: "8 · revoke and reconnect",
+      host: "hub",
+      cmd: "wrench fleet keys",
+      out: [
+        { t: "  key id             label              state    last used          nodes", cls: "c-dim" },
+        { t: "  2f5cb8f71c9347e4   connect: web-01    active   2026-11-11 19:22   web-01", cls: "" },
+        { t: "  9d04e1a7b3c6f218   connect: db-01     active   2026-11-11 19:21   db-01", cls: "" },
+        { t: "  c81b77e02a5d4f96   connect: win-03    active   2026-11-11 19:20   win-03", cls: "" },
+        { t: "hub$ wrench fleet revoke 2f5cb8f71c9347e4", cls: "c-cyan" },
+        { t: "revoked 2f5cb8f71c9347e4 — 1 node(s) will go silent until re-joined: web-01", cls: "c-warn" },
+        { t: "web-01$ wrench fleet report", cls: "c-cyan" },
+        { t: "  the hub refused this report — HTTP 403: enrollment key revoked", cls: "c-crit" },
+        { t: "web-01$ wrench fleet connect hub.example", cls: "c-cyan" },
+        { t: "password for the hub at https://hub.example:8788: ••••••••••••••••", cls: "c-cyan" },
+        { t: "web-01 was already known to the hub — it keeps its history and its previous key was retired", cls: "c-dim" },
+        { t: "  connected to https://hub.example:8788 as web-01", cls: "c-ok" },
+        { t: "Every connected machine has a key of its own, so you can cut one off without touching the rest — a stolen laptop, a decommissioned server. A rebuilt machine just connects again and keeps its name and history. Changing the hub password signs browsers out but does not disturb connected machines: they hold keys, not the password. That's the whole setup.", cls: "c-dim", note: true }
+      ]
+    }
+  ];
+
   // ---- terminal engine --------------------------------------------------
-  var pre = document.getElementById("tut-screen");
-  var chipsBox = document.getElementById("tut-chips");
-  var runBtn = document.getElementById("tut-run");
-  if (!pre || !chipsBox || !runBtn) return;
+  function mount(opts) {
+    var STEPS = opts.steps;
+    var pre = document.getElementById(opts.screen);
+    var chipsBox = document.getElementById(opts.chips);
+    var runBtn = document.getElementById(opts.run);
+    var section = document.getElementById(opts.section);
+    if (!pre || !chipsBox || !runBtn) return;
 
-  var next = 0;          // next step index
-  var busy = false;
-  var timers = [];
+    var next = 0;          // next step index
+    var busy = false;
+    var timers = [];
 
-  function later(fn, ms) { timers.push(setTimeout(fn, ms)); }
-  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+    function later(fn, ms) { timers.push(setTimeout(fn, ms)); }
+    function clearTimers() { timers.forEach(clearTimeout); timers = []; }
 
-  function span(text, cls) {
-    var s = document.createElement("span");
-    if (cls) s.className = cls;
-    s.textContent = text;
-    return s;
-  }
+    function span(text, cls) {
+      var s = document.createElement("span");
+      if (cls) s.className = cls;
+      s.textContent = text;
+      return s;
+    }
 
-  function line(text, cls) {
-    pre.appendChild(span(text + "\n", cls));
-    pre.scrollTop = pre.scrollHeight;
-  }
-
-  function promptLine() {
-    pre.appendChild(span("$ ", "c-dim"));
-  }
-
-  function typeCmd(cmd, done) {
-    promptLine();
-    var target = span("", "c-acc");
-    pre.appendChild(target);
-    var i = 0;
-    (function tick() {
-      if (i < cmd.length) {
-        target.textContent += cmd.charAt(i++);
-        pre.scrollTop = pre.scrollHeight;
-        later(tick, 18 + Math.random() * 40);
-      } else {
-        pre.appendChild(span("\n"));
-        later(done, 220);
-      }
-    })();
-  }
-
-  function playOutput(rows, i, done) {
-    if (i >= rows.length) { done(); return; }
-    var r = rows[i];
-    if (r.note) {
-      pre.appendChild(span("\n→ " + r.t + "\n\n", "tut-note"));
+    function line(text, cls) {
+      pre.appendChild(span(text + "\n", cls));
       pre.scrollTop = pre.scrollHeight;
-      later(function () { playOutput(rows, i + 1, done); }, 120);
-      return;
     }
-    line(r.t, r.cls);
-    later(function () { playOutput(rows, i + 1, done); }, 26 + Math.random() * 60);
-  }
 
-  function setBusy(b) {
-    busy = b;
-    runBtn.disabled = b;
-    runBtn.textContent = b ? "running…" : (next < STEPS.length ? "▶ run: " + STEPS[next].cmd : "↺ restart the tour");
-  }
-
-  function markChips() {
-    Array.prototype.forEach.call(chipsBox.children, function (chip, idx) {
-      chip.classList.toggle("done", idx < next);
-      chip.classList.toggle("current", idx === next);
-    });
-  }
-
-  function runStep(idx) {
-    if (busy) return;
-    if (idx >= STEPS.length) { // restart
-      pre.textContent = "";
-      next = 0;
-      banner();
-      setBusy(false); markChips();
-      return;
+    function promptOf(step) {
+      if (!step.host) return "$ ";
+      return /[>$]$/.test(step.host) ? step.host + " " : step.host + "$ ";
     }
-    // jumping backwards/forwards: replay from a clean screen for coherence
-    if (idx !== next) { pre.textContent = ""; next = idx; }
-    var step = STEPS[idx];
-    setBusy(true);
-    clearTimers();
-    typeCmd(step.cmd, function () {
-      playOutput(step.out, 0, function () {
-        next = idx + 1;
-        setBusy(false);
-        markChips();
-        // finale: pop the simulated chat — "on your machine, this chat is real"
-        if (step.chatFinale && typeof window.wrenchChatDemo === "function") {
-          later(window.wrenchChatDemo, 600);
+
+    function typeCmd(step, done) {
+      pre.appendChild(span(promptOf(step), "c-dim"));
+      var target = span("", "c-acc");
+      pre.appendChild(target);
+      var cmd = step.cmd, i = 0;
+      (function tick() {
+        if (i < cmd.length) {
+          target.textContent += cmd.charAt(i++);
+          pre.scrollTop = pre.scrollHeight;
+          later(tick, 18 + Math.random() * 40);
+        } else {
+          pre.appendChild(span("\n"));
+          later(done, 220);
         }
-      });
-    });
-  }
-
-  function banner() {
-    line("wrench interactive tour — nothing here touches your machine.", "c-dim");
-    line("the five arcs: see · predict · prove · fix · scale — click a step, or hit ▶ / Enter.\n", "c-dim");
-  }
-
-  // ---- wire up ----------------------------------------------------------
-  STEPS.forEach(function (s, idx) {
-    var chip = document.createElement("button");
-    chip.className = "tut-chip";
-    chip.type = "button";
-    chip.textContent = s.label;
-    chip.addEventListener("click", function () { runStep(idx); });
-    chipsBox.appendChild(chip);
-  });
-
-  runBtn.addEventListener("click", function () { runStep(next); });
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !busy &&
-        document.getElementById("tutorial").getBoundingClientRect().top < window.innerHeight) {
-      var tag = (document.activeElement && document.activeElement.tagName) || "";
-      if (tag !== "INPUT" && tag !== "TEXTAREA") runStep(next);
+      })();
     }
-  });
 
-  banner();
-  setBusy(false);
-  markChips();
+    function playOutput(rows, i, done) {
+      if (i >= rows.length) { done(); return; }
+      var r = rows[i];
+      if (r.note) {
+        pre.appendChild(span("\n→ " + r.t + "\n\n", "tut-note"));
+        pre.scrollTop = pre.scrollHeight;
+        later(function () { playOutput(rows, i + 1, done); }, 120);
+        return;
+      }
+      line(r.t, r.cls);
+      later(function () { playOutput(rows, i + 1, done); }, 26 + Math.random() * 60);
+    }
+
+    function setBusy(b) {
+      busy = b;
+      runBtn.disabled = b;
+      runBtn.textContent = b ? "running…"
+        : (next < STEPS.length ? "▶ run: " + promptOf(STEPS[next]).replace(/^\$ $/, "") + STEPS[next].cmd
+                               : opts.restart);
+    }
+
+    function markChips() {
+      Array.prototype.forEach.call(chipsBox.children, function (chip, idx) {
+        chip.classList.toggle("done", idx < next);
+        chip.classList.toggle("current", idx === next);
+      });
+    }
+
+    function banner() {
+      opts.banner.forEach(function (t, i) {
+        line(t + (i === opts.banner.length - 1 ? "\n" : ""), "c-dim");
+      });
+    }
+
+    function runStep(idx) {
+      if (busy) return;
+      if (idx >= STEPS.length) { // restart
+        pre.textContent = "";
+        next = 0;
+        banner();
+        setBusy(false); markChips();
+        return;
+      }
+      // jumping backwards/forwards: replay from a clean screen for coherence
+      if (idx !== next) { pre.textContent = ""; next = idx; }
+      var step = STEPS[idx];
+      setBusy(true);
+      clearTimers();
+      typeCmd(step, function () {
+        playOutput(step.out, 0, function () {
+          next = idx + 1;
+          setBusy(false);
+          markChips();
+          // finale: pop the simulated chat — "on your machine, this chat is real"
+          if (step.chatFinale && typeof window.wrenchChatDemo === "function") {
+            later(window.wrenchChatDemo, 600);
+          }
+        });
+      });
+    }
+
+    STEPS.forEach(function (s, idx) {
+      var chip = document.createElement("button");
+      chip.className = "tut-chip";
+      chip.type = "button";
+      chip.textContent = s.label;
+      chip.addEventListener("click", function () { runStep(idx); });
+      chipsBox.appendChild(chip);
+    });
+
+    runBtn.addEventListener("click", function () { runStep(next); });
+    // Enter runs the next step of whichever walkthrough is in the middle of the screen
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" || busy || !section) return;
+      var r = section.getBoundingClientRect(), mid = window.innerHeight / 2;
+      if (r.top > mid || r.bottom < mid) return;
+      var tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "BUTTON" && tag !== "SUMMARY") runStep(next);
+    });
+
+    banner();
+    setBusy(false);
+    markChips();
+  }
+
+  mount({
+    steps: STEPS, screen: "tut-screen", chips: "tut-chips", run: "tut-run", section: "tutorial",
+    restart: "↺ restart the tour",
+    banner: ["wrench interactive tour — nothing here touches your machine.",
+             "the five arcs: see · predict · prove · fix · scale — click a step, or hit ▶ / Enter."]
+  });
+  mount({
+    steps: FLEET_STEPS, screen: "fleet-screen", chips: "fleet-chips", run: "fleet-run", section: "multi",
+    restart: "↺ start over",
+    banner: ["one hub, three machines — a simulated session; nothing here touches your machine.",
+             "the prompt shows which machine each command runs on. Click a step, or hit ▶ / Enter."]
+  });
 })();

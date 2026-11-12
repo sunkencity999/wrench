@@ -680,6 +680,9 @@ def make_handler(db_path, host_label: str, cfg=None, auth: webauth.AuthConfig | 
                 if auth.role_for_secret(secret) != "admin":
                     limiter.fail(client)
                     self._audit("fleet.connect.failed", {"client": client, "node_id": node_id})
+                    if not auth.has_password:
+                        return self._json({"error": "this hub has no password — set one there "
+                                                    "with `wrench password`"}, 403)
                     return self._json({"error": "that password is not valid"}, 401)
                 res = fleet.connect_grant(store, node_id)
             finally:

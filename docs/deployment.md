@@ -57,6 +57,10 @@ One machine is the **hub**. Every other machine is a **node** that pushes a
 small signed report after each patrol. Nodes need outbound access to the hub;
 the hub never connects to nodes.
 
+New to this? The README has a step-by-step
+[tutorial](../README.md#tutorial-many-machines-one-dashboard), and the website
+has an interactive version of it.
+
 **The short way: a password.** On the hub, `wrench password` and
 `wrench fleet serve --host 0.0.0.0 --tls-cert … --tls-key …`. On each machine:
 
