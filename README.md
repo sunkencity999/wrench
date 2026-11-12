@@ -36,6 +36,7 @@
 - **Prove** — [backups](#wrench-backups--untested-backups-dont-exist) · [audit](#wrench-audit--prove-what-happened) · [comply](#wrench-comply--prove-the-box-meets-the-baseline) · [bundle](#wrench-bundle--the-air-gap-evidence-bundle)
 - **Fix** — [policy tiers](#policy-tiers--the-leash) · [fixxer](#wrench-fixxer--with-your-permission-i-fix-it) · [blueprint](#wrench-blueprint--declarative-config-automation)
 - **Learn** — [memory](#wrench-remember--wrench-memory--it-learns-how-you-run-this-machine) · [jobs & heartbeat](#wrench-jobs--wrench-heartbeat--work-it-does-without-being-asked)
+- **Models** — [connect a frontier model](#wrench-model--connect-a-frontier-model)
 - **Scale** — [tutorial: many machines, one dashboard](#tutorial-many-machines-one-dashboard) · [fleet](#wrench-fleet--many-nodes-one-view) · [JSON, metrics, SIEM](#wire-it-into-your-stack----json-metrics-syslogsiem) · [offline mode](#offline--air-gap-mode--a-first-class-zero-egress-guarantee)
 - **Understand it** — [How a patrol works](#how-a-patrol-works) · [The brain is swappable](#the-brain-is-swappable) · [Policy tiers](#policy-tiers--the-leash) · [Architecture](#architecture) · [Philosophy](#philosophy) · [FAQ](#faq)
 
@@ -1732,17 +1733,57 @@ wrench budgets `max_tokens = 6144` by default because they think before they
 speak; don't starve them below ~2000.
 </details>
 
-<details>
-<summary>OpenAI / Anthropic</summary>
+### `wrench model` — connect a frontier model
 
-```bash
-export OPENAI_API_KEY=...      # gpt-4o-mini default, gpt-4o for --deep
-wrench init -p openai
+If the local model on a machine is too weak, connect a hosted one. One
+command walks you through it:
 
-export ANTHROPIC_API_KEY=...   # claude-3-5-haiku default; native messages API adapter
-wrench init -p anthropic
+```console
+$ wrench model setup
+  1  Anthropic — Claude
+  2  OpenAI — GPT
+  3  Google — Gemini
+provider [1-3 or name]: 1
+╭─ 🔑 Anthropic — Claude ──────────────────────────────────────────────────────╮
+│ You need an API key from Anthropic — Claude.                                 │
+│   1. open https://console.anthropic.com/settings/keys                        │
+│   2. sign in, create a key (starts with sk-ant-) and copy it                 │
+│   3. paste it below — it is not shown, and it is stored owner-only           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+open that page in your browser now? [Y/n]:
+Anthropic — Claude API key:
+✔ key accepted — 9 model(s) available
 ```
-</details>
+
+It then lists the models **your account can actually use**, asked from the
+provider at that moment and newest first, and has you pick two: an everyday
+model (patrols and chat; a fast one keeps the bill small, since a patrol runs
+every 15 minutes) and a deep model (used only for `wrench ask --deep`). It
+finishes with a one-call smoke test that proves the model can drive wrench's
+tools.
+
+| command | what it does |
+|---|---|
+| `wrench model` | what is configured now, and where the key comes from |
+| `wrench model setup [anthropic\|openai\|google]` | connect a provider and pick models |
+| `wrench model list [provider]` | the models your key can use, live |
+| `wrench model use <model> [--deep]` | switch model (checked against the live list) |
+| `wrench model logout [provider]` | forget the key stored on this machine |
+
+Unattended: `echo "$KEY" | wrench model setup openai --key-stdin --yes` takes
+the suggested models; add `--model` / `--deep-model` to choose. A key already
+in the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`)
+is offered instead of asking, with the option to store it so scheduled
+patrols can use it too. `wrench init -p anthropic` (or `openai`, `google`)
+runs the same steps.
+
+**About "signing in with your account".** A Claude.ai, ChatGPT or Google
+subscription login is not something another tool can use: Anthropic does not
+permit it, and OpenAI's "Sign in with ChatGPT" requires a client ID issued to
+the project. The API key from the provider's console is the supported route,
+and it is billed separately from any subscription. Keys are stored in an
+owner-only file beside the config, never in the config itself, never in the
+audit log, and never shown.
 
 <details>
 <summary>Azure OpenAI / AI Foundry — enterprise</summary>

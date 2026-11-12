@@ -1,5 +1,19 @@
 # wrench — build progress
 
+## 2026-11-11 — model enrollment
+
+`wrench/enroll.py`: live `GET /models` for Anthropic (x-api-key, paged),
+OpenAI and Google (bearer), chat-model filtering and fast/strong suggestions
+by whole-word name heuristics, owner-only key files, config applied in place.
+`wrench model setup|list|use|logout` in the CLI; `init` calls the same flow
+for hosted providers. `providers.py` learns `max_completion_tokens` /
+no-temperature from a model's own 400. No account sign-in: Anthropic forbids
+subscription OAuth in third-party tools; OpenAI's Sign in with ChatGPT needs a
+client ID for the project. Tests: `tests/test_enroll.py`, all against fakes —
+no real provider key was available, so the hosted listing and chat paths are
+unverified against the real APIs (a deliberately bad key did get Anthropic's
+401, and LM Studio's model list was read for real).
+
 ## 2026-11-11 — guided fleet setup
 
 `wrench/fleetsetup.py` is one engine with three front ends: agent tools

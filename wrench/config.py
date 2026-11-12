@@ -43,10 +43,20 @@ PROVIDER_DEFAULTS = {
     },
     "anthropic": {
         "base_url": "https://api.anthropic.com/v1",
-        "model": "claude-3-5-haiku-latest",
-        "deep_model": "claude-sonnet-4-20250514",
+        # fallbacks only — `wrench model setup` picks from the account's live list
+        "model": "claude-haiku-5-5",
+        "deep_model": "claude-opus-5-5",
         "key_env": "ANTHROPIC_API_KEY",
         "max_tokens": 4096,
+    },
+    "google": {
+        # Gemini through Google's OpenAI-compatible endpoint (key from AI Studio)
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "model": "gemini-2.5-flash",
+        "deep_model": "gemini-2.5-pro",
+        "key_env": "GEMINI_API_KEY",
+        "key_env_alt": ["GOOGLE_API_KEY"],
+        "max_tokens": 6144,
     },
     "ollama": {
         "base_url": "http://127.0.0.1:11434/v1",
@@ -151,7 +161,9 @@ def load_config(provider_override: str | None = None, model_override: str | None
     )
     model = model_override or os.environ.get("WRENCH_MODEL") or psec.get("model") or defaults["model"]
     deep_model = os.environ.get("WRENCH_DEEP_MODEL") or psec.get("deep_model") or defaults["deep_model"]
-    key = os.environ.get(defaults["key_env"], "") or os.environ.get("WRENCH_API_KEY", "") or psec.get("api_key", "")
+    key = (os.environ.get(defaults["key_env"], "")
+           or next((os.environ[n] for n in defaults.get("key_env_alt", []) if os.environ.get(n)), "")
+           or os.environ.get("WRENCH_API_KEY", "") or psec.get("api_key", ""))
     # Optional: key file path (keeps keys out of config/env entirely)
     key_file = os.environ.get("WRENCH_API_KEY_FILE") or psec.get("api_key_file")
     if not key and key_file:
@@ -197,7 +209,9 @@ DEFAULT_CONFIG_TOML = """\
 # or set api_key_file below to point at a file containing the key.
 
 [provider]
-name = "{provider}"  # ollama | lmstudio | openai | anthropic | meta | azure | litellm | custom
+name = "{provider}"  # ollama | lmstudio | openai | anthropic | google | meta | azure | litellm | custom
+# hosted provider? `wrench model setup` takes the key, lists the models your
+# account can use, and fills in the section below.
 
 [{provider}]
 # base_url = "{base_url}"

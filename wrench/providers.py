@@ -27,6 +27,25 @@ def _redact(text: str, key: str) -> str:
     return text.replace(key, "<redacted>") if key else text
 
 
+# What a (provider, model) pair turned out to need, learned from its own
+# error replies. Per process; relearned in one extra request after a restart.
+_QUIRKS: dict[tuple[str, str], set[str]] = {}
+
+
+def _learn_quirk(status: int, text: str, quirks: set[str]) -> bool:
+    """True when a 400 named a request parameter we can adapt, and it was new."""
+    if status != 400:
+        return False
+    low = (text or "")[:2000].lower()
+    if "max_completion_tokens" in low and "max_completion_tokens" not in quirks:
+        quirks.add("max_completion_tokens")
+        return True
+    if "temperature" in low and "no_temperature" not in quirks:
+        quirks.add("no_temperature")
+        return True
+    return False
+
+
 class LLMClient:
     def __init__(self, cfg: Config, store=None):
         self.cfg = cfg
@@ -117,20 +136,27 @@ class LLMClient:
         headers = {"Content-Type": "application/json"}
         if self.cfg.api_key:
             headers["Authorization"] = f"Bearer {self.cfg.api_key}"
-        body = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        if tools:
-            body["tools"] = tools
-        try:
-            r = requests.post(url, headers=headers, json=body, timeout=self.timeout)
-        except requests.RequestException as e:
-            raise ProviderError(
-                f"{self.cfg.provider} unreachable at {self.cfg.base_url}: {e.__class__.__name__}"
-            ) from e
+        quirks = _QUIRKS.setdefault((self.cfg.provider, model), set())
+        r = None
+        for _attempt in range(3):
+            body = {"model": model, "messages": messages}
+            body["max_completion_tokens" if "max_completion_tokens" in quirks
+                 else "max_tokens"] = max_tokens
+            if "no_temperature" not in quirks:
+                body["temperature"] = temperature
+            if tools:
+                body["tools"] = tools
+            try:
+                r = requests.post(url, headers=headers, json=body, timeout=self.timeout)
+            except requests.RequestException as e:
+                raise ProviderError(
+                    f"{self.cfg.provider} unreachable at {self.cfg.base_url}: {e.__class__.__name__}"
+                ) from e
+            # Newer hosted models renamed or dropped request parameters. Learn
+            # what this model wants from its own 400 and resend, once per quirk.
+            learned = _learn_quirk(r.status_code, getattr(r, "text", ""), quirks)
+            if not learned:
+                break
         if r.status_code != 200:
             raise ProviderError(
                 f"{self.cfg.provider} HTTP {r.status_code}: {_redact(r.text[:300], self.cfg.api_key)}"
@@ -282,18 +308,20 @@ class LLMClient:
         }
         system = "\n".join(m["content"] for m in messages if m["role"] == "system") or None
         convo = [m for m in messages if m["role"] != "system"]
-        body = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": convo,
-        }
-        if system:
-            body["system"] = system
-        try:
-            r = requests.post(url, headers=headers, json=body, timeout=180)
-        except requests.RequestException as e:
-            raise ProviderError(f"anthropic unreachable: {e.__class__.__name__}") from e
+        quirks = _QUIRKS.setdefault(("anthropic", model), set())
+        r = None
+        for _attempt in range(2):
+            body = {"model": model, "max_tokens": max_tokens, "messages": convo}
+            if "no_temperature" not in quirks:
+                body["temperature"] = temperature
+            if system:
+                body["system"] = system
+            try:
+                r = requests.post(url, headers=headers, json=body, timeout=180)
+            except requests.RequestException as e:
+                raise ProviderError(f"anthropic unreachable: {e.__class__.__name__}") from e
+            if not _learn_quirk(r.status_code, getattr(r, "text", ""), quirks):
+                break
         if r.status_code != 200:
             raise ProviderError(
                 f"anthropic HTTP {r.status_code}: {_redact(r.text[:300], self.cfg.api_key)}"

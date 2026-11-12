@@ -4,6 +4,18 @@
 
 ### New
 
+- **`wrench model` — connect a frontier model.** `wrench model setup` walks
+  through connecting Anthropic, OpenAI or Google: it opens the provider's key
+  page, takes the key at a hidden prompt, proves it by listing the models the
+  account can use (live, newest first), lets you pick an everyday and a deep
+  model, stores the key owner-only and runs a tool-calling smoke test.
+  `wrench model list`, `use`, `logout` and a bare `wrench model` complete the
+  set, and `wrench init -p anthropic|openai|google` runs the same steps.
+- **Google Gemini** is a provider (`google`), through Google's
+  OpenAI-compatible endpoint (`GEMINI_API_KEY` or `GOOGLE_API_KEY`).
+- The model client adapts to newer hosted models that renamed or dropped
+  request parameters (`max_completion_tokens`, a fixed temperature): it
+  learns from the provider's own error and resends once.
 - **Guided fleet setup, in conversation.** Tell `wrench chat` "set this
   machine up as the hub" or "connect this machine to the hub at 192.168.1.10"
   and the agent walks you through it one step at a time and carries each step

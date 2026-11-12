@@ -65,7 +65,7 @@ _HELP_PANELS = {
     "policy": ARC_FIX, "commands": ARC_FIX,
     "remember": ARC_LEARN, "memory": ARC_LEARN, "jobs": ARC_LEARN, "heartbeat": ARC_LEARN,
     "fleet": ARC_SCALE, "web": ARC_SCALE, "password": ARC_SCALE, "metrics": ARC_SCALE,
-    "init": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
+    "init": ARC_SETUP, "model": ARC_SETUP, "doctor": ARC_SETUP, "install-service": ARC_SETUP, "version": ARC_SETUP,
 }
 
 
@@ -852,6 +852,7 @@ PROVIDER_MENU = [
     ("azure", "API — Azure OpenAI / AI Foundry"),
     ("litellm", "API — anything behind a LiteLLM proxy"),
     ("custom", "any OpenAI-compatible endpoint (vLLM, llama.cpp, TGI, your own server)"),
+    ("google", "API — Google Gemini"),
 ]
 
 
@@ -1287,7 +1288,7 @@ def password_cmd(
 @app.command()
 def init(
     provider: str = typer.Option(None, "--provider", "-p",
-                                 help="ollama|lmstudio|openai|anthropic|meta|azure|litellm|custom "
+                                 help="ollama|lmstudio|openai|anthropic|google|meta|azure|litellm|custom "
                                       "(omit for interactive menu)"),
     model: str = typer.Option(None, "--model", "-m", help="model tag override"),
     azure_endpoint: str = typer.Option(None, "--azure-endpoint",
@@ -1358,6 +1359,10 @@ def init(
         else:
             p = write_default_config(provider, model=model, base_url=local_base_url)
         console.print(f"[green]wrote[/green] {p}")
+        from . import enroll as _enroll
+        if provider in _enroll.CLOUD and (interactive or _enroll.key_source(provider)[1]):
+            _model_enroll(provider, interactive=interactive, model=model, assume_yes=yes,
+                          smoke=False)
     cfg, store = _ctx()
     with console.status("[cyan]recording first sensor sample + drift baseline..."):
         sensors.sample_all(store)
@@ -1411,8 +1416,8 @@ def init(
            else "api key: configured ✔\n" if cfg.api_key
            else "api key: none (optional for a custom endpoint — set "
                 "CUSTOM_API_KEY if yours needs one)\n" if cfg.provider == "custom"
-           else f"api key: [yellow]missing[/yellow] — "
-                f"export {_key_env(cfg.provider)}=... (or set api_key_file in config)\n")
+           else "api key: [yellow]missing[/yellow] — run [bold]wrench model setup[/bold] "
+                f"(or export {_key_env(cfg.provider)}=...)\n")
         +
         "\nput me to work — every line below is a command you can type:\n"
         "  wrench doctor    — verify everything\n"
@@ -3241,6 +3246,397 @@ app.add_typer(metrics_app, name="metrics")
 
 
 # ---------------- fleet (hub + node reporting + dead-man's switch) ----------------
+
+# ---------------------------------------------------------------- wrench model
+model_app = typer.Typer(
+    help="🔧 the brain — connect a model provider and choose a model from what your "
+         "account can use.",
+    invoke_without_command=True, no_args_is_help=False)
+
+
+def _pick_model(models, suggested: str, what: str, interactive: bool) -> str:
+    """Numbered pick from a newest-first list. Enter takes the suggestion."""
+    if not interactive:
+        return suggested
+    shown = models[:25]
+    t = Table(border_style="bright_blue", show_edge=False, pad_edge=False)
+    t.add_column("#", justify="right", style="bold cyan")
+    t.add_column("model", style="bold")
+    t.add_column("")
+    for i, m in enumerate(shown, 1):
+        note = []
+        if m.id == suggested:
+            note.append("suggested")
+        if m.fast:
+            note.append("fast")
+        t.add_row(str(i), m.id, Text(" · ".join(note) + (f"  {m.name}" if m.name else ""),
+                                     style="green" if m.id == suggested else "dim"))
+    console.print(t)
+    if len(models) > len(shown):
+        console.print(f"[dim]… and {len(models) - len(shown)} older — type a name to use "
+                      "one (all of them: wrench model list)[/dim]")
+    ids = [m.id for m in models]
+    for _ in range(3):
+        raw = typer.prompt(f"{what} [number or name, enter = {suggested}]",
+                           default=suggested, show_default=False).strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(shown):
+            return shown[int(raw) - 1].id
+        if raw in ids:
+            return raw
+        console.print(f"[yellow]{escape(raw)!s} is not in the list[/yellow]")
+    return suggested
+
+
+def _model_enroll(provider: str, interactive: bool, model: str | None = None,
+                  deep: str | None = None, key: str | None = None, assume_yes: bool = False,
+                  smoke: bool = True, open_browser: bool = True) -> bool:
+    """Connect a hosted provider: get a key, prove it by listing the account's
+    models, pick two, store the key owner-only, write the config."""
+    from . import audit as _amod, enroll, offline as _offline
+    from .config import PROVIDER_DEFAULTS
+    info = enroll.CLOUD.get(provider)
+    d = PROVIDER_DEFAULTS[provider]
+    cfg = load_config()
+    base_url = ((cfg.raw or {}).get(provider) or {}).get("base_url") or d["base_url"]
+    label = info["label"] if info else provider
+    if _offline.is_offline(cfg) and not _offline.egress_allowed(cfg, base_url):
+        console.print(f"[red]offline mode is on[/red] and {label} is not a local address — "
+                      "set offline = false first, or use a local model")
+        return False
+
+    source, found = enroll.key_source(provider, cfg.raw)
+    store_key = False
+    if key:
+        key, store_key = enroll.clean_key(key), True
+    elif found and (not interactive or assume_yes or typer.confirm(
+            f"use the {label} key already "
+            + (f"in ${source[4:]}" if source.startswith("env:") else "stored on this machine")
+            + "?", default=True)):
+        key = found
+        if source.startswith("env:"):
+            # a key that lives only in this shell is invisible to the scheduler
+            store_key = interactive and not assume_yes and typer.confirm(
+                "store it for scheduled patrols too? (they do not see your shell's "
+                "environment)", default=True)
+    elif interactive:
+        if info:
+            console.print(Panel(
+                f"You need an API key from {label}.\n"
+                f"  1. open [bold bright_blue]{info['key_url']}[/bold bright_blue]\n"
+                f"  2. sign in, create a key ({info['key_hint']}) and copy it\n"
+                "  3. paste it below — it is not shown, and it is stored owner-only on "
+                "this machine\n"
+                f"[dim]needs {info['account']}.[/dim]",
+                border_style="bright_blue", title=f"🔑 {label}", title_align="left"))
+            if open_browser and typer.confirm("open that page in your browser now?",
+                                              default=True):
+                try:
+                    import webbrowser
+                    webbrowser.open(info["key_url"])
+                except Exception:  # noqa: BLE001
+                    console.print("[dim]could not open a browser — use the link above[/dim]")
+        for _ in range(3):
+            raw = typer.prompt(f"{label} API key", hide_input=True, default="",
+                               show_default=False)
+            key = enroll.clean_key(raw)
+            problem = enroll.key_problem(key)
+            if not problem:
+                store_key = True
+                break
+            console.print(f"[yellow]{problem}[/yellow]")
+            key = None
+            if not raw:
+                break
+    if not key:
+        console.print("[yellow]no key — nothing was changed.[/yellow] "
+                      f"[dim]When you have one: wrench model setup {provider}[/dim]")
+        return False
+    problem = enroll.key_problem(key)
+    if problem:
+        console.print(f"[red]{problem}[/red]")
+        return False
+
+    try:
+        with console.status(f"[cyan]asking {label} which models this key can use..."):
+            models = enroll.list_models(provider, base_url, key)
+    except enroll.EnrollError as e:
+        console.print(Panel(f"[red]{escape(e.message)}[/red]\n[dim]nothing was changed.[/dim]",
+                            border_style="red", title=f"🔑 {label}"))
+        _amod.log_event(cfg, "model.enroll.failed", {"provider": provider, "why": e.kind})
+        return False
+    if not models:
+        console.print(f"[red]{label} accepted the key but listed no chat models for it.[/red]")
+        return False
+    console.print(f"[green]✔ key accepted[/green] — {len(models)} model(s) available")
+
+    ids = [m.id for m in models]
+    sug_fast, sug_deep = enroll.suggest(models)
+    for name, value in (("--model", model), ("--deep-model", deep)):
+        if value and value not in ids:
+            console.print(f"[red]{name} {escape(value)} is not available to this key.[/red] "
+                          f"[dim]available: {', '.join(ids[:8])}…[/dim]")
+            return False
+    ask = interactive and not assume_yes
+    if not model:
+        if ask:
+            console.print("\n[bold]Everyday model[/bold] [dim]— patrols and chat. A patrol "
+                          "runs every 15 minutes, so a fast model keeps the bill small.[/dim]")
+        model = _pick_model(models, sug_fast, "everyday model", ask)
+    if not deep:
+        if ask:
+            console.print("\n[bold]Deep model[/bold] [dim]— used only when you ask for it "
+                          "(wrench ask --deep).[/dim]")
+        deep = _pick_model(models, sug_deep, "deep model", ask)
+
+    key_file = None
+    if store_key:
+        try:
+            key_file = enroll.save_key(provider, key)
+        except OSError as e:
+            console.print(f"[red]could not store the key: {e}[/red]")
+            return False
+    try:
+        path = enroll.apply(provider, model, deep, key_file)
+    except (ValueError, OSError) as e:
+        console.print(f"[red]could not save the config: {e}[/red]")
+        return False
+    _amod.log_event(cfg, "model.enroll", {"provider": provider, "model": model,
+                                          "deep_model": deep, "key_stored": bool(key_file)})
+    note = ""
+    if smoke:
+        from . import localsetup
+        cfg2, store2 = _ctx()
+        try:
+            with console.status(f"[cyan]smoke test: one tool-calling round-trip on {model}..."):
+                ok, detail = localsetup.smoke_test(cfg2, store2)
+        finally:
+            store2.close()
+        note = ("\n[green]✔ smoke test passed[/green] — it can use wrench's tools"
+                if ok else f"\n[yellow]⚠ smoke test failed[/yellow] — {escape(detail)[:200]}\n"
+                           "[dim]try another model: wrench model use <model>[/dim]")
+    console.print(Panel(
+        f"[green]connected to {label}[/green]\n"
+        f"everyday model: [bold]{model}[/bold]   deep model: [bold]{deep}[/bold]\n"
+        + (f"[dim]key stored owner-only at {key_file}[/dim]" if key_file else
+           "[dim]key not stored — it is read from your environment[/dim]")
+        + f"\n[dim]config: {path} · change model: wrench model use <model> · "
+          "disconnect: wrench model logout[/dim]" + note,
+        border_style="green", title="🔧 wrench model", title_align="left"))
+    return True
+
+
+@model_app.callback()
+def model_root(ctx: typer.Context, json_out: bool = JSON_OPT):
+    """Show the model wrench is using. Subcommands connect a provider or switch model.
+
+    \b
+    wrench model                  what is configured now
+    wrench model setup            connect Anthropic, OpenAI or Google and pick a model
+    wrench model list             the models your key can use, newest first
+    wrench model use <model>      switch (add --deep for the deep model)
+    wrench model logout           forget the stored key"""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import enroll
+    st = enroll.status(load_config())
+    if json_out:
+        jsonout.emit("model", st)
+        return
+    k = st["key"]
+    key_line = ("[green]present[/green] [dim](" + {"file": "stored on this machine",
+                "config": "in the config file"}.get(k["source"], k["source"].replace(
+                    "env:", "from $")) + ")[/dim]") if k["present"] else \
+        ("[dim]none needed[/dim]" if st["provider"] in ("ollama", "lmstudio", "litellm", "custom")
+         else "[yellow]missing[/yellow] — wrench model setup")
+    console.print(Panel(
+        f"provider:  [bold]{st['provider']}[/bold]  [dim]{st['base_url']}[/dim]\n"
+        f"everyday:  [bold]{st['model']}[/bold]\n"
+        f"deep:      [bold]{st['deep_model']}[/bold]  [dim](wrench ask --deep)[/dim]\n"
+        f"api key:   {key_line}\n"
+        "[dim]connect a frontier model: wrench model setup   ·   see what your key can "
+        "use: wrench model list[/dim]",
+        border_style="bright_blue", title="🔧 wrench model", title_align="left"))
+
+
+@model_app.command("setup")
+def model_setup(
+    provider: str = typer.Argument(None, help="anthropic | openai | google (omit to choose)"),
+    model: str = typer.Option(None, "--model", "-m", help="everyday model (skips the pick)"),
+    deep_model: str = typer.Option(None, "--deep-model", help="deep model (skips the pick)"),
+    key_stdin: bool = typer.Option(False, "--key-stdin", help="read the API key from standard input"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="take the suggested models; ask nothing"),
+    no_test: bool = typer.Option(False, "--no-test", help="skip the tool-calling smoke test"),
+):
+    """Connect a hosted model provider and choose a model.
+
+    Opens the provider's key page, takes the key at a hidden prompt, checks it
+    by listing the models your account can use, lets you pick an everyday and
+    a deep model, and stores the key owner-only on this machine.
+
+    \b
+    wrench model setup                          choose a provider, then follow along
+    wrench model setup anthropic
+    echo "$KEY" | wrench model setup openai --key-stdin --yes      (unattended)
+
+    There is no "sign in with your Claude / ChatGPT / Google account" here:
+    those subscriptions cannot be used by other tools. An API key from the
+    provider's console is the supported way, and it is billed separately."""
+    from . import enroll
+    interactive = _isatty() and not yes and not key_stdin
+    if provider is None:
+        if not interactive:
+            console.print("[red]name a provider:[/red] wrench model setup anthropic | openai | google")
+            raise typer.Exit(2)
+        t = Table(border_style="bright_blue", show_header=False, title="🔧 connect a hosted model")
+        t.add_column(justify="right", style="bold cyan")
+        t.add_column(style="bold")
+        t.add_column(style="dim")
+        names = list(enroll.CLOUD)
+        for i, n in enumerate(names, 1):
+            t.add_row(str(i), enroll.CLOUD[n]["label"], enroll.CLOUD[n]["account"])
+        console.print(t)
+        raw = typer.prompt(f"provider [1-{len(names)} or name]").strip().lower()
+        provider = names[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(names) else raw
+    provider = provider.strip().lower()
+    from .config import PROVIDER_DEFAULTS
+    if provider not in PROVIDER_DEFAULTS or provider == "azure":
+        console.print(f"[red]{escape(provider)!s} is not a provider I can enroll.[/red] "
+                      f"[dim]choose: {', '.join(enroll.CLOUD)} "
+                      "(azure and local models: wrench init -p <provider>)[/dim]")
+        raise typer.Exit(2)
+    key = sys.stdin.readline().rstrip("\r\n") if key_stdin else None
+    if key_stdin and not key:
+        console.print("[red]--key-stdin: nothing to read[/red]")
+        raise typer.Exit(2)
+    ok = _model_enroll(provider, interactive=interactive, model=model, deep=deep_model,
+                       key=key, assume_yes=yes or key_stdin, smoke=not no_test)
+    raise typer.Exit(0 if ok else 1)
+
+
+@model_app.command("list")
+def model_list(
+    provider: str = typer.Argument(None, help="provider (default: the configured one)"),
+    json_out: bool = JSON_OPT,
+):
+    """List the models your key can use, newest first — asked from the provider, live."""
+    from . import enroll, offline as _offline
+    from .config import PROVIDER_DEFAULTS
+    cfg = load_config()
+    provider = (provider or cfg.provider).strip().lower()
+    if provider not in PROVIDER_DEFAULTS:
+        console.print(f"[red]unknown provider {escape(provider)!s}[/red]")
+        raise typer.Exit(2)
+    if provider == "azure":
+        console.print("Azure serves the deployments you created, not a model list — see "
+                      "them in the Azure portal, then `wrench init -p azure`.")
+        raise typer.Exit(2)
+    base_url = cfg.base_url if provider == cfg.provider else \
+        ((cfg.raw or {}).get(provider) or {}).get("base_url") or PROVIDER_DEFAULTS[provider]["base_url"]
+    if _offline.is_offline(cfg) and not _offline.egress_allowed(cfg, base_url):
+        console.print("[red]offline mode is on[/red] and that provider is not a local address")
+        raise typer.Exit(1)
+    _, key = enroll.key_source(provider, cfg.raw)
+    if not key and provider in enroll.CLOUD:
+        console.print(f"no {provider} key is set on this machine — "
+                      f"[bold]wrench model setup {provider}[/bold]")
+        raise typer.Exit(1)
+    try:
+        models = enroll.list_models(provider, base_url, key)
+    except enroll.EnrollError as e:
+        if json_out:
+            jsonout.emit("model.list", {"provider": provider, "error": e.message, "models": []})
+        else:
+            console.print(f"[red]{escape(e.message)}[/red]"
+                          + ("" if key else f"\n[dim]no key is set — wrench model setup {provider}[/dim]"))
+        raise typer.Exit(1) from None
+    fast, deep = enroll.suggest(models)
+    if json_out:
+        jsonout.emit("model.list", {
+            "provider": provider, "current": cfg.model if provider == cfg.provider else None,
+            "suggested": {"everyday": fast, "deep": deep},
+            "models": [{"id": m.id, "name": m.name, "created": m.created, "fast": m.fast}
+                       for m in models]})
+        return
+    t = Table(title=f"🔧 {provider} — {len(models)} model(s) this key can use",
+              border_style="bright_blue")
+    t.add_column("model", style="bold")
+    t.add_column("")
+    for m in models:
+        notes = []
+        if provider == cfg.provider and m.id == cfg.model:
+            notes.append("in use")
+        if provider == cfg.provider and m.id == cfg.deep_model:
+            notes.append("deep")
+        if m.id == fast:
+            notes.append("suggested everyday")
+        if m.id == deep:
+            notes.append("suggested deep")
+        t.add_row(m.id, Text(" · ".join(notes) + (f"  {m.name}" if m.name else ""), style="dim"))
+    console.print(t)
+    console.print("[dim]switch: wrench model use <model>   ·   deep model: wrench model use "
+                  "<model> --deep[/dim]")
+
+
+@model_app.command("use")
+def model_use(
+    model: str = typer.Argument(..., help="a model id from `wrench model list`"),
+    deep: bool = typer.Option(False, "--deep", help="set the deep model instead"),
+    force: bool = typer.Option(False, "--force", help="do not check the model exists"),
+):
+    """Switch the everyday model (or, with --deep, the deep model)."""
+    from . import audit as _amod, enroll
+    from .config import set_section_values
+    cfg = load_config()
+    model = model.strip()
+    if not force and cfg.provider != "azure":
+        _, key = enroll.key_source(cfg.provider, cfg.raw)
+        try:
+            ids = [m.id for m in enroll.list_models(cfg.provider, cfg.base_url, key)]
+            if model not in ids:
+                near = [i for i in ids if model.lower() in i.lower()][:6]
+                console.print(f"[red]{escape(model)!s} is not a model this key can use.[/red]"
+                              + (f" [dim]did you mean: {', '.join(near)}[/dim]" if near else
+                                 " [dim]see: wrench model list[/dim]"))
+                raise typer.Exit(1)
+        except enroll.EnrollError as e:
+            console.print(f"[yellow]could not check with {cfg.provider}[/yellow] — "
+                          f"{escape(e.message)}\n[dim]nothing changed. Use --force to set it "
+                          "anyway.[/dim]")
+            raise typer.Exit(1) from None
+    try:
+        path = set_section_values(cfg.provider, {"deep_model" if deep else "model": model})
+    except (ValueError, OSError) as e:
+        console.print(f"[red]could not save the config: {e}[/red]")
+        raise typer.Exit(1) from None
+    _amod.log_event(cfg, "model.use", {"provider": cfg.provider, "model": model, "deep": deep})
+    console.print(f"[green]✔[/green] {'deep' if deep else 'everyday'} model is now "
+                  f"[bold]{escape(model)}[/bold] [dim]({cfg.provider} · {path})[/dim]")
+
+
+@model_app.command("logout")
+def model_logout(
+    provider: str = typer.Argument(None, help="provider (default: the configured one)"),
+):
+    """Forget the API key stored on this machine for a provider."""
+    from . import audit as _amod, enroll
+    cfg = load_config()
+    provider = (provider or cfg.provider).strip().lower()
+    gone = enroll.remove_key(provider)
+    if gone:
+        _amod.log_event(cfg, "model.logout", {"provider": provider})
+    console.print((f"[green]✔[/green] removed the stored {provider} key" if gone
+                   else f"no key for {provider} is stored on this machine"))
+    src, key = enroll.key_source(provider, cfg.raw)
+    if key:
+        console.print(f"[yellow]a key is still available[/yellow] "
+                      f"[dim]({src.replace('env:', 'from $') if src.startswith('env:') else 'in the config file'}) "
+                      "— remove it there too if you want this provider disconnected.[/dim]")
+    console.print("[dim]to stop the key working anywhere, revoke it in the provider's "
+                  "console.[/dim]")
+
+
+app.add_typer(model_app, name="model")
+
 
 fleet_app = typer.Typer(
     help="\U0001f527 fleet mode \u2014 many nodes, one view: run a hub, report from "

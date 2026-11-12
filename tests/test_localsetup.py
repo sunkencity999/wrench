@@ -213,11 +213,14 @@ def test_init_provider_flag_skips_menu(tmp_path, monkeypatch):
     monkeypatch.setattr("wrench.config.CONFIG_PATH", cfgdir / "config.toml")
     monkeypatch.setattr("wrench.cli.CONFIG_PATH", cfgdir / "config.toml")
     monkeypatch.setattr(cli, "_isatty", lambda: True)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)     # never enroll a real key in a test
+    monkeypatch.delenv("WRENCH_API_KEY", raising=False)
     with mock.patch.object(cli, "_choose_provider") as menu, \
          mock.patch.object(cli.sensors, "sample_all"), \
          mock.patch.object(cli.driftscan, "scan"):
         result = CliRunner().invoke(cli.app, ["init", "-p", "openai", "-m", "gpt-4.1-mini"],
-                                    input="n\n")       # the dashboard-password question
+                                    # no browser · no key yet · no dashboard password
+                                    input="n\n\nn\n")
     assert result.exit_code == 0, result.output
     assert "Put a password on the web dashboard?" in result.output
     assert "no password" in result.output
