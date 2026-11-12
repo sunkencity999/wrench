@@ -33,7 +33,8 @@ document.getElementById('f').addEventListener('submit', async (e) => {
     let dest = '/';
     try {
       const u = new URL(new URLSearchParams(location.search).get('next') || '/', location.origin);
-      if (u.origin === location.origin) dest = u.pathname + u.search;
+      // keep the #fragment: a clicked alert links to /#notification=<id>
+      if (u.origin === location.origin) dest = u.pathname + u.search + location.hash;
     } catch (x) { /* malformed → home */ }
     location.href = dest;
   } catch (x) { err.textContent = 'Could not reach the server.'; }

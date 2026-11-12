@@ -2,8 +2,26 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Clicking a desktop notification now opens the alert.** On macOS the toast
+  belonged to Script Editor, so clicking it (or "Show") opened Script Editor's
+  file dialog. wrench now posts through a small helper app of its own, built
+  once on the machine, and a click runs `wrench show`, which starts the
+  dashboard if it is not running and opens it at that alert. macOS asks once
+  whether "wrench" may send notifications. The same behaviour on the other
+  platforms: on Windows the toast is filed under a registered "wrench" app id
+  and a click runs `wrench show` through a per-user `wrench-show:` link type;
+  on Linux the toast carries a Show action where `notify-send` supports one.
+  If any of that is unavailable, the plain toast is sent as before.
+  `[notify] desktop_click = false` turns it off.
+
 ### New
 
+- **`wrench show [id]`** opens the dashboard at an alert (the newest unread by
+  default), starting it in the background if needed; `wrench web --detach` and
+  `wrench web --stop` run the dashboard without a terminal. The dashboard
+  accepts `/#notification=<id>` and highlights that alert.
 - **`wrench model` — connect a frontier model.** `wrench model setup` walks
   through connecting Anthropic, OpenAI or Google: it opens the provider's key
   page, takes the key at a hidden prompt, proves it by listing the models the

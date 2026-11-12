@@ -178,6 +178,7 @@
 <script nonce="__NONCE__">__BASE_JS__</script>
 <script nonce="__NONCE__">
 let hours = 24, me = { role: 'viewer' }, seenNotif = new Set(), firstLoad = true;
+let wantNotif = null, shownNotif = false;
 
 let shownScore = null;
 function animateScore(to) {
@@ -412,8 +413,12 @@ function renderNotifs(list) {
   const c = $('bell-count'); c.hidden = !unread.length; c.textContent = unread.length > 99 ? '99+' : unread.length;
   $('mark-all').hidden = !unread.length || me.role !== 'admin';
   $('notif-list').innerHTML = list.length ? list.slice().reverse().map((n) => `
-    <div class="item" style="${n.read ? 'opacity:.6' : ''}"><div class="head">${badge(n.severity)}<span class="tag">${esc(n.kind || 'patrol')}</span><span class="when">${ago(n.ts)}</span></div>
+    <div class="item${n.id === wantNotif ? ' hl' : ''}" data-nid="${esc(n.id)}" style="${n.read && n.id !== wantNotif ? 'opacity:.6' : ''}"><div class="head">${badge(n.severity)}<span class="tag">${esc(n.kind || 'patrol')}</span><span class="when">${ago(n.ts)}</span></div>
       <div class="body">${esc(n.summary)}</div></div>`).join('') : '<div class="empty">Nothing here — the box is quiet.</div>';
+  if (wantNotif) {                        // arrived from a clicked desktop notification
+    const el = document.querySelector('#notif-list [data-nid="' + CSS.escape(wantNotif) + '"]');
+    if (el && !shownNotif) { shownNotif = true; el.scrollIntoView({ block: 'center' }); }
+  }
   if (!firstLoad) for (const n of unread) {
     if (seenNotif.has(n.id)) continue;
     const t = document.createElement('div'); t.className = 'toast ' + esc(n.severity);
@@ -540,10 +545,11 @@ document.addEventListener('keydown', (e) => {
   else return;
   e.preventDefault();
 });
-/* deep links: /#pillar=backups · /#notifications · /#ask · /#commands */
+/* deep links: /#pillar=backups · /#notifications · /#notification=<id> · /#ask · /#commands */
 function route() {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith('pillar=')) openPillar(h.slice(7));
+  else if (h.startsWith('notification=')) { wantNotif = h.slice(13); shownNotif = false; openDrawer('notifs'); refresh(); }
   else if (h === 'notifications') openDrawer('notifs');
   else if (h === 'ask') openChat();
   else if (h === 'tier') openDrawer('tier');

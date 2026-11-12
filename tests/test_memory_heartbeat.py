@@ -736,7 +736,7 @@ def test_asked_for_notifications_ignore_min_severity(tmp_path, monkeypatch):
     cfg = Cfg(tmp_path, {"notify": {"min_severity": "critical", "desktop": True}})
     sent = []
     monkeypatch.setattr(notifications, "send_desktop",
-                        lambda title, body, dd, runner=None: sent.append(body) or True)
+                        lambda title, body, dd, runner=None, **k: sent.append(body) or True)
     for sev in ("info", "attention", "critical"):
         notifications.deliver(cfg, "job", sev, f"brief at {sev}")
     assert sent == ["brief at info", "brief at attention", "brief at critical"]

@@ -561,8 +561,12 @@ A patrol that finds trouble shouldn't wait for you to ask. When a patrol's
 findings meet the severity threshold, wrench writes a notification to a local
 JSONL inbox (`~/.local/share/wrench/notifications.jsonl`) and fans it out:
 
-- **Desktop** — `notify-send` (Linux), `osascript` (macOS), or a PowerShell
-  toast (Windows). Best-effort: silently skipped if unavailable.
+- **Desktop** — a notification you can click: it opens the dashboard at that
+  alert (`wrench show` does the same from a terminal), starting the dashboard
+  if it is not running. macOS posts through a small helper app of its own
+  (it asks once for permission to notify), Windows through a toast registered
+  as "wrench", Linux through `notify-send`. Best-effort: silently skipped if
+  unavailable; `desktop_click = false` sends a plain one.
 - **Webhook** — one generic JSON POST that ntfy, Slack, and Discord-style
   receivers all understand. Short timeout; failures are logged, never fatal.
 - **Dashboard** — unread notifications appear as toasts (top-right) on

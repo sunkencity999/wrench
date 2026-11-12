@@ -1,5 +1,21 @@
 # wrench — build progress
 
+## 2026-11-11 — clickable toasts
+
+`wrench/toast.py`. macOS: an AppleScript applet compiled with `osacompile`
+into `<data dir>/notifier/wrench.app` (own bundle id, LSUIElement, re-signed
+ad hoc); wrench writes `pending.title` / `pending.body` and launches it; a
+launch with nothing fresh pending is a click and runs `wrench show
+--from-toast`. Windows: the toast script registers an AppUserModelId and a
+`wrench-show:` protocol under HKCU and sets protocol activation, with the
+alert's http address as fallback; the script contains no double quote. Linux:
+`notify-send --action` from a detached `wrench show --toast-wait`. Verified on
+this Mac: the applet builds and signs, a launch with nothing pending runs the
+show command, a launch with a pending request posts. NOT verified: that macOS
+relaunches the applet when the toast is clicked (the platform behaviour the
+design rests on), and anything on a real Windows or Linux desktop — CI checks
+only that the PowerShell parses and that the registry keys are written.
+
 ## 2026-11-11 — model enrollment
 
 `wrench/enroll.py`: live `GET /models` for Anthropic (x-api-key, paged),

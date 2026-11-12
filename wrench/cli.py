@@ -58,7 +58,7 @@ ARC_LEARN = "LEARN — remembers you, works on a schedule"
 _HELP_PANELS = {
     "status": ARC_SEE, "score": ARC_SEE, "patrol": ARC_SEE, "ask": ARC_SEE, "chat": ARC_SEE,
     "explain": ARC_SEE, "drift": ARC_SEE, "security": ARC_SEE, "watch": ARC_SEE,
-    "report": ARC_SEE, "notifications": ARC_SEE,
+    "report": ARC_SEE, "notifications": ARC_SEE, "show": ARC_SEE,
     "forecast": ARC_PREDICT, "certs": ARC_PREDICT, "cve": ARC_PREDICT,
     "audit": ARC_PROVE, "backups": ARC_PROVE, "comply": ARC_PROVE, "bundle": ARC_PROVE,
     "fixxer": ARC_FIX, "blueprint": ARC_FIX, "approve": ARC_FIX, "approvals": ARC_FIX,
@@ -726,6 +726,8 @@ def web(
     no_sample: bool = typer.Option(False, "--no-sample", help="don't sample in the background"),
     tls_cert: str = typer.Option(None, "--tls-cert", help="serve HTTPS with this certificate (PEM)"),
     tls_key: str = typer.Option(None, "--tls-key", help="private key for --tls-cert (PEM)"),
+    detach: bool = typer.Option(False, "--detach", help="start it in the background and return"),
+    stop: bool = typer.Option(False, "--stop", help="stop a dashboard started in the background"),
 ):
     """Serve the dashboard: health score, posture, vitals, patrols — and the
     fleet console when this box is a hub.
@@ -734,6 +736,30 @@ def web(
     one, loopback needs no sign-in and any wider bind requires a token (one
     is generated if you have not set [web] auth_token)."""
     from .webapp import serve
+
+    if stop or detach:
+        from . import toast
+        cfg0 = load_config()
+        if stop:
+            res = toast.stop_dashboard(cfg0)
+            console.print(("[green]✔[/green] " if res["ok"] else "[yellow]·[/yellow] ")
+                          + escape(res["detail"]))
+            raise typer.Exit(0 if res["ok"] else 1)
+        argv = [sys.executable, "-m", "wrench", "web"]
+        for flag, val in (("--port", port), ("--bind", bind), ("--tls-cert", tls_cert),
+                          ("--tls-key", tls_key)):
+            if val:
+                argv += [flag, str(val)]
+        if no_sample:
+            argv.append("--no-sample")
+        if port:
+            cfg0.web_port = port
+        res = toast.start_dashboard(cfg0, argv=argv)
+        console.print(("[green]✔[/green] the dashboard is running in the background at "
+                       f"[bold]{toast.web_target(cfg0)['base']}[/bold] [dim]({res['detail']} · "
+                       "stop it: wrench web --stop)[/dim]") if res["ok"]
+                      else f"[red]✖[/red] {escape(res['detail'])}")
+        raise typer.Exit(0 if res["ok"] else 1)
 
     cfg, store = _ctx()
     store.close()
@@ -760,6 +786,50 @@ def web(
         httpd.serve_forever()
     except KeyboardInterrupt:
         console.print("\n[dim]dashboard stopped[/dim]")
+
+
+@app.command("show")
+def show_cmd(
+    notification: str = typer.Argument(None, help="a notification id (default: the newest unread)"),
+    from_toast: bool = typer.Option(False, "--from-toast", hidden=True,
+                                    help="called when a desktop notification is clicked"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="print the address; open nothing"),
+    toast_wait: bool = typer.Option(False, "--toast-wait", hidden=True),
+    toast_title: str = typer.Option("", "--toast-title", hidden=True),
+    toast_body: str = typer.Option("", "--toast-body", hidden=True),
+    toast_id: str = typer.Option("", "--toast-id", hidden=True),
+    json_out: bool = JSON_OPT,
+):
+    """Open the dashboard at an alert — what clicking a desktop notification does.
+
+    \b
+    wrench show             the newest unread notification, in the browser
+    wrench show 3f9a1c22b7de     that one
+    wrench show --no-browser     just print the address
+
+    If the dashboard is not running it is started in the background on this
+    machine first (stop it with `wrench web --stop`)."""
+    from . import notifications as notif, toast
+    cfg = load_config()
+    if toast_wait:      # Linux: the detached helper that shows a toast and waits for a click
+        toast.linux_wait_and_show(cfg, toast_title, toast_body, toast_id)
+        return
+    nid = (notification or "").strip()
+    if not nid and from_toast:
+        nid = toast.last_clicked(cfg.data_dir)
+    if not nid:
+        rows = notif.unread(cfg.data_dir) or notif.read_all(cfg.data_dir)
+        nid = str(rows[-1].get("id", "")) if rows else ""
+    res = toast.show(cfg, nid, open_browser=not no_browser)
+    if json_out:
+        jsonout.emit("show", {**res, "notification": nid or None})
+        raise typer.Exit(0 if res["ok"] else 1)
+    if not res["ok"]:
+        console.print(f"[red]{escape(res['detail'])}[/red]\n[dim]{res['url']}[/dim]")
+        raise typer.Exit(1)
+    console.print(f"[green]✔[/green] {res['url']}"
+                  + (" [dim](started the dashboard in the background · stop it: "
+                     "wrench web --stop)[/dim]" if res["started"] else ""))
 
 
 @app.command()

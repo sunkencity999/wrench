@@ -179,6 +179,7 @@ button { font: inherit; color: inherit; }
 .disk .meter { height: 8px; border-radius: 4px; }
 .disk .meter > i { border-radius: 4px; }
 .feed { display: grid; max-height: 420px; overflow: auto; margin: 0 -6px; padding: 0 6px; }
+.item.hl { background: var(--accent-soft); box-shadow: -10px 0 0 var(--accent-soft), 10px 0 0 var(--accent-soft), inset 3px 0 0 var(--accent); padding-left: 10px; }
 .item { padding: 10px 0; border-top: 1px solid var(--line-soft); display: grid; gap: 4px; }
 .item:first-child { border-top: 0; padding-top: 2px; }
 .item .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

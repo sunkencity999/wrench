@@ -171,6 +171,21 @@ Browsers sign in at `/login` with the password or a token and receive a signed, 
 `Authorization: Bearer <token>` (a token, never the password). `/healthz` is the only route with no
 credential, and it carries no data.
 
+### Desktop notifications you can click
+
+`[notify] desktop = true` (the default) shows a desktop notification for an
+alert. Clicking it opens the dashboard at that alert; `desktop_click = false`
+sends a plain notification instead.
+
+| system | how the click works | first-time effect |
+|---|---|---|
+| macOS | a small helper app, built once in `<data dir>/notifier/`, posts the notification; clicking it runs `wrench show` | macOS asks once whether "wrench" may send notifications |
+| Windows | the toast is filed under a "wrench" app id and opens a `wrench-show:` link, both registered for your user only (HKCU) | none |
+| Linux | a Show action, where `notify-send` supports actions (libnotify 0.7.10+) | none |
+
+`wrench show` starts the dashboard in the background if it is not running
+(`wrench web --stop` stops it) and opens `/#notification=<id>`.
+
 ## `[fleet]`
 
 You rarely write this by hand: `wrench fleet connect` (hub address + hub

@@ -11,7 +11,8 @@ never break a patrol.
 Config (``[notify]`` in config.toml):
     enabled      = true          # master switch
     min_severity = "attention"   # ok|info < attention < error < critical
-    desktop      = true          # notify-send / osascript / powershell toast
+    desktop      = true          # notify-send / macOS helper app / powershell toast
+    desktop_click = true         # clicking the toast opens the dashboard at that alert
     webhook_url  = ""            # generic JSON POST (ntfy, Slack, Discord, ...)
 
     # syslog / SIEM sink (RFC 5424)
@@ -59,6 +60,7 @@ class NotifySettings:
     enabled: bool = True
     min_severity: str = "attention"
     desktop: bool = True
+    desktop_click: bool = True      # clicking a toast opens the dashboard at that alert
     webhook_url: str = ""
     syslog_address: str = ""
     syslog_min_severity: str = ""
@@ -75,6 +77,7 @@ def settings_from(cfg) -> NotifySettings:
         enabled=bool(sec.get("enabled", True)),
         min_severity=str(sec.get("min_severity", "attention")).lower(),
         desktop=bool(sec.get("desktop", True)),
+        desktop_click=bool(sec.get("desktop_click", True)),
         webhook_url=str(sec.get("webhook_url", "") or ""),
         syslog_address=str(sec.get("syslog_address", "") or ""),
         syslog_min_severity=str(sec.get("syslog_min_severity", "") or "").lower(),
@@ -186,10 +189,14 @@ def mark_read(data_dir: Path, ids: list[str] | None = None) -> int:
 
 # ---------------- desktop sink (plan → apply, like scheduler.py) ----------------
 
-def desktop_plan(title: str, body: str, system: str | None = None) -> list[str] | None:
+def desktop_plan(title: str, body: str, system: str | None = None,
+                 url: str = "", click: bool = True) -> list[str] | None:
     """Pure plan step: argv for a desktop notification on this OS, or None.
 
-    Unit-testable on any OS by passing `system` explicitly.
+    Unit-testable on any OS by passing `system` explicitly. What a click does
+    is handled per OS in wrench/toast.py: a helper app on macOS, a registered
+    link type on Windows (``url`` is its fallback), an action on Linux. The
+    macOS and Linux plans returned here are the plain fallbacks.
     """
     system = (system or platform.system()).lower()
     if system == "linux":
@@ -200,26 +207,30 @@ def desktop_plan(title: str, body: str, system: str | None = None) -> list[str] 
         return ["osascript", "-e",
                 f'display notification "{q(body)}" with title "{q(title)}"']
     if system == "windows":
-        def pq(s: str) -> str:
-            return s.replace("'", "''")
-        script = (
-            "[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,"
-            "ContentType=WindowsRuntime]|Out-Null;"
-            "$t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
-            "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
-            "$x=$t.GetElementsByTagName('text');"
-            f"$x.Item(0).AppendChild($t.CreateTextNode('{pq(title)}'))|Out-Null;"
-            f"$x.Item(1).AppendChild($t.CreateTextNode('{pq(body)}'))|Out-Null;"
-            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
-            "'wrench').Show([Windows.UI.Notifications.ToastNotification]::new($t))"
-        )
+        from . import toast
+        script = toast.windows_script(title, body, url=url, click=click)
         return ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
     return None
 
 
-def send_desktop(title: str, body: str, data_dir: Path, runner=None) -> bool:
-    """Best-effort desktop notification. Silent no-op when unavailable."""
-    argv = desktop_plan(title, body)
+def send_desktop(title: str, body: str, data_dir: Path, runner=None, notif_id: str = "",
+                 click: bool = True, url: str = "") -> bool:
+    """Best-effort desktop notification. Silent no-op when unavailable.
+
+    On macOS the toast is posted by wrench's own helper app, so clicking it
+    opens the dashboard at this alert instead of Script Editor. If the helper
+    cannot be used, the plain osascript toast is sent as before."""
+    if click and runner is None and "PYTEST_CURRENT_TEST" not in os.environ:
+        try:
+            from . import toast
+            if platform.system() == "Darwin" and \
+                    toast.post_macos(title, body, data_dir, notif_id=notif_id):
+                return True
+            if platform.system() == "Linux" and toast.post_linux(title, body, notif_id):
+                return True
+        except Exception as e:  # noqa: BLE001 — fall through to the plain toast
+            _log(data_dir, f"clickable toast unavailable: {e.__class__.__name__}: {e}")
+    argv = desktop_plan(title, body, url=url if click else "", click=click)
     if not argv or shutil.which(argv[0]) is None:
         return False
     run = runner or (lambda a: subprocess.run(a, check=False, capture_output=True, timeout=10))
@@ -229,6 +240,18 @@ def send_desktop(title: str, body: str, data_dir: Path, runner=None) -> bool:
     except Exception as e:  # noqa: BLE001 — best-effort by contract
         _log(data_dir, f"desktop sink failed: {e.__class__.__name__}: {e}")
         return False
+
+
+def _alert_url(rec: dict, cfg=None) -> str:
+    """The dashboard address of one alert (used where a toast can carry a link)."""
+    try:
+        from . import toast
+        if cfg is None:
+            from .config import load_config
+            cfg = load_config()
+        return toast.dashboard_url(cfg, str(rec.get("id", "")))
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # ---------------- webhook sink ----------------
@@ -420,7 +443,9 @@ def fan_out(st: NotifySettings, rec: dict, data_dir: Path, title: str | None = N
     if block_public:
         from . import offline as _offline
     if st.desktop and should_notify(sev, st.min_severity):
-        out["desktop"] = send_desktop(title, rec.get("summary", ""), data_dir)
+        out["desktop"] = send_desktop(title, rec.get("summary", ""), data_dir,
+                                      notif_id=str(rec.get("id", "")),
+                                      click=st.desktop_click, url=_alert_url(rec))
     if st.webhook_url and should_notify(sev, st.min_severity):
         if block_public and not _offline.url_is_private(st.webhook_url):
             out["webhook"] = False
@@ -491,7 +516,9 @@ def deliver(cfg, kind: str, severity: str, summary: str,
         from . import offline as _offline
         block_public = _offline.is_offline(cfg)
         if st.desktop:
-            send_desktop(f"🔧 wrench [{kind}]", rec["summary"], dd)
+            send_desktop(f"🔧 wrench [{kind}]", rec["summary"], dd,
+                         notif_id=str(rec.get("id", "")), click=st.desktop_click,
+                         url=_alert_url(rec, cfg))
         if st.webhook_url:
             if block_public and not _offline.url_is_private(st.webhook_url):
                 _log(dd, "offline mode: webhook sink skipped (public host)")
